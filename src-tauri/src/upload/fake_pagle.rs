@@ -1,0 +1,240 @@
+//! A stub backend that keeps a cursor: it holds one Catch log per `logId`,
+//! answers the cursor endpoint from it (UPL-R26), and applies Uploads as
+//! UPL-R30 to R34 say (gap, divergence, the result, unchanged), with the
+//! Reply shape of UPL Contracts. Tests can make it answer something else
+//! for the next requests of an endpoint, and read every page it received.
+
+use std::collections::{HashMap, VecDeque};
+use std::io::Read;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use flate2::read::DeflateDecoder;
+use serde_json::json;
+use wiremock::matchers::{method, path, path_regex};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+/// One page's upload document header, as the stub received it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seen {
+    pub log_id: String,
+    pub as_of: u64,
+    pub total: u64,
+    pub from: u64,
+    pub anchor: String,
+    pub count: u64,
+}
+
+/// A held entry: its ID (UPL-R13) and bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    id: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Held {
+    characters: Vec<String>,
+    entries: Vec<Entry>,
+    newest_as_of: u64,
+}
+
+#[derive(Default)]
+struct Inner {
+    logs: HashMap<String, Held>,
+    /// What the next requests to each endpoint get instead; `None` lets one
+    /// through to the stub's own answer.
+    cursor_script: VecDeque<Option<ResponseTemplate>>,
+    upload_script: VecDeque<Option<ResponseTemplate>>,
+    cursor_reads: usize,
+    pages: Vec<Seen>,
+}
+
+#[derive(Clone, Default)]
+pub struct FakePagle(Arc<Mutex<Inner>>);
+
+impl FakePagle {
+    /// Mounts the stub's two endpoints on `server`.
+    pub async fn mount(&self, server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/v1/catch-logs/[0-9a-f]{16}/cursor$"))
+            .respond_with(Cursor(self.clone()))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/uploads"))
+            .respond_with(Upload(self.clone()))
+            .mount(server)
+            .await;
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.0.lock().unwrap()
+    }
+
+    /// The next cursor reads get these answers (`None`: the stub's own).
+    pub fn script_cursor(&self, replies: Vec<Option<ResponseTemplate>>) {
+        self.lock().cursor_script.extend(replies);
+    }
+
+    /// The next Uploads get these answers (`None`: the stub's own).
+    pub fn script_uploads(&self, replies: Vec<Option<ResponseTemplate>>) {
+        self.lock().upload_script.extend(replies);
+    }
+
+    /// Every page received, answered or not.
+    pub fn pages(&self) -> Vec<Seen> {
+        self.lock().pages.clone()
+    }
+
+    pub fn cursor_reads(&self) -> usize {
+        self.lock().cursor_reads
+    }
+
+    /// The `seq` of the held end of `log_id`.
+    pub fn end(&self, log_id: &str) -> u64 {
+        self.lock()
+            .logs
+            .get(log_id)
+            .map_or(0, |held| held.entries.len() as u64)
+    }
+
+    /// Holds a Catch log made by applying `document` (an Upload's
+    /// decompressed bytes), as if it had been uploaded.
+    pub fn hold(&self, document: &[u8]) {
+        let (_, body) = apply(&mut self.lock(), document);
+        assert_eq!(body["result"], "applied", "{body}");
+    }
+}
+
+struct Cursor(FakePagle);
+
+impl Respond for Cursor {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let mut inner = self.0.lock();
+        inner.cursor_reads += 1;
+        if let Some(Some(reply)) = inner.cursor_script.pop_front() {
+            return reply;
+        }
+        let log_id = request.url.path().split('/').nth(4).unwrap_or_default();
+        let (end, newest) = match inner.logs.get(log_id) {
+            Some(held) if !held.entries.is_empty() => (
+                json!({ "seq": held.entries.len(), "entryId": held.entries.last().unwrap().id }),
+                json!(held.newest_as_of),
+            ),
+            _ => (json!({ "seq": 0, "entryId": null }), json!(null)),
+        };
+        ResponseTemplate::new(200)
+            .set_body_json(json!({ "logId": log_id, "end": end, "newestAsOf": newest }))
+    }
+}
+
+struct Upload(FakePagle);
+
+impl Respond for Upload {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        assert_eq!(
+            request.headers.get("content-type").unwrap(),
+            "application/vnd.pagle.upload+deflate"
+        );
+        let mut document = Vec::new();
+        DeflateDecoder::new(request.body.as_slice())
+            .read_to_end(&mut document)
+            .expect("raw DEFLATE");
+        let mut inner = self.0.lock();
+        inner.pages.push(header(&document));
+        if let Some(Some(reply)) = inner.upload_script.pop_front() {
+            return reply;
+        }
+        let (status, body) = apply(&mut inner, &document);
+        ResponseTemplate::new(status).set_body_json(body)
+    }
+}
+
+fn field(fields: &[&str], i: usize) -> u64 {
+    fields[i].parse().unwrap()
+}
+
+/// `PGL|1|logId|format|as-of|total|characters|from|anchor|count|bytes|crc`.
+fn header(document: &[u8]) -> Seen {
+    let text = std::str::from_utf8(document).unwrap();
+    let line = text.split('\n').next().unwrap();
+    let fields: Vec<&str> = line.split('|').collect();
+    assert_eq!(fields[0], "PGL");
+    Seen {
+        log_id: fields[2].to_owned(),
+        as_of: field(&fields, 4),
+        total: field(&fields, 5),
+        from: field(&fields, 7),
+        anchor: fields[8].to_owned(),
+        count: field(&fields, 9),
+    }
+}
+
+/// Applies an Upload (UPL-R30 to R34, without the caps and stale).
+fn apply(inner: &mut Inner, document: &[u8]) -> (u16, serde_json::Value) {
+    let seen = header(document);
+    let text = std::str::from_utf8(document).unwrap();
+    let fields: Vec<&str> = text.split('\n').next().unwrap().split('|').collect();
+    let characters_count = field(&fields, 6) as usize;
+    let lines: Vec<&str> = text.split('\n').skip(1).collect();
+    let characters: Vec<String> = lines[..characters_count]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let entries: Vec<Entry> = lines[characters_count..characters_count + seen.count as usize]
+        .iter()
+        .map(|line| {
+            let parts: Vec<&str> = line.splitn(5, '|').collect();
+            let char: usize = parts[1].parse().unwrap();
+            let guid = characters[char - 1].split('|').next().unwrap();
+            Entry {
+                id: format!("{guid}-{}-{}", parts[2], parts[3]),
+                bytes: line.as_bytes().to_vec(),
+            }
+        })
+        .collect();
+
+    let held = inner.logs.entry(seen.log_id.clone()).or_default();
+    let e = held.entries.len() as u64;
+    let refuse = |status: u16, code: &str, held: &Held| {
+        (
+            status,
+            json!({ "result": "refused", "reason": code, "message": code, "logId": seen.log_id,
+                    "end": end(held), "newestAsOf": held.newest_as_of, "catchLog": null }),
+        )
+    };
+    if seen.from > e + 1 {
+        return refuse(409, "gap", held);
+    }
+    if seen.from > 1 && held.entries[(seen.from - 2) as usize].id != seen.anchor {
+        return refuse(409, "divergence", held);
+    }
+    let f = (seen.from - 1) as usize;
+    let mut result: Vec<Entry> = held.entries[..f].to_vec();
+    result.extend(entries);
+    let keep_to = (e.min(seen.total)) as usize;
+    if keep_to > result.len() {
+        result.extend_from_slice(&held.entries[result.len()..keep_to]);
+    }
+    let unchanged = result == held.entries && characters == held.characters;
+    if !unchanged {
+        held.entries = result;
+        held.characters = characters;
+        held.newest_as_of = held.newest_as_of.max(seen.as_of);
+    }
+    (
+        200,
+        json!({ "result": if unchanged { "unchanged" } else { "applied" }, "reason": null,
+                "message": null, "logId": seen.log_id, "end": end(held),
+                "newestAsOf": held.newest_as_of,
+                "catchLog": { "verification": "pending", "pendingReason": "forever-api",
+                              "heldCharacters": 0, "leftOff": null } }),
+    )
+}
+
+fn end(held: &Held) -> serde_json::Value {
+    match held.entries.last() {
+        Some(last) => json!({ "seq": held.entries.len(), "entryId": last.id }),
+        None => json!({ "seq": 0, "entryId": null }),
+    }
+}

@@ -1,7 +1,7 @@
 // The window's Status and Linking parts (CMP UI): the link status, Link to
-// Pagle, Link again…, Unlink with its confirmation (CMP-R63), and the device
-// flow's user code, URL and QR code (CMP-R60). The credential never reaches
-// the window.
+// Pagle, Link again…, Unlink with its confirmation (CMP-R63), "Last
+// uploaded …", and the device flow's user code, URL and QR code (CMP-R60).
+// The credential never reaches the window.
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -93,6 +93,14 @@
     linkStatus = status;
     renderStatus();
   });
+  // "Last uploaded {relative time}" or "Nothing uploaded yet" (CMP UI,
+  // Status).
+  const showLastUploaded = (text) => {
+    $("last-uploaded").textContent = text;
+  };
+  invoke("last_uploaded").then(showLastUploaded);
+  listen("last-uploaded", (event) => showLastUploaded(event.payload));
+
   invoke("linking_view").then((view) => {
     linking = view;
     renderLinking();

@@ -58,3 +58,4 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
 .state-line .actions { flex-wrap: wrap; margin: 6px 0 2px; }
 .log .notice { margin-top: 6px; font-size: 13px; }
 .log .notice a { color: inherit; }
+.run-line p { margin-top: 4px; font-size: 13px; color: var(--muted); }

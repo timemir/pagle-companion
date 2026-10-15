@@ -9,6 +9,7 @@ use crate::installs::Scanner;
 use crate::linking;
 use crate::readings::{Readings, Snapshot};
 use crate::tray::Companion;
+use crate::upload;
 
 /// The event that carries a new [`View`] to the window.
 pub const EVENT: &str = "catch-logs";
@@ -26,6 +27,8 @@ pub fn start(app: &AppHandle) {
     std::thread::spawn(move || {
         for update in updates {
             refresh(&app, &update.snapshot);
+            // CMP-R45: the triggers see the confirmed set this update made.
+            upload::window::after_reading(&app, &update);
         }
     });
 }
@@ -58,10 +61,11 @@ fn current(app: &AppHandle) -> View {
     let snapshot = app.state::<Readings>().snapshot();
     app.state::<Companion>()
         .state
-        .read(|s| super::view(s, snapshot.as_ref(), &installs))
+        .read(|s| super::view(s, snapshot.as_ref(), &installs, upload::window::now()))
 }
 
-fn emit(app: &AppHandle) {
+/// Shows the list again.
+pub fn emit(app: &AppHandle) {
     let _ = app.emit(EVENT, current(app));
 }
 

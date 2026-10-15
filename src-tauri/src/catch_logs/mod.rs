@@ -24,7 +24,8 @@ use serde::Serialize;
 use crate::installs::paths;
 use crate::notify::{Cause, CauseKey, Notifications, Notifier};
 use crate::readings::{FolderReading, Reading, Snapshot};
-use crate::state::{Answer, LogState, State, Store};
+use crate::state::{Answer, LogState, RunResult, State, Store};
+use crate::upload::plan::relative_time;
 
 /// What a row says of a `logId` no watched file holds (CMP-R41).
 pub const NOT_FOUND: &str = "Not found on this computer";
@@ -306,9 +307,10 @@ pub struct Choice {
     pub label: String,
 }
 
-/// A row's state line, the first that applies (CMP UI, Catch logs). The run
-/// results' lines (uploaded, up to date, …) come after these, from
-/// `lastRun`, and are the upload runs' to add.
+/// A row's state line, the first that applies (CMP UI, Catch logs): the
+/// questions, not found, a read problem, then the last run's result from
+/// `lastRun`. The results' other lines (divergence, stale, deleted, …) and
+/// CMP-R53's lines are `b1-companion-replies`' (#29).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "kind",
@@ -325,6 +327,25 @@ pub enum Line {
     NotFound { text: &'static str },
     /// CMP-R30's or CMP-R31's text.
     Problem { text: &'static str },
+    /// The last run ended **uploaded**: "Uploaded {relative time}".
+    Uploaded { text: String },
+    /// The last run ended **up to date**: "Up to date".
+    UpToDate { text: &'static str },
+}
+
+/// What a row says after a run that ended up to date (CMP UI, Catch logs).
+pub const UP_TO_DATE: &str = "Up to date";
+
+/// The last run's line (CMP UI, Catch logs), at `now` in Unix seconds.
+pub fn run_line(log: &LogState, now: i64) -> Option<Line> {
+    let run = log.last_run.as_ref()?;
+    match run.result {
+        RunResult::Uploaded => Some(Line::Uploaded {
+            text: format!("Uploaded {}", relative_time(now, run.at)),
+        }),
+        RunResult::UpToDate => Some(Line::UpToDate { text: UP_TO_DATE }),
+        _ => None,
+    }
 }
 
 /// One `logId`'s row in the Catch logs list (CMP-R41, CMP UI).
@@ -363,13 +384,14 @@ pub struct View {
 }
 
 /// The Catch logs list (CMP-R41): every `logId` local state holds, after
-/// [`remember`]. `snapshot` is `None` until the first reads have ended.
-pub fn view(state: &State, snapshot: Option<&Snapshot>, installs: &[String]) -> View {
+/// [`remember`]. `snapshot` is `None` until the first reads have ended;
+/// `now` is Unix seconds, for relative times.
+pub fn view(state: &State, snapshot: Option<&Snapshot>, installs: &[String], now: i64) -> View {
     let logs = state
         .logs
         .iter()
         .map(|(log_id, log)| match snapshot {
-            Some(snapshot) => row(log_id, log, snapshot, installs),
+            Some(snapshot) => row(log_id, log, snapshot, installs, now),
             None => Row {
                 log_id: log_id.clone(),
                 characters: log.characters.clone(),
@@ -389,7 +411,7 @@ pub fn view(state: &State, snapshot: Option<&Snapshot>, installs: &[String]) -> 
     }
 }
 
-fn row(log_id: &str, log: &LogState, snapshot: &Snapshot, installs: &[String]) -> Row {
+fn row(log_id: &str, log: &LogState, snapshot: &Snapshot, installs: &[String], now: i64) -> Row {
     let decision = decide(log, &Copies::of(snapshot, log_id));
     let choices: Vec<Choice> = decision
         .choices
@@ -424,7 +446,10 @@ fn row(log_id: &str, log: &LogState, snapshot: &Snapshot, installs: &[String]) -
     } else if decision.not_found {
         Some(Line::NotFound { text: NOT_FOUND })
     } else {
-        decision.problem.map(|text| Line::Problem { text })
+        decision
+            .problem
+            .map(|text| Line::Problem { text })
+            .or_else(|| run_line(log, now))
     };
     Row {
         log_id: log_id.to_owned(),
@@ -775,7 +800,7 @@ mod tests {
     /// `remember`, then the row of `log_id`.
     fn row_of(state: &mut State, snapshot: &Snapshot, log_id: &str) -> Row {
         remember(state, snapshot);
-        view(state, Some(snapshot), &installs())
+        view(state, Some(snapshot), &installs(), 0)
             .logs
             .into_iter()
             .find(|r| r.log_id == log_id)
@@ -1157,7 +1182,7 @@ mod tests {
         // CMP-R41: the window lists every Catch log the Companion has seen,
         // with its characters and folder as last kept
         let state = state_with(&[(LOG_A, kept(Some(Answer::Upload), None, ONE))]);
-        let view = view(&state, None, &installs());
+        let view = view(&state, None, &installs(), 0);
         assert!(!view.read);
         assert_eq!(view.logs.len(), 1);
         assert_eq!(view.logs[0].line, None);

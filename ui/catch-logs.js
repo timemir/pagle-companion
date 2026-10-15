@@ -1,8 +1,9 @@
 // The window's Catch logs list (CMP-R41, CMP UI): one row per logId with its
 // characters, account folder, the Upload switch, Change folder (CMP-R42) and
 // its state line: CMP-R40's question, CMP-R42's question, "Not found on this
-// computer", or CMP-R30's or CMP-R31's text. The run results' lines go in
-// each row's `.run-line`. Every text comes from the Companion.
+// computer", or CMP-R30's or CMP-R31's text; or the last run's result
+// ("Uploaded 5 minutes ago", "Up to date"), which goes in the row's
+// `.run-line`. Every text comes from the Companion.
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -10,6 +11,9 @@
   const section = document.getElementById("catch-logs-section");
   const list = document.getElementById("catch-logs");
   const error = document.getElementById("catch-logs-error");
+
+  // The state lines that are the last run's result (CMP UI, Catch logs).
+  const RUN_KINDS = new Set(["uploaded", "up-to-date"]);
 
   let view = null;
   let readOnly = false;
@@ -64,7 +68,7 @@
 
   function stateLine(row) {
     const line = row.line;
-    if (!line) return null;
+    if (!line || RUN_KINDS.has(line.kind)) return null;
     const block = element("div", `state-line ${line.kind}`);
     block.append(element("p", "", line.text));
     if (line.kind === "awaiting") {
@@ -131,7 +135,11 @@
     const line = stateLine(row);
     if (line) item.append(line);
     // The last run's result (uploaded, up to date, …) shows here.
-    item.append(element("div", "run-line"));
+    const runLine = element("div", "run-line");
+    if (row.line && RUN_KINDS.has(row.line.kind)) {
+      runLine.append(element("p", row.line.kind, row.line.text));
+    }
+    item.append(runLine);
 
     if (!row.upload && switchedOff.has(row.logId)) {
       const note = element("p", "notice", `${view.switchedOff} `);

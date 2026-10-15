@@ -1,6 +1,7 @@
 //! Tray mode (CMP-R1): the tray icon and its menu, the window, the
 //! single-instance channel and the watcher lock (CMP-R2).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use crate::os_notify::OsNotifier;
 use crate::readings::{self, Readings};
 use crate::state::{self, Loaded, State, Store};
 use crate::state_dir::{self, StateDir, WatcherLock};
+use crate::upload::{self, Uploads, queue::Trigger};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -154,6 +156,7 @@ pub fn run(mode: Mode) {
             catch_logs::window::answer_catch_log,
             catch_logs::window::pick_folder,
             catch_logs::window::open_my_anglers,
+            upload::window::last_uploaded,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -201,12 +204,21 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     let first_run = !state.first_run_done;
 
     let hooks = Hooks {
+        cancel_queue: {
+            let app = app.clone();
+            Box::new(move || app.state::<Uploads>().cancel())
+        },
+        start_post_link_runs: {
+            let app = app.clone();
+            // CMP-R101: a run for every confirmed logId. The in-game
+            // downloads (B4) join here.
+            Box::new(move || upload::window::trigger_all(&app, Trigger::PostLink))
+        },
         changed: {
             let app = app.clone();
             Box::new(move || linking::link_changed(&app))
         },
-        // The queue's cancel and post-link runs (#28) and the data addon
-        // folders (B4) plug in here.
+        // The data addon folders (B4) plug in here.
         ..Hooks::default()
     };
     app.manage(Companion {
@@ -221,10 +233,19 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     app.manage(Scanner::new());
     app.manage(Linking::default());
     app.manage(Readings::new());
-    // The upload runs (#28) fill in `start_run` and `stop_runs`, and the
-    // first-run window (#9) holds notifications with
+    app.manage(Uploads::new());
+    // The first-run window (#9) holds notifications with
     // `catch_logs::window::set_first_run_window`.
-    app.manage(CatchLogs::new(catch_logs::Hooks::default()));
+    app.manage(CatchLogs::new(catch_logs::Hooks {
+        start_run: {
+            let app = app.clone();
+            Box::new(move |log_id| upload::window::trigger_one(&app, log_id, Trigger::SwitchOn))
+        },
+        stop_runs: {
+            let app = app.clone();
+            Box::new(move |log_id| app.state::<Uploads>().stop_runs(log_id))
+        },
+    }));
 
     build_tray(app)?;
     linking::start(app);
@@ -242,7 +263,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let upload_now = MenuItem::with_id(app, "upload-now", "Upload now", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&status, &open, &upload_now, &quit])?;
-    app.manage(TrayItems { status, upload_now });
+    app.manage(TrayItems {
+        status,
+        upload_now,
+        linked: AtomicBool::new(false),
+    });
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Pagle Companion")
@@ -251,6 +276,8 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
+            // CMP-R45: every confirmed logId, held back or not, no skip.
+            "upload-now" => upload::window::trigger_all(app, Trigger::UploadNow),
             "quit" => app.exit(0),
             _ => {}
         });
@@ -265,15 +292,18 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 struct TrayItems {
     status: MenuItem<tauri::Wry>,
     upload_now: MenuItem<tauri::Wry>,
+    /// The link as last shown.
+    linked: AtomicBool,
 }
 
-/// The tray's status line as far as linking decides it (CMP UI, tray menu):
-/// "Not linked", or what the window says before anything is uploaded.
-pub fn tray_status_line(linked: bool) -> &'static str {
+/// The tray's status line (CMP UI, tray menu): "Not linked", or the
+/// window's "Last uploaded {relative time}" ("Nothing uploaded yet" before
+/// anything is). The stop messages come with #29.
+pub fn tray_status_line(linked: bool, last_uploaded: Option<i64>, now: i64) -> String {
     if linked {
-        "Nothing uploaded yet"
+        upload::window::last_uploaded_text(last_uploaded, now)
     } else {
-        "Not linked"
+        "Not linked".into()
     }
 }
 
@@ -283,8 +313,25 @@ pub fn show_link(app: &AppHandle, linked: bool) {
     let Some(items) = app.try_state::<TrayItems>() else {
         return;
     };
-    let _ = items.status.set_text(tray_status_line(linked));
+    items.linked.store(linked, Ordering::SeqCst);
     let _ = items.upload_now.set_enabled(linked);
+    show_tray_status(app);
+}
+
+/// Shows the tray's status line again, for the link as last shown.
+pub fn show_tray_status(app: &AppHandle) {
+    let (Some(items), Some(companion)) =
+        (app.try_state::<TrayItems>(), app.try_state::<Companion>())
+    else {
+        return;
+    };
+    let last = companion.state.read(upload::window::last_uploaded_at);
+    let line = tray_status_line(
+        items.linked.load(Ordering::SeqCst),
+        last,
+        upload::window::now(),
+    );
+    let _ = items.status.set_text(line);
 }
 
 /// Opens the window, creating it on first use, with the webview's data in the
@@ -324,6 +371,7 @@ fn take_watcher_lock(app: AppHandle) {
                     installs::window::start(&app);
                     readings::window::start(&app);
                     catch_logs::window::start(&app);
+                    upload::window::start(&app);
                     let _ = app.emit("status", companion.status());
                     return;
                 }
@@ -402,8 +450,18 @@ mod tests {
     fn the_tray_says_not_linked_until_linked() {
         // CMP UI, tray menu: the status line reads "Not linked" while not
         // linked
-        assert_eq!(tray_status_line(false), "Not linked");
-        assert_eq!(tray_status_line(true), "Nothing uploaded yet");
+        assert_eq!(tray_status_line(false, None, 0), "Not linked");
+        assert_eq!(tray_status_line(false, Some(0), 600), "Not linked");
+        assert_eq!(tray_status_line(true, None, 0), "Nothing uploaded yet");
+    }
+
+    #[test]
+    fn the_tray_shows_last_uploaded_once_there_is_one() {
+        // CMP UI, tray menu: a status line "Last uploaded {relative time}"
+        assert_eq!(
+            tray_status_line(true, Some(1_000), 1_000 + 2 * 3_600),
+            "Last uploaded 2 hours ago"
+        );
     }
 
     #[test]
