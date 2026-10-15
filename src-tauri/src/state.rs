@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
@@ -216,6 +217,46 @@ fn broken_path(path: &Path) -> std::path::PathBuf {
     path.with_extension("json.broken")
 }
 
+/// The process's one copy of local state. Every change goes through
+/// [`Store::update`], which writes the file after it, except during a first
+/// run: until step 1 sets `firstRunDone`, local state stays in memory and
+/// nothing of it is written (CMP-R100).
+pub struct Store {
+    path: PathBuf,
+    state: Mutex<State>,
+}
+
+impl Store {
+    /// Holds `state`, which was read from (or will be written to) `path`.
+    pub fn new(path: impl Into<PathBuf>, state: State) -> Self {
+        Self {
+            path: path.into(),
+            state: Mutex::new(state),
+        }
+    }
+
+    /// Reads local state with `f`, without writing anything.
+    pub fn read<R>(&self, f: impl FnOnce(&State) -> R) -> R {
+        f(&self.lock())
+    }
+
+    /// Changes local state with `f`, then writes it whole unless a first run
+    /// hasn't ended step 1 yet. A failed write keeps the change in memory, so
+    /// the next update writes it.
+    pub fn update<R>(&self, f: impl FnOnce(&mut State) -> R) -> io::Result<R> {
+        let mut state = self.lock();
+        let result = f(&mut state);
+        if state.first_run_done {
+            save(&self.path, &state)?;
+        }
+        Ok(result)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +405,49 @@ mod tests {
         assert_eq!(json["v"], 1);
         assert_eq!(json["settings"]["startAtLogin"], true);
         assert!(json["battleTag"].is_null());
+    }
+
+    #[test]
+    fn a_first_run_writes_nothing_until_step_1_ends() {
+        // CMP-R100: until step 1 ends, local state stays in memory and
+        // nothing of it is written
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.json");
+        let store = Store::new(&path, State::default());
+
+        store
+            .update(|s| s.manual_installs.push("G:/WoW/_classic_beta_".into()))
+            .unwrap();
+        assert!(!path.exists());
+        assert_eq!(store.read(|s| s.manual_installs.len()), 1);
+
+        store.update(|s| s.first_run_done = true).unwrap();
+        let Loaded::State(written) = load(&path).unwrap() else {
+            panic!("step 1's end didn't write state.json");
+        };
+        assert!(written.first_run_done);
+        assert_eq!(written.manual_installs, ["G:/WoW/_classic_beta_"]);
+    }
+
+    #[test]
+    fn after_the_first_run_every_change_is_written() {
+        // CMP Data: written whole after every change
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.json");
+        let store = Store::new(
+            &path,
+            State {
+                first_run_done: true,
+                ..State::default()
+            },
+        );
+
+        store
+            .update(|s| s.battle_tag = Some("Ada#1234".into()))
+            .unwrap();
+        let Loaded::State(written) = load(&path).unwrap() else {
+            panic!("the change wasn't written");
+        };
+        assert_eq!(written.battle_tag.as_deref(), Some("Ada#1234"));
     }
 }

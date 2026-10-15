@@ -14,7 +14,7 @@ use crate::cli::{self, Mode};
 use crate::local_log::Logger;
 use crate::notify::Notifications;
 use crate::os_notify::OsNotifier;
-use crate::state::{self, Loaded};
+use crate::state::{self, Loaded, State, Store};
 use crate::state_dir::{self, StateDir, WatcherLock};
 
 pub const MAIN_WINDOW: &str = "main";
@@ -67,6 +67,8 @@ pub struct Companion {
     pub version: String,
     pub api: Api,
     pub notifications: Notifications<OsNotifier>,
+    /// Local state; change it only through `state.update` (CMP Data).
+    pub state: Store,
     watcher: Mutex<Option<WatcherLock>>,
 }
 
@@ -150,22 +152,24 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     let version = app.package_info().version.to_string();
     log::info!("Pagle Companion {version} starting in tray mode");
 
-    let first_run = match state::load(&state_dir.state_file()) {
-        Ok(Loaded::State(state)) => !state.first_run_done,
-        Ok(Loaded::Missing) => true,
+    let state = match state::load(&state_dir.state_file()) {
+        Ok(Loaded::State(state)) => state,
+        Ok(Loaded::Missing) => State::default(),
         Ok(Loaded::Broken) => {
             log::warn!("state.json couldn't be read; renamed it state.json.broken");
-            true
+            State::default()
         }
         Err(e) => {
             log::error!("couldn't read state.json: {e}");
-            true
+            State::default()
         }
     };
+    let first_run = !state.first_run_done;
 
     app.manage(Companion {
         api: Api::new(&version, api::base_url())?,
         notifications: Notifications::new(OsNotifier::new(app.clone())),
+        state: Store::new(state_dir.state_file(), state),
         state_dir,
         version,
         watcher: Mutex::new(None),
