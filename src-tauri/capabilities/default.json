@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the Companion's own window may call.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

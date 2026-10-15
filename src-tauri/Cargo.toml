@@ -1,0 +1,40 @@
+[package]
+name = "pagle-companion"
+version = "0.0.0"
+description = "Pagle Companion: carries Pagle data between the game's files and the backend"
+license = "MIT"
+repository = "https://github.com/timemir/pagle-companion"
+edition = "2024"
+rust-version = "1.89"
+
+[lib]
+name = "pagle_companion_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+log = { version = "0.4", features = ["std"] }
+humantime = "2"
+dirs = "6"
+
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.7"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
