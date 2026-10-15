@@ -24,7 +24,7 @@ use serde::Serialize;
 use crate::installs::paths;
 use crate::notify::{Cause, CauseKey, Notifications, Notifier};
 use crate::readings::{FolderReading, Reading, Snapshot};
-use crate::state::{Answer, LogState, RunResult, State, Store};
+use crate::state::{Answer, CatchLogState, LastRun, LogState, RunResult, State, Store};
 use crate::upload::plan::relative_time;
 
 /// What a row says of a `logId` no watched file holds (CMP-R41).
@@ -38,6 +38,11 @@ pub const SWITCHED_OFF: &str =
 /// My Anglers on the Pagle website, where a Catch log is deleted (CMP-R41).
 pub fn my_anglers_url(base_url: &str) -> String {
     format!("{}/me/anglers", base_url.trim_end_matches('/'))
+}
+
+/// Sign-in on the Pagle website, for held characters (CMP-R53).
+pub fn sign_in_url(base_url: &str) -> String {
+    format!("{}/signin", base_url.trim_end_matches('/'))
 }
 
 /// The confirmed `logId`s, each with the account folder it uploads from:
@@ -309,8 +314,7 @@ pub struct Choice {
 
 /// A row's state line, the first that applies (CMP UI, Catch logs): the
 /// questions, not found, a read problem, then the last run's result from
-/// `lastRun`. The results' other lines (divergence, stale, deleted, …) and
-/// CMP-R53's lines are `b1-companion-replies`' (#29).
+/// `lastRun` ([`run_line`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "kind",
@@ -319,33 +323,211 @@ pub struct Choice {
 )]
 pub enum Line {
     /// CMP-R40's question, with **Upload** and **Don't upload**.
-    Awaiting { text: String },
+    Awaiting {
+        text: String,
+    },
     /// CMP-R42's question, with one button per choice; and, while awaiting,
     /// **Don't upload**, which needs no pick (CMP-R40).
-    SeveralFolders { text: String, dont_upload: bool },
+    SeveralFolders {
+        text: String,
+        dont_upload: bool,
+    },
     /// CMP-R41's "Not found on this computer".
-    NotFound { text: &'static str },
+    NotFound {
+        text: &'static str,
+    },
     /// CMP-R30's or CMP-R31's text.
-    Problem { text: &'static str },
-    /// The last run ended **uploaded**: "Uploaded {relative time}".
-    Uploaded { text: String },
-    /// The last run ended **up to date**: "Up to date".
-    UpToDate { text: &'static str },
+    Problem {
+        text: &'static str,
+    },
+    /// The last run ended **uploaded**: "Uploaded {relative time}", then
+    /// CMP-R53's lines.
+    Uploaded {
+        text: String,
+        notes: Vec<Note>,
+    },
+    /// The last run ended **up to date**: "Up to date", then CMP-R53's lines
+    /// from the last `catchLog` kept.
+    UpToDate {
+        text: &'static str,
+        notes: Vec<Note>,
+    },
+    /// A divergence (CMP-R52), with **Replace Pagle's copy with this
+    /// computer's** and the question it asks first.
+    Divergence {
+        text: &'static str,
+        question: &'static str,
+    },
+    Stale {
+        text: &'static str,
+    },
+    /// CMP-R54's text, with a link to My Anglers.
+    Deleted {
+        text: &'static str,
+    },
+    DevLog {
+        text: &'static str,
+    },
+    WaitingForPagle {
+        text: &'static str,
+    },
+    /// The `log_cap` message, with a link to My Anglers.
+    LogCap {
+        text: String,
+    },
+    TooLarge {
+        text: &'static str,
+    },
+    /// Failed, with why and when it tries again.
+    Failed {
+        text: &'static str,
+    },
+}
+
+/// One of CMP-R53's lines under **uploaded** and **up to date**.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Note {
+    /// The Pending reason's text (accounts.md UI), with no notification.
+    Pending { text: &'static str },
+    /// Held characters (ACC-R33), with a **Sign in** link to `/signin`.
+    HeldCharacters { text: &'static str },
+    /// Left off Leaderboards and Region firsts, with a link to My Anglers.
+    LeftOff { text: &'static str },
 }
 
 /// What a row says after a run that ended up to date (CMP UI, Catch logs).
 pub const UP_TO_DATE: &str = "Up to date";
+/// CMP-R52's row text, also its notification (CMP-R111).
+pub const DIVERGENCE: &str = "This Catch log differs from the copy on Pagle.";
+/// What **Replace Pagle's copy with this computer's** asks first (CMP-R52).
+pub const REPLACE_QUESTION: &str = "Pagle will hold this computer's copy of this Catch log. \
+                                    Entries only Pagle's copy has will be dropped from Pagle.";
+pub const STALE: &str = "Pagle already has a newer copy of this Catch log. Nothing changed.";
+/// CMP-R54.
+pub const DELETED: &str =
+    "You deleted this Catch log on the Pagle website. Allow it again there to upload it.";
+pub const DEV_LOG: &str =
+    "This Catch log is from a Pagle development version and can't be uploaded.";
+pub const WAITING_FOR_PAGLE: &str = "The Pagle website can't read this version of the addon \
+                                     yet. Pagle Companion tries again later.";
+/// The `log_cap` message when the refusal carries none (UPL Refusals).
+pub const LOG_CAP: &str = "You already have 20 Catch logs on Pagle. Delete one to add another.";
+pub const TOO_LARGE: &str = "This Catch log has an entry too large to upload.";
+pub const FAILED: &str = "Upload failed. Pagle Companion tries again when the file changes.";
+/// Failed after a second `gap`, not held back (CMP-R50).
+pub const FAILED_GAP: &str = "Upload failed. Pagle Companion tries again later.";
+/// Failed on `unsupported_document` (CMP-R50).
+pub const UPDATE_COMPANION: &str = "Update Pagle Companion.";
+/// CMP-R53, ACC-R33; also its notification (CMP-R111).
+pub const HELD_CHARACTERS: &str = "A new character needs verifying. Sign in again to verify it.";
+/// CMP-R53, for `flagged` and `excluded` alike.
+pub const LEFT_OFF: &str =
+    "This Angler is left off Leaderboards and Region firsts. Your Angler page says why.";
+
+/// The text of a Pending reason (accounts.md UI, Pending reasons); `None`
+/// for one this Companion doesn't know.
+pub fn pending_reason_text(reason: &str) -> Option<&'static str> {
+    Some(match reason {
+        "forever-api" => {
+            "Battle.net doesn't list WoW Forever characters yet. Your Catch log is safe here and \
+             will be verified once it does."
+        }
+        "sign-in-needed" => "Sign in again so Pagle can verify this Catch log.",
+        "no-wow-profile" => {
+            "Pagle couldn't see your WoW characters. Sign in again, leave 'World of Warcraft \
+             profile' ticked, and check that your Battle.net privacy settings allow third-party \
+             sites."
+        }
+        "mixed-accounts" => {
+            "This Catch log holds characters from more than one WoW account; it was probably \
+             copied from another PC. If you just created a character, log out of it in game and \
+             sign in again in a few minutes."
+        }
+        "not-listed" => "None of this Catch log's characters are in your Battle.net account.",
+        _ => return None,
+    })
+}
+
+/// Whether a `catchLog` has held characters (CMP-R53: `verified` with
+/// `heldCharacters > 0`), which also raises its notification (CMP-R111).
+pub fn has_held_characters(catch_log: &CatchLogState) -> bool {
+    catch_log.verification == "verified" && catch_log.held_characters > 0
+}
+
+/// CMP-R53's lines for a `catchLog`: the Pending reason, held characters,
+/// left off, all that apply, in that order (CMP UI, Catch logs).
+pub fn catch_log_notes(catch_log: &CatchLogState) -> Vec<Note> {
+    let mut notes = Vec::new();
+    if catch_log.verification == "pending"
+        && let Some(text) = catch_log
+            .pending_reason
+            .as_deref()
+            .and_then(pending_reason_text)
+    {
+        notes.push(Note::Pending { text });
+    }
+    if has_held_characters(catch_log) {
+        notes.push(Note::HeldCharacters {
+            text: HELD_CHARACTERS,
+        });
+    }
+    if catch_log
+        .left_off
+        .as_ref()
+        .is_some_and(|left_off| !left_off.is_null())
+    {
+        notes.push(Note::LeftOff { text: LEFT_OFF });
+    }
+    notes
+}
+
+/// The `log_cap` message of a run that ended **log cap** (CMP UI, Catch
+/// logs; CMP-R111).
+pub fn log_cap_text(run: &LastRun) -> String {
+    run.message.clone().unwrap_or_else(|| LOG_CAP.into())
+}
 
 /// The last run's line (CMP UI, Catch logs), at `now` in Unix seconds.
 pub fn run_line(log: &LogState, now: i64) -> Option<Line> {
     let run = log.last_run.as_ref()?;
-    match run.result {
-        RunResult::Uploaded => Some(Line::Uploaded {
+    let notes = || {
+        run.catch_log
+            .as_ref()
+            .map(catch_log_notes)
+            .unwrap_or_default()
+    };
+    Some(match run.result {
+        RunResult::Uploaded => Line::Uploaded {
             text: format!("Uploaded {}", relative_time(now, run.at)),
-        }),
-        RunResult::UpToDate => Some(Line::UpToDate { text: UP_TO_DATE }),
-        _ => None,
-    }
+            notes: notes(),
+        },
+        RunResult::UpToDate => Line::UpToDate {
+            text: UP_TO_DATE,
+            notes: notes(),
+        },
+        RunResult::Divergence => Line::Divergence {
+            text: DIVERGENCE,
+            question: REPLACE_QUESTION,
+        },
+        RunResult::Stale => Line::Stale { text: STALE },
+        RunResult::Deleted => Line::Deleted { text: DELETED },
+        RunResult::DevLog => Line::DevLog { text: DEV_LOG },
+        RunResult::WaitingForPagle => Line::WaitingForPagle {
+            text: WAITING_FOR_PAGLE,
+        },
+        RunResult::LogCap => Line::LogCap {
+            text: log_cap_text(run),
+        },
+        RunResult::TooLarge => Line::TooLarge { text: TOO_LARGE },
+        RunResult::Failed => Line::Failed {
+            text: match run.code.as_deref() {
+                Some(crate::upload::GAP) => FAILED_GAP,
+                Some("unsupported_document") => UPDATE_COMPANION,
+                _ => FAILED,
+            },
+        },
+    })
 }
 
 /// One `logId`'s row in the Catch logs list (CMP-R41, CMP UI).
@@ -718,7 +900,7 @@ mod tests {
     use crate::pagle_log::{self, Found};
     use crate::readings::fixture::{LOG_A, LOG_B, pagle_lua_text};
     use crate::readings::{CANT_UPLOAD, COULDNT_READ, FileStamp, LocalRead};
-    use crate::state::{self, Loaded};
+    use crate::state::{self, CatchLogState, LastRun, Loaded};
 
     const INSTALL: &str = "G:/WoW/_classic_beta_";
     const ONE: &str = "G:/WoW/_classic_beta_/WTF/Account/ADA#1";
@@ -768,6 +950,10 @@ mod tests {
 
     fn snapshot(folders: Vec<FolderReading>) -> Snapshot {
         Snapshot { folders }
+    }
+
+    fn snapshot_of(folders: Vec<FolderReading>) -> Snapshot {
+        snapshot(folders)
     }
 
     fn installs() -> Vec<String> {
@@ -1188,6 +1374,233 @@ mod tests {
         assert_eq!(view.logs[0].line, None);
         assert!(view.logs[0].upload);
         assert_eq!(view.logs[0].folder.as_deref(), Some("ADA#1"));
+    }
+
+    // The last run's lines (CMP UI, Catch logs).
+
+    fn ran(result: RunResult, code: Option<&str>, catch_log: Option<CatchLogState>) -> LogState {
+        let mut log = kept(Some(Answer::Upload), None, ONE);
+        log.last_run = Some(LastRun {
+            result,
+            at: 1_000,
+            file_mtime_ms: 1,
+            file_size: 1,
+            format: 1,
+            companion_version: "1.0.0".into(),
+            code: code.map(str::to_owned),
+            message: code.map(|_| "You already have 20 Catch logs on Pagle.".into()),
+            catch_log,
+        });
+        log
+    }
+
+    fn text(line: Option<Line>) -> String {
+        serde_json::to_value(line).unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn every_result_has_its_line() {
+        // CMP UI, Catch logs: the line of each last run's result
+        let cases = [
+            (RunResult::Uploaded, None, "Uploaded 5 minutes ago"),
+            (RunResult::UpToDate, None, "Up to date"),
+            (
+                RunResult::Divergence,
+                None,
+                "This Catch log differs from the copy on Pagle.",
+            ),
+            (
+                RunResult::Stale,
+                Some("stale"),
+                "Pagle already has a newer copy of this Catch log. Nothing changed.",
+            ),
+            (
+                RunResult::Deleted,
+                Some("deleted"),
+                "You deleted this Catch log on the Pagle website. Allow it again there to \
+                 upload it.",
+            ),
+            (
+                RunResult::DevLog,
+                Some("dev_log"),
+                "This Catch log is from a Pagle development version and can't be uploaded.",
+            ),
+            (
+                RunResult::WaitingForPagle,
+                Some("unsupported_format"),
+                "The Pagle website can't read this version of the addon yet. Pagle Companion \
+                 tries again later.",
+            ),
+            (
+                RunResult::LogCap,
+                Some("log_cap"),
+                "You already have 20 Catch logs on Pagle.",
+            ),
+            (
+                RunResult::TooLarge,
+                None,
+                "This Catch log has an entry too large to upload.",
+            ),
+            (
+                RunResult::Failed,
+                Some("entry_cap"),
+                "Upload failed. Pagle Companion tries again when the file changes.",
+            ),
+            (
+                RunResult::Failed,
+                Some("gap"),
+                "Upload failed. Pagle Companion tries again later.",
+            ),
+            (
+                RunResult::Failed,
+                Some("unsupported_document"),
+                "Update Pagle Companion.",
+            ),
+        ];
+        for (result, code, expected) in cases {
+            let line = run_line(&ran(result, code, None), 1_000 + 5 * 60);
+            assert_eq!(text(line), expected, "{result:?} {code:?}");
+        }
+        assert_eq!(run_line(&kept(Some(Answer::Upload), None, ONE), 0), None);
+    }
+
+    #[test]
+    fn log_cap_without_a_message_says_the_cap() {
+        // CMP UI, Catch logs: the log_cap message (UPL Refusals)
+        let mut log = ran(RunResult::LogCap, Some("log_cap"), None);
+        log.last_run.as_mut().unwrap().message = None;
+        assert_eq!(
+            run_line(&log, 0),
+            Some(Line::LogCap {
+                text: "You already have 20 Catch logs on Pagle. Delete one to add another.".into()
+            })
+        );
+    }
+
+    fn catch_log(
+        verification: &str,
+        reason: Option<&str>,
+        held: u32,
+        left_off: bool,
+    ) -> CatchLogState {
+        CatchLogState {
+            verification: verification.into(),
+            pending_reason: reason.map(str::to_owned),
+            held_characters: held,
+            left_off: left_off.then(|| serde_json::json!("flagged")),
+        }
+    }
+
+    #[test]
+    fn every_pending_reason_has_its_text() {
+        // CMP-R53: pending with a pendingReason shows the text for that
+        // reason (accounts.md UI, Pending reasons)
+        let cases = [
+            (
+                "forever-api",
+                "Battle.net doesn't list WoW Forever characters yet. Your Catch log is safe \
+                 here and will be verified once it does.",
+            ),
+            (
+                "sign-in-needed",
+                "Sign in again so Pagle can verify this Catch log.",
+            ),
+            (
+                "no-wow-profile",
+                "Pagle couldn't see your WoW characters. Sign in again, leave 'World of \
+                 Warcraft profile' ticked, and check that your Battle.net privacy settings \
+                 allow third-party sites.",
+            ),
+            (
+                "mixed-accounts",
+                "This Catch log holds characters from more than one WoW account; it was \
+                 probably copied from another PC. If you just created a character, log out of \
+                 it in game and sign in again in a few minutes.",
+            ),
+            (
+                "not-listed",
+                "None of this Catch log's characters are in your Battle.net account.",
+            ),
+        ];
+        for (reason, text) in cases {
+            assert_eq!(
+                catch_log_notes(&catch_log("pending", Some(reason), 0, false)),
+                [Note::Pending { text }]
+            );
+        }
+        // A reason this Companion doesn't know shows nothing.
+        assert!(catch_log_notes(&catch_log("pending", Some("new-reason"), 0, false)).is_empty());
+    }
+
+    #[test]
+    fn catch_log_lines_show_all_that_apply_in_order() {
+        // CMP-R53: pending with a null reason, or verified with no held
+        // characters: nothing more; CMP UI: Pending reason, held characters,
+        // left off, all that apply, in that order, under uploaded and up to
+        // date only
+        assert!(catch_log_notes(&catch_log("pending", None, 0, false)).is_empty());
+        assert!(catch_log_notes(&catch_log("verified", None, 0, false)).is_empty());
+        let notes = catch_log_notes(&catch_log("verified", None, 2, true));
+        assert_eq!(
+            notes,
+            [
+                Note::HeldCharacters {
+                    text: HELD_CHARACTERS
+                },
+                Note::LeftOff { text: LEFT_OFF }
+            ]
+        );
+        assert_eq!(
+            HELD_CHARACTERS,
+            "A new character needs verifying. Sign in again to verify it."
+        );
+        assert_eq!(
+            LEFT_OFF,
+            "This Angler is left off Leaderboards and Region firsts. Your Angler page says why."
+        );
+        let state = catch_log("verified", None, 2, true);
+        let failed = ran(RunResult::Failed, Some("entry_cap"), Some(state.clone()));
+        assert!(matches!(run_line(&failed, 0), Some(Line::Failed { .. })));
+        let up_to_date = ran(RunResult::UpToDate, None, Some(state));
+        assert_eq!(
+            run_line(&up_to_date, 0),
+            Some(Line::UpToDate {
+                text: UP_TO_DATE,
+                notes
+            })
+        );
+    }
+
+    #[test]
+    fn the_divergence_line_carries_the_replace_question() {
+        // CMP-R52: the row offers Replace Pagle's copy with this computer's,
+        // which first asks its question
+        let log = ran(RunResult::Divergence, None, None);
+        assert_eq!(
+            serde_json::to_value(run_line(&log, 0)).unwrap(),
+            serde_json::json!({
+                "kind": "divergence",
+                "text": "This Catch log differs from the copy on Pagle.",
+                "question": "Pagle will hold this computer's copy of this Catch log. Entries \
+                             only Pagle's copy has will be dropped from Pagle."
+            })
+        );
+    }
+
+    #[test]
+    fn the_read_lines_come_before_the_last_runs_result() {
+        // CMP UI, Catch logs: not found, invalid or unreadable come before the
+        // last run's result
+        let snapshot = snapshot(vec![unreadable(ONE, LOG_A)]);
+        let mut state = state_with(&[(LOG_A, ran(RunResult::Deleted, Some("deleted"), None))]);
+        let row = row_of(&mut state, &snapshot, LOG_A);
+        assert_eq!(row.line, Some(Line::Problem { text: COULDNT_READ }));
+        let snapshot = snapshot_of(vec![holding(ONE, LOG_A, 2)]);
+        let row = row_of(&mut state, &snapshot, LOG_A);
+        assert!(matches!(row.line, Some(Line::Deleted { .. })));
     }
 
     // The service: notifications, answers, picks and the confirmed set.

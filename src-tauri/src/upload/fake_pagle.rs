@@ -1,10 +1,12 @@
 //! A stub backend that keeps a cursor: it holds one Catch log per `logId`,
 //! answers the cursor endpoint from it (UPL-R26), and applies Uploads as
-//! UPL-R30 to R34 say (gap, divergence, the result, unchanged), with the
-//! Reply shape of UPL Contracts. Tests can make it answer something else
-//! for the next requests of an endpoint, and read every page it received.
+//! UPL-R30 to R36 and UPL-R64 say (a tombstone, gap, divergence, the result,
+//! unchanged, stale), with the Reply shape of UPL Contracts. Tests can make
+//! it answer something else for the next requests of an endpoint (any
+//! refusal of UPL Refusals with [`refusal`]), set the `catchLog` its
+//! successes carry, and read every page it received.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -38,9 +40,49 @@ struct Held {
     newest_as_of: u64,
 }
 
+/// The `catchLog` a success carries unless a test sets another: Pending
+/// `forever-api`, the v1 state for everyone (ACC-R21).
+fn forever_api() -> serde_json::Value {
+    json!({ "verification": "pending", "pendingReason": "forever-api",
+            "heldCharacters": 0, "leftOff": null })
+}
+
+/// A refusal of UPL Refusals (or DST's `update_required`, OPS-R67's
+/// `rate_limited`), with its message, in the Reply shape of UPL Contracts.
+pub fn refusal(status: u16, code: &str) -> ResponseTemplate {
+    let message = match code {
+        "suspended" => "This Player is suspended. Contact support@pagle.app.",
+        "too_large" => "This upload is too large.",
+        "malformed" => "This isn't a complete Pagle Catch log. Copy it again.",
+        "unsupported_document" | "unsupported_format" => "Update Pagle.",
+        "checksum" => "The text changed or was cut off while copying. Copy it again.",
+        "dev_log" => "This Catch log is from a Pagle development version and can't be uploaded.",
+        "log_cap" => "You already have 20 Catch logs on Pagle. Delete one to add another.",
+        "entry_cap" => "This Catch log is longer than Pagle accepts.",
+        "gap" => "Pagle is missing earlier entries of this Catch log.",
+        "divergence" => "This Catch log differs from the copy on Pagle.",
+        "stale" => "Pagle already has a newer copy of this Catch log. Nothing changed.",
+        "deleted" => {
+            "You deleted this Catch log on the Pagle website. Allow it again there to upload it."
+        }
+        "update_required" => {
+            "This version of Pagle Companion is too old. Update it to keep uploading."
+        }
+        "rate_limited" => "Too many uploads. Try again later.",
+        _ => "Refused.",
+    };
+    ResponseTemplate::new(status).set_body_json(json!({
+        "result": "refused", "reason": code, "message": message, "logId": null,
+        "end": null, "newestAsOf": null, "catchLog": null }))
+}
+
 #[derive(Default)]
 struct Inner {
     logs: HashMap<String, Held>,
+    /// `logId`s deleted on the website (UPL-R64).
+    tombstones: HashSet<String>,
+    /// What successes carry as `catchLog`; `None` for [`forever_api`].
+    catch_log: Option<serde_json::Value>,
     /// What the next requests to each endpoint get instead; `None` lets one
     /// through to the stub's own answer.
     cursor_script: VecDeque<Option<ResponseTemplate>>,
@@ -96,6 +138,24 @@ impl FakePagle {
             .logs
             .get(log_id)
             .map_or(0, |held| held.entries.len() as u64)
+    }
+
+    /// The Player deletes the Catch log on the website (UPL-R60): a
+    /// tombstone, and the held copy is gone.
+    pub fn delete(&self, log_id: &str) {
+        let mut inner = self.lock();
+        inner.logs.remove(log_id);
+        inner.tombstones.insert(log_id.to_owned());
+    }
+
+    /// The Player allows it again (UPL-R63).
+    pub fn allow(&self, log_id: &str) {
+        self.lock().tombstones.remove(log_id);
+    }
+
+    /// The `catchLog` later successes carry (UPL-R39, UPL-R44).
+    pub fn set_catch_log(&self, catch_log: serde_json::Value) {
+        self.lock().catch_log = Some(catch_log);
     }
 
     /// Holds a Catch log made by applying `document` (an Upload's
@@ -170,7 +230,7 @@ fn header(document: &[u8]) -> Seen {
     }
 }
 
-/// Applies an Upload (UPL-R30 to R34, without the caps and stale).
+/// Applies an Upload (UPL-R30 to R36 and UPL-R64, without the caps).
 fn apply(inner: &mut Inner, document: &[u8]) -> (u16, serde_json::Value) {
     let seen = header(document);
     let text = std::str::from_utf8(document).unwrap();
@@ -194,6 +254,16 @@ fn apply(inner: &mut Inner, document: &[u8]) -> (u16, serde_json::Value) {
         })
         .collect();
 
+    if inner.tombstones.contains(&seen.log_id) {
+        return (
+            409,
+            json!({ "result": "refused", "reason": "deleted",
+                    "message": "You deleted this Catch log on the Pagle website. Allow it again there to upload it.",
+                    "logId": seen.log_id, "end": { "seq": 0, "entryId": null },
+                    "newestAsOf": null, "catchLog": null }),
+        );
+    }
+    let catch_log = inner.catch_log.clone().unwrap_or_else(forever_api);
     let held = inner.logs.entry(seen.log_id.clone()).or_default();
     let e = held.entries.len() as u64;
     let refuse = |status: u16, code: &str, held: &Held| {
@@ -217,6 +287,9 @@ fn apply(inner: &mut Inner, document: &[u8]) -> (u16, serde_json::Value) {
         result.extend_from_slice(&held.entries[result.len()..keep_to]);
     }
     let unchanged = result == held.entries && characters == held.characters;
+    if !unchanged && seen.as_of < held.newest_as_of {
+        return refuse(409, "stale", held);
+    }
     if !unchanged {
         held.entries = result;
         held.characters = characters;
@@ -226,9 +299,7 @@ fn apply(inner: &mut Inner, document: &[u8]) -> (u16, serde_json::Value) {
         200,
         json!({ "result": if unchanged { "unchanged" } else { "applied" }, "reason": null,
                 "message": null, "logId": seen.log_id, "end": end(held),
-                "newestAsOf": held.newest_as_of,
-                "catchLog": { "verification": "pending", "pendingReason": "forever-api",
-                              "heldCharacters": 0, "leftOff": null } }),
+                "newestAsOf": held.newest_as_of, "catchLog": catch_log }),
     )
 }
 

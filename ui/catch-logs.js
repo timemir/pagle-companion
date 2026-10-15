@@ -1,9 +1,11 @@
 // The window's Catch logs list (CMP-R41, CMP UI): one row per logId with its
 // characters, account folder, the Upload switch, Change folder (CMP-R42) and
 // its state line: CMP-R40's question, CMP-R42's question, "Not found on this
-// computer", or CMP-R30's or CMP-R31's text; or the last run's result
-// ("Uploaded 5 minutes ago", "Up to date"), which goes in the row's
-// `.run-line`. Every text comes from the Companion.
+// computer", or CMP-R30's or CMP-R31's text; or the last run's result, which
+// goes in the row's `.run-line`: "Uploaded 5 minutes ago" or "Up to date"
+// with CMP-R53's lines under it, a divergence with Replace and its question
+// (CMP-R52), deleted (CMP-R54), log cap, failed and the rest. Every text
+// comes from the Companion.
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -13,7 +15,17 @@
   const error = document.getElementById("catch-logs-error");
 
   // The state lines that are the last run's result (CMP UI, Catch logs).
-  const RUN_KINDS = new Set(["uploaded", "up-to-date"]);
+  const RUN_KINDS = new Set([
+    "uploaded", "up-to-date", "divergence", "stale", "deleted", "dev-log",
+    "waiting-for-pagle", "log-cap", "too-large", "failed",
+  ]);
+  // The lines that carry a link, its text and the command that opens it.
+  const LINKS = {
+    deleted: ["My Anglers", "open_my_anglers"],
+    "log-cap": ["My Anglers", "open_my_anglers"],
+    "left-off": ["My Anglers", "open_my_anglers"],
+    "held-characters": ["Sign in", "open_sign_in"],
+  };
 
   let view = null;
   let readOnly = false;
@@ -21,6 +33,8 @@
   const changing = new Set();
   // logIds switched off in this window, which say CMP-R41's text.
   const switchedOff = new Set();
+  // logIds whose Replace question is open (CMP-R52).
+  const replacing = new Set();
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -49,6 +63,68 @@
     if (upload) switchedOff.delete(logId);
     else if (fromSwitch) switchedOff.add(logId);
     invoke("answer_catch_log", { logId, upload }).catch(showError);
+  }
+
+  // A link that opens a Pagle page in the browser: the webview never
+  // navigates away.
+  function pageLink(text, command) {
+    const link = element("a", "", text);
+    link.href = "#";
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      invoke(command);
+    });
+    return link;
+  }
+
+  // A line of the last run, with its link when it has one.
+  function runText(kind, text, className) {
+    const node = element("p", className, text);
+    const link = LINKS[kind];
+    if (link) node.append(" ", pageLink(...link));
+    return node;
+  }
+
+  function replace(logId) {
+    error.hidden = true;
+    replacing.delete(logId);
+    invoke("replace_catch_log", { logId }).catch(showError);
+  }
+
+  // The last run's result, then CMP-R53's lines in their order.
+  function runLine(row) {
+    const block = element("div", "run-line");
+    const line = row.line;
+    if (!line || !RUN_KINDS.has(line.kind)) return block;
+    block.append(runText(line.kind, line.text, line.kind));
+    for (const note of line.notes ?? []) {
+      block.append(runText(note.kind, note.text, `note ${note.kind}`));
+    }
+    if (line.kind === "divergence") {
+      if (replacing.has(row.logId)) {
+        // CMP-R52: asks first, with Replace and Cancel.
+        const ask = element("div", "confirm");
+        ask.append(element("p", "", line.question));
+        const actions = element("p", "actions");
+        actions.append(
+          button("Replace", () => replace(row.logId)),
+          button("Cancel", () => {
+            replacing.delete(row.logId);
+            render();
+          }),
+        );
+        ask.append(actions);
+        block.append(ask);
+      } else {
+        const actions = element("p", "actions");
+        actions.append(button("Replace Pagle's copy with this computer's", () => {
+          replacing.add(row.logId);
+          render();
+        }));
+        block.append(actions);
+      }
+    }
+    return block;
   }
 
   function pick(logId, folder) {
@@ -135,22 +211,11 @@
     const line = stateLine(row);
     if (line) item.append(line);
     // The last run's result (uploaded, up to date, …) shows here.
-    const runLine = element("div", "run-line");
-    if (row.line && RUN_KINDS.has(row.line.kind)) {
-      runLine.append(element("p", row.line.kind, row.line.text));
-    }
-    item.append(runLine);
+    item.append(runLine(row));
 
     if (!row.upload && switchedOff.has(row.logId)) {
       const note = element("p", "notice", `${view.switchedOff} `);
-      const link = element("a", "", "My Anglers");
-      link.href = "#";
-      link.addEventListener("click", (event) => {
-        // The webview never navigates away: the page opens in the browser.
-        event.preventDefault();
-        invoke("open_my_anglers");
-      });
-      note.append(link);
+      note.append(pageLink("My Anglers", "open_my_anglers"));
       item.append(note);
     }
     return item;

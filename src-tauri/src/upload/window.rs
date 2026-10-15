@@ -1,6 +1,7 @@
 //! Uploading in tray mode: the queue's worker, CMP-R45's triggers (a
 //! debounced change, start, later scans, the **Upload** switch, **Upload
-//! now**, linking), and "Last uploaded" in the window's Status and the tray
+//! now**, linking, **Replace**), which queue nothing while not linked or
+//! during a stop, and "Last uploaded" in the window's Status and the tray
 //! menu (CMP UI).
 
 use std::future::Future;
@@ -54,6 +55,12 @@ pub fn start(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let uploads = worker.state::<Uploads>();
         let env = AppEnv(worker.clone());
+        {
+            // CMP-R110: a cause still present at the start notifies once
+            // more.
+            let companion = worker.state::<Companion>();
+            super::notify(&companion.state, &companion.notifications);
+        }
         loop {
             let item = uploads.next().await;
             let companion = worker.state::<Companion>();
@@ -97,10 +104,10 @@ pub fn after_reading(app: &AppHandle, update: &readings::Update) {
     }
 }
 
-/// Queues a run of every confirmed `logId` for `trigger`, while linked
-/// (CMP-R45, CMP-R55).
+/// Queues a run of every confirmed `logId` for `trigger`, while linked and
+/// outside a stop (CMP-R45, CMP-R55).
 pub fn trigger_all(app: &AppHandle, trigger: Trigger) {
-    if !linked(app) {
+    if !may_run(app) {
         return;
     }
     let uploads = app.state::<Uploads>();
@@ -109,16 +116,36 @@ pub fn trigger_all(app: &AppHandle, trigger: Trigger) {
     }
 }
 
-/// Queues a run of `log_id` for `trigger`, while linked (CMP-R45, CMP-R55).
+/// Queues a run of `log_id` for `trigger`, while linked and outside a stop
+/// (CMP-R45, CMP-R55).
 pub fn trigger_one(app: &AppHandle, log_id: &str, trigger: Trigger) {
-    if linked(app) {
+    if may_run(app) {
         app.state::<Uploads>().trigger(log_id, trigger);
     }
 }
 
-fn linked(app: &AppHandle) -> bool {
-    app.try_state::<Companion>()
-        .is_some_and(|companion| companion.account().is_linked())
+fn may_run(app: &AppHandle) -> bool {
+    app.try_state::<Companion>().is_some_and(|companion| {
+        let account = companion.account();
+        account.is_linked() && !account.is_stopped()
+    })
+}
+
+/// **Replace Pagle's copy with this computer's**, once the window asked its
+/// question and the Player chose **Replace** (CMP-R52): sets the whole-send
+/// flag, lifts the hold, and starts a run.
+#[tauri::command]
+pub fn replace_catch_log(app: AppHandle, log_id: String) -> Result<(), String> {
+    let companion = app.state::<Companion>();
+    if !companion.is_watcher() {
+        return Err("Another Pagle Companion is running for this user.".into());
+    }
+    Uploads::replace(&companion.state, &log_id)?;
+    // The divergence's cause has cleared (CMP-R110).
+    super::notify(&companion.state, &companion.notifications);
+    show(&app);
+    trigger_one(&app, &log_id, Trigger::Replace);
+    Ok(())
 }
 
 /// Shows local state's upload times again: each row's state line, the

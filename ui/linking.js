@@ -1,7 +1,8 @@
 // The window's Status and Linking parts (CMP UI): the link status, Link to
 // Pagle, Link again…, Unlink with its confirmation (CMP-R63), "Last
-// uploaded …", and the device flow's user code, URL and QR code (CMP-R60).
-// The credential never reaches the window.
+// uploaded …", during a stop its stop message (CMP-R50), and the device
+// flow's user code, URL and QR code (CMP-R60). The credential never reaches
+// the window.
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -22,8 +23,14 @@
     $("link-again").hidden = linkStatus.offerLink;
     $("unlink").hidden = linkStatus.offerLink;
     if (linkStatus.offerLink) $("unlink-confirm").hidden = true;
+    $("stop-message").hidden = !linkStatus.stop;
+    $("stop-message").textContent = linkStatus.stop ?? "";
     for (const id of ["link-start", "link-again", "unlink", "unlink-yes"]) {
       $(id).disabled = readOnly || linkingUnderWay();
+    }
+    // Disabled while update required: DST-R56 allows no device flow.
+    for (const id of ["link-start", "link-again"]) {
+      if (linkStatus.updateRequired) $(id).disabled = true;
     }
   }
 

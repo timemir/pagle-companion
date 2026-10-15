@@ -24,6 +24,9 @@ pub enum Trigger {
     UploadNow,
     /// Right after linking (CMP-R101).
     PostLink,
+    /// **Replace Pagle's copy with this computer's** (CMP-R52), which has
+    /// lifted the divergence's hold and set the whole-send flag.
+    Replace,
 }
 
 /// What a queued run does at its start, from the triggers merged into it.
@@ -261,7 +264,7 @@ mod tests {
                 resend: false
             }
         );
-        for trigger in [Trigger::Start, Trigger::SwitchOn] {
+        for trigger in [Trigger::Start, Trigger::SwitchOn, Trigger::Replace] {
             assert_eq!(
                 trigger.props(),
                 Props {

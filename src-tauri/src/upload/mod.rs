@@ -10,11 +10,15 @@
 //! pages, recording `lastRun`, `lastUploadedAt` and `wholeSendPending` in
 //! local state. The tray-mode wiring is in [`window`].
 //!
-//! Replies (CMP-R50) are classified into a [`Reply`]; this slice acts on
-//! successes and on CMP-R51's retries, and ends a run at every refusal with
-//! [`on_refusal`], which `b1-companion-replies` (#29) fills in row by row:
-//! restarting after `gap`, waiting `Retry-After`, the stops, each result's
-//! text.
+//! Replies (CMP-R50) are classified into a [`Reply`], and every refusal into
+//! the [`Step`] a run takes next with [`on_refusal`]: restarting once after a
+//! `gap`, waiting `Retry-After` and resending on a `429` (the whole queue
+//! waits, since it sends one request at a time), entering a stop
+//! (`suspended`, `update_required`, held by the link), or ending the run with
+//! a result, recorded as `lastRun`. What each result's row says is
+//! `catch_logs::run_line`'s; the notifications a run's end raises or clears
+//! (divergence, held characters, log cap; CMP-R111) are [`causes`].
+//! Downloads (B4) classify their replies with the same [`on_refusal`].
 
 pub mod plan;
 pub mod queue;
@@ -36,11 +40,12 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, watch};
 
-use crate::catch_logs::Confirmed;
-use crate::link::{Account, SendError};
-use crate::notify::Notifier;
+use crate::catch_logs::{self, Confirmed};
+use crate::device_flow::UPDATE_REQUIRED_TEXT;
+use crate::link::{Account, CREDENTIAL_INVALID, SendError, Stop};
+use crate::notify::{Cause, CauseKey, Notifications, Notifier};
 use crate::readings::{LocalRead, Reading};
-use crate::state::{CatchLogState, LastRun, LogState, RunResult, Store};
+use crate::state::{Answer, CatchLogState, LastRun, LogState, RunResult, State, Store};
 use crate::upload_doc;
 
 use plan::{Backoff, Cursor, End, FileNow, PAGE_SIZE, Plan};
@@ -49,6 +54,13 @@ use queue::{Item, Queue, Run, Trigger};
 /// The refusal code of a `gap` (UPL-R31); a run that fails on a second one
 /// isn't held back (CMP-R50).
 pub const GAP: &str = "gap";
+
+/// Gap restarts per run (CMP Tunables).
+pub const GAP_RESTARTS: u32 = 1;
+
+/// The suspended stop's message when the refusal carries none (UPL
+/// Refusals, without the contact address it names).
+pub const SUSPENDED_TEXT: &str = "This Player is suspended.";
 
 /// What a run needs from the rest of the Companion.
 pub trait Env: Sync {
@@ -121,22 +133,44 @@ pub enum Reply<T> {
     Ended(String),
 }
 
-/// What a run does after a refusal (CMP-R50). This slice treats every
-/// refusal as "any other `4xx`": the run ends **failed**, held back
-/// (CMP-R45), with the refusal's code and message. #29 fills in the table's
-/// other rows here (`gap`'s restart, `429`'s wait, the stops, each result).
+/// What a run does after a refusal (CMP-R50): classified by its HTTP
+/// status first (`429`; `401` and `403` for the codes the table gives
+/// them), then by its code. Whether a result is held back is CMP-R45's
+/// ([`plan::held_back`]); a refusal without a code, or with a code this
+/// Companion doesn't know, is "any other `4xx`": **failed**, held back.
 pub fn on_refusal(refusal: &Refusal) -> Step {
-    Step::End {
-        result: RunResult::Failed,
-        code: refusal
-            .code
-            .clone()
-            .or_else(|| Some(refusal.status.to_string())),
+    let code = refusal.code.as_deref();
+    let message = |known: &str| refusal.message.clone().unwrap_or_else(|| known.into());
+    let end = |result| Step::End {
+        result,
+        code: Some(code.map_or_else(|| refusal.status.to_string(), str::to_owned)),
         message: refusal.message.clone(),
+    };
+    match (refusal.status, code) {
+        (429, _) => Step::Wait {
+            retry_after: refusal.retry_after,
+        },
+        (401, Some(CREDENTIAL_INVALID)) => Step::Unlinked,
+        (403, Some("suspended")) => Step::Stop(Stop::Suspended {
+            message: message(SUSPENDED_TEXT),
+        }),
+        (403, Some("update_required")) => Step::Stop(Stop::UpdateRequired {
+            message: message(UPDATE_REQUIRED_TEXT),
+        }),
+        (_, Some(GAP)) => Step::Restart,
+        (_, Some("divergence")) => end(RunResult::Divergence),
+        (_, Some("stale")) => end(RunResult::Stale),
+        (_, Some("deleted")) => end(RunResult::Deleted),
+        (_, Some("dev_log")) => end(RunResult::DevLog),
+        (_, Some("unsupported_format")) => end(RunResult::WaitingForPagle),
+        (_, Some("log_cap")) => end(RunResult::LogCap),
+        // `unsupported_document`, `entry_cap`, `too_large`, `malformed`,
+        // `checksum`, any other code or none.
+        _ => end(RunResult::Failed),
     }
 }
 
-/// What a run does next after a reply that isn't a success.
+/// What a run does next after a refusal (CMP-R50).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     /// End the run with this result, recorded as `lastRun`.
@@ -145,6 +179,19 @@ pub enum Step {
         code: Option<String>,
         message: Option<String>,
     },
+    /// `gap`: read the cursor again and restart the run, once
+    /// ([`GAP_RESTARTS`]); a second one ends it **failed**, not held back.
+    Restart,
+    /// `429`: wait `retry_after` (the retry backoff when it is missing or
+    /// unreadable), then resend the same request; the whole queue waits. A
+    /// download (B4) is dropped instead, not due again before it passes.
+    Wait { retry_after: Option<Duration> },
+    /// Enter the stop: the run ends, leaving `lastRun` as it was.
+    Stop(Stop),
+    /// `credential_invalid`: no longer linked (CMP-R65, which
+    /// [`Account::send`] has run); the run ends, leaving `lastRun` as it
+    /// was.
+    Unlinked,
 }
 
 /// The body of a reply to a page (UPL Contracts, Reply), as far as a run
@@ -163,6 +210,8 @@ pub struct UploadReply {
 /// One pass of a run from step 1 (CMP-R47).
 enum Attempt {
     Retry(String),
+    /// A `gap` (CMP-R50).
+    Gap(Refusal),
     End(RunEnd),
 }
 
@@ -304,6 +353,10 @@ impl Uploads {
             // CMP-R55: nothing is sent while not linked.
             return not_started(log_id, "not linked");
         }
+        if ctx.account.is_stopped() {
+            // CMP-R45: runs start outside a stop only.
+            return not_started(log_id, "stopped");
+        }
         let read = match ctx.env.read(folder).await {
             Reading::Valid(read) if read.log.log_id == log_id && !read.log.is_empty() => read,
             _ => return not_started(log_id, "its file doesn't hold it"),
@@ -327,6 +380,7 @@ impl Uploads {
             read.log.len(),
             read.as_of
         );
+        let mut gaps = 0;
         loop {
             match self.attempt(ctx, run, &read).await {
                 Attempt::End(end) => return end,
@@ -335,6 +389,24 @@ impl Uploads {
                         log::info!("upload run for {log_id} stopped");
                         return RunEnd::Interrupted;
                     }
+                }
+                Attempt::Gap(refusal) => {
+                    gaps += 1;
+                    if gaps > GAP_RESTARTS {
+                        // CMP-R50: failed, not held back (CMP-R45).
+                        let message = refusal.message;
+                        let code = Some(GAP.to_owned());
+                        return self.record(
+                            ctx,
+                            log_id,
+                            &read,
+                            RunResult::Failed,
+                            code,
+                            message,
+                            None,
+                        );
+                    }
+                    log::warn!("{log_id}: gap; reading the cursor again");
                 }
             }
         }
@@ -392,7 +464,8 @@ impl Uploads {
             let body = page.body.clone();
             let sent = self
                 .request::<UploadReply, _, _>(ctx, Method::POST, "uploads", |r| {
-                    r.header(CONTENT_TYPE, upload_doc::CONTENT_TYPE).body(body)
+                    r.header(CONTENT_TYPE, upload_doc::CONTENT_TYPE)
+                        .body(body.clone())
                 })
                 .await;
             let reply = match sent {
@@ -445,10 +518,14 @@ impl Uploads {
                 Attempt::End(RunEnd::Interrupted)
             }
             Reply::Refused(refusal) => {
+                // CMP-R50: the reply goes to the local log file (refusal
+                // codes and the backend's messages hold no character names,
+                // CMP-R112).
                 log::warn!(
-                    "{log_id}: refused with {} {}",
+                    "{log_id}: refused with {} {}: {}",
                     refusal.status,
-                    refusal.code.as_deref().unwrap_or("(no code)")
+                    refusal.code.as_deref().unwrap_or("(no code)"),
+                    refusal.message.as_deref().unwrap_or("(no message)")
                 );
                 match on_refusal(&refusal) {
                     Step::End {
@@ -459,6 +536,14 @@ impl Uploads {
                         let end = self.record(ctx, log_id, read, result, code, message, None);
                         Attempt::End(end)
                     }
+                    Step::Restart => Attempt::Gap(refusal),
+                    // [`Uploads::request`] waits these out itself.
+                    Step::Wait { .. } => Attempt::Retry("429".into()),
+                    Step::Stop(stop) => {
+                        ctx.account.enter_stop(stop);
+                        Attempt::End(RunEnd::Interrupted)
+                    }
+                    Step::Unlinked => Attempt::End(RunEnd::Interrupted),
                 }
             }
         }
@@ -477,15 +562,22 @@ impl Uploads {
         log_id: &str,
         why: &str,
     ) -> bool {
-        let mut interrupts = self.interrupts.subscribe();
-        if self.stopping() {
-            return false;
-        }
         let wait = lock(&self.backoff).next_delay();
         log::warn!(
             "upload run for {log_id}: {why}; trying again in {} s",
             wait.as_secs()
         );
+        self.wait(ctx, wait).await
+    }
+
+    /// Waits `wait`, with the whole queue: the item in progress holds it.
+    /// `false` when the item was stopped meanwhile (switched off, Unlink,
+    /// **Link again…**, a stop).
+    async fn wait<N: Notifier, E: Env>(&self, ctx: &Ctx<'_, N, E>, wait: Duration) -> bool {
+        let mut interrupts = self.interrupts.subscribe();
+        if self.stopping() {
+            return false;
+        }
         let sleep = ctx.env.sleep(wait);
         tokio::pin!(sleep);
         loop {
@@ -501,13 +593,47 @@ impl Uploads {
     }
 
     /// Sends one request needing the credential and classifies its reply
-    /// (CMP-R50, CMP-R51). A success resets the backoff.
+    /// (CMP-R50, CMP-R51). A success resets the backoff. A `429` waits
+    /// `Retry-After` (or the retry backoff) and sends the same request again
+    /// (CMP-R50), so it never comes back.
     async fn request<T, N, E>(
         &self,
         ctx: &Ctx<'_, N, E>,
         method: Method,
         path: &str,
-        build: impl FnOnce(RequestBuilder) -> RequestBuilder,
+        build: impl Fn(RequestBuilder) -> RequestBuilder,
+    ) -> Reply<T>
+    where
+        T: DeserializeOwned,
+        N: Notifier,
+        E: Env,
+    {
+        loop {
+            let reply = self.request_once(ctx, method.clone(), path, &build).await;
+            let Reply::Refused(refusal) = &reply else {
+                return reply;
+            };
+            let Step::Wait { retry_after } = on_refusal(refusal) else {
+                return reply;
+            };
+            let wait = retry_after.unwrap_or_else(|| lock(&self.backoff).next_delay());
+            log::warn!(
+                "{path}: 429; the queue waits {} s and sends it again",
+                wait.as_secs()
+            );
+            if !self.wait(ctx, wait).await {
+                return Reply::Ended("stopped while waiting out a 429".into());
+            }
+        }
+    }
+
+    /// One request of [`Uploads::request`].
+    async fn request_once<T, N, E>(
+        &self,
+        ctx: &Ctx<'_, N, E>,
+        method: Method,
+        path: &str,
+        build: &impl Fn(RequestBuilder) -> RequestBuilder,
     ) -> Reply<T>
     where
         T: DeserializeOwned,
@@ -599,8 +725,39 @@ impl Uploads {
             });
         });
         log::info!("upload run for {log_id} ended {result:?}");
+        notify(ctx.state, ctx.account.notifications());
         ctx.env.changed();
         RunEnd::Recorded(result)
+    }
+
+    /// **Replace Pagle's copy with this computer's**, once the Player
+    /// confirmed it (CMP-R52): sets the whole-send flag (CMP-R48) and lifts
+    /// the hold by clearing the divergence's `lastRun`, so a Replace cut off
+    /// (a stop, Unlink, the process ending) still sends the whole log at the
+    /// next run. The caller then starts a run ([`queue::Trigger::Replace`]).
+    /// Only a `logId` whose last run ended as a divergence can be replaced;
+    /// the error is the text to show.
+    pub fn replace(state: &Store, log_id: &str) -> Result<(), String> {
+        let diverged = state.read(|s| {
+            s.logs
+                .get(log_id)
+                .and_then(|log| log.last_run.as_ref())
+                .is_some_and(|run| run.result == RunResult::Divergence)
+        });
+        if !diverged {
+            return Err("This Catch log doesn't differ from the copy on Pagle.".into());
+        }
+        let saved = state.update(|s| {
+            if let Some(log) = s.logs.get_mut(log_id) {
+                log.whole_send_pending = true;
+                log.last_run = None;
+            }
+        });
+        if let Err(e) = saved {
+            log::error!("couldn't write state.json: {e}");
+        }
+        log::info!("{log_id}: Replace Pagle's copy with this computer's");
+        Ok(())
     }
 
     /// Changes the run's `logId` in local state.
@@ -617,6 +774,63 @@ impl Uploads {
         });
         if let Err(e) = saved {
             log::error!("couldn't write state.json: {e}");
+        }
+    }
+}
+
+/// The notifications runs' ends raise (CMP-R111), from each `logId`'s
+/// `lastRun`: `Some` when the cause is present, `None` when it has cleared.
+/// Only `logId`s answered **Upload** raise them.
+/// - a divergence (CMP-R52), until a run ends otherwise;
+/// - `heldCharacters > 0` in the `catchLog` kept (CMP-R53);
+/// - `log_cap` (CMP-R50), one cause for the Player, with the refusal's
+///   message.
+pub fn causes(state: &State) -> Vec<(CauseKey, Option<Cause>)> {
+    let mut causes = Vec::new();
+    let mut log_cap = None;
+    for (log_id, log) in &state.logs {
+        let run = log
+            .last_run
+            .as_ref()
+            .filter(|_| log.answer == Some(Answer::Upload));
+        let result = run.map(|run| run.result);
+        causes.push((
+            CauseKey::Divergence(log_id.clone()),
+            (result == Some(RunResult::Divergence)).then(|| Cause::Divergence {
+                log_id: log_id.clone(),
+            }),
+        ));
+        let held = run
+            .and_then(|run| run.catch_log.as_ref())
+            .is_some_and(catch_logs::has_held_characters);
+        causes.push((
+            CauseKey::HeldCharacters(log_id.clone()),
+            held.then(|| Cause::HeldCharacters {
+                log_id: log_id.clone(),
+            }),
+        ));
+        if let Some(run) = run.filter(|run| run.result == RunResult::LogCap) {
+            log_cap.get_or_insert_with(|| catch_logs::log_cap_text(run));
+        }
+    }
+    causes.push((
+        CauseKey::LogCap,
+        log_cap.map(|message| Cause::LogCap { message }),
+    ));
+    causes
+}
+
+/// Raises and clears [`causes`] (CMP-R110: once per cause, again only after
+/// it cleared).
+pub fn notify<N: Notifier>(state: &Store, notifications: &Notifications<N>) {
+    for (key, cause) in state.read(causes) {
+        match cause {
+            Some(cause) => {
+                if notifications.raise(&cause) {
+                    log::info!("notified: {key:?}");
+                }
+            }
+            None => notifications.clear(&key),
         }
     }
 }

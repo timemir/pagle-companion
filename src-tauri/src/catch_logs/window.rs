@@ -1,5 +1,5 @@
 //! The window's Catch logs list (CMP-R41, CMP UI): its rows, the answers,
-//! the picks, and the link to My Anglers. The list itself is
+//! the picks, and the links to My Anglers and sign-in. The list itself is
 //! `ui/catch-logs.js`.
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -38,6 +38,7 @@ pub fn refresh(app: &AppHandle, snapshot: &Snapshot) {
     let companion = app.state::<Companion>();
     app.state::<CatchLogs>()
         .refresh(&companion.state, &companion.notifications, snapshot);
+    upload::notify(&companion.state, &companion.notifications);
     emit(app);
 }
 
@@ -96,6 +97,8 @@ pub fn answer_catch_log(app: AppHandle, log_id: String, upload: bool) -> Result<
         &log_id,
         upload,
     );
+    // A log switched off no longer raises its runs' causes.
+    upload::notify(&companion.state, &companion.notifications);
     emit(&app);
     answered
 }
@@ -119,16 +122,26 @@ pub fn pick_folder(app: AppHandle, log_id: String, folder: String) -> Result<(),
     picked
 }
 
-/// The link after switching **Upload** off: My Anglers, in the browser
-/// (CMP-R41).
+/// The link to My Anglers, in the browser: after switching **Upload** off
+/// (CMP-R41), on deleted (CMP-R54), log cap (CMP UI) and left off
+/// (CMP-R53).
 #[tauri::command]
 pub fn open_my_anglers(companion: tauri::State<'_, Companion>) {
-    let url = super::my_anglers_url(companion.api.base_url());
-    if !linking::may_open(&url) {
-        log::warn!("not opening My Anglers: the base URL isn't HTTPS");
+    open_page(&super::my_anglers_url(companion.api.base_url()));
+}
+
+/// **Sign in**, for held characters (CMP-R53): `/signin` in the browser.
+#[tauri::command]
+pub fn open_sign_in(companion: tauri::State<'_, Companion>) {
+    open_page(&super::sign_in_url(companion.api.base_url()));
+}
+
+fn open_page(url: &str) {
+    if !linking::may_open(url) {
+        log::warn!("not opening a Pagle page: the base URL isn't HTTPS");
         return;
     }
-    if let Err(e) = tauri_plugin_opener::open_url(&url, None::<&str>) {
+    if let Err(e) = tauri_plugin_opener::open_url(url, None::<&str>) {
         log::warn!("couldn't open the browser: {e}");
     }
 }

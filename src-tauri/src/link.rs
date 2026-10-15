@@ -10,10 +10,17 @@
 //! link (CMP-R65). Config reads, update checks and the device flow use
 //! `Api::request` directly and carry no credential.
 //!
+//! The link also holds the **stops** (CMP-R50): a suspended stop or update
+//! required, set by a reply, during which [`Account::send`] sends nothing.
+//! Self-revoke, config reads and the device flow don't go through it, so they
+//! still go out. Both are held in memory: a new process starts outside them,
+//! and a link clears the suspended stop.
+//!
 //! What the queue (#28) and the data addons (B4) do on these events plugs in
 //! through [`Hooks`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use reqwest::header::HeaderName;
@@ -43,6 +50,35 @@ pub const KEYRING_LOCKED_TEXT: &str =
 
 /// The refusal code of a lost link (ACC-R51).
 pub const CREDENTIAL_INVALID: &str = "credential_invalid";
+
+/// A stop (CMP-R50), entered from a refusal, with its stop message: the
+/// refusal's message (CMP UI, Status).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stop {
+    /// `suspended` (`403`): until the next start or link.
+    Suspended { message: String },
+    /// `update_required` (`403`, DST-R61): update required (DST-R56). This
+    /// slice holds it until the next start; leaving it on a config read, and
+    /// DST-R57's notification, come with Track C (#18).
+    UpdateRequired { message: String },
+}
+
+/// The stops that hold, each with its stop message.
+#[derive(Debug, Default)]
+struct Stops {
+    suspended: Option<String>,
+    update_required: Option<String>,
+}
+
+impl Stops {
+    /// The stop message shown: update required's when both hold, since the
+    /// backend refuses `update_required` before `suspended` (#18, DST-R94).
+    fn message(&self) -> Option<&str> {
+        self.update_required
+            .as_deref()
+            .or(self.suspended.as_deref())
+    }
+}
 
 pub type Hook = Box<dyn Fn() + Send + Sync>;
 
@@ -78,6 +114,7 @@ pub struct Link {
     keychain: Keychain,
     hooks: Hooks,
     keyring_locked: AtomicBool,
+    stops: Mutex<Stops>,
 }
 
 impl Link {
@@ -86,7 +123,12 @@ impl Link {
             keychain,
             hooks,
             keyring_locked: AtomicBool::new(false),
+            stops: Mutex::default(),
         }
+    }
+
+    fn stops(&self) -> MutexGuard<'_, Stops> {
+        self.stops.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether the last read found the keyring not answering (CMP-R62).
@@ -123,6 +165,11 @@ pub struct LinkStatus {
     pub offer_link: bool,
     /// The keyring holding the credential doesn't answer (CMP-R62).
     pub keyring_locked: bool,
+    /// During a stop, its stop message (CMP UI, Status).
+    pub stop: Option<String>,
+    /// Update required holds: **Link to Pagle** and **Link again…** are
+    /// disabled (CMP UI, Status; DST-R56 allows no device flow).
+    pub update_required: bool,
 }
 
 /// Why a request needing the credential got no reply to use.
@@ -130,6 +177,8 @@ pub struct LinkStatus {
 pub enum SendError {
     /// Not linked: nothing was sent (CMP-R55).
     NotLinked,
+    /// A stop holds: nothing was sent (CMP-R50).
+    Stopped,
     /// The keyring doesn't answer: nothing was sent (CMP-R62).
     KeyringLocked,
     /// The store failed otherwise: nothing was sent.
@@ -146,6 +195,7 @@ impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SendError::NotLinked => f.write_str("not linked"),
+            SendError::Stopped => f.write_str("a stop holds"),
             SendError::KeyringLocked => f.write_str("the keyring doesn't answer"),
             SendError::Store(e) => write!(f, "{e}"),
             SendError::CredentialInvalid => f.write_str("credential_invalid"),
@@ -171,13 +221,59 @@ impl<N: Notifier> Account<'_, N> {
         self.state.read(|s| s.battle_tag.is_some())
     }
 
+    /// Whether a stop holds (CMP-R50): runs don't start and
+    /// [`Account::send`] sends nothing.
+    pub fn is_stopped(&self) -> bool {
+        self.link.stops().message().is_some()
+    }
+
+    /// Whether update required holds (DST-R56): no device flow.
+    pub fn update_required(&self) -> bool {
+        self.link.stops().update_required.is_some()
+    }
+
+    /// The stop message, while a stop holds (CMP UI, Status and tray menu).
+    pub fn stop_message(&self) -> Option<String> {
+        self.link.stops().message().map(str::to_owned)
+    }
+
+    /// Enters a stop (CMP-R50): cancels the queue (its runs end, leaving
+    /// `lastRun` as it was), raises the suspended stop's notification
+    /// (CMP-R111), and shows the stop message.
+    pub fn enter_stop(&self, stop: Stop) {
+        match &stop {
+            Stop::Suspended { message } => {
+                log::warn!("refused as suspended: requests stop until the next start or link");
+                self.link.stops().suspended = Some(message.clone());
+                self.notifications.raise(&Cause::Suspended {
+                    message: message.clone(),
+                });
+            }
+            Stop::UpdateRequired { message } => {
+                log::warn!("refused as update_required: update required");
+                self.link.stops().update_required = Some(message.clone());
+            }
+        }
+        (self.link.hooks.cancel_queue)();
+        (self.link.hooks.changed)();
+    }
+
+    /// The notification service the link raises its causes on.
+    pub fn notifications(&self) -> &Notifications<N> {
+        self.notifications
+    }
+
     /// The Status part's view, reading the store (CMP-R62).
     pub fn status(&self) -> LinkStatus {
+        let stop = self.stop_message();
+        let update_required = self.update_required();
         let not_linked = LinkStatus {
             linked: false,
             text: "Not linked".into(),
             offer_link: true,
             keyring_locked: false,
+            stop: stop.clone(),
+            update_required,
         };
         let Some(battle_tag) = self.state.read(|s| s.battle_tag.clone()) else {
             return not_linked;
@@ -196,6 +292,8 @@ impl<N: Notifier> Account<'_, N> {
             },
             offer_link: false,
             keyring_locked: self.link.keyring_locked.load(Ordering::SeqCst),
+            stop,
+            update_required,
         }
     }
 
@@ -296,6 +394,9 @@ impl<N: Notifier> Account<'_, N> {
         if !self.is_linked() {
             return Err(SendError::NotLinked);
         }
+        if self.is_stopped() {
+            return Err(SendError::Stopped);
+        }
         let credential = match self.read_credential() {
             Ok(Some(credential)) => credential,
             Ok(None) => return Err(SendError::NotLinked),
@@ -327,8 +428,8 @@ impl<N: Notifier> Account<'_, N> {
     }
 
     /// Stores an approved link (CMP-R61), and after **Link again…** cancels
-    /// the queue and self-revokes the old credential (CMP-R64); then starts
-    /// the post-link runs. A failure is CMP-R61's text, and the credential is
+    /// the queue and self-revokes the old credential (CMP-R64); then clears
+    /// the suspended stop (CMP-R50) and starts the post-link runs. A failure is CMP-R61's text, and the credential is
     /// dropped.
     pub async fn store_link(&self, approval: Approval) -> Result<(), String> {
         let (was_linked, old_kind, game_mode) = self.state.read(|s| {
@@ -376,6 +477,10 @@ impl<N: Notifier> Account<'_, N> {
         }
         self.link.keyring_locked.store(false, Ordering::SeqCst);
         self.notifications.clear(&CauseKey::CredentialInvalid);
+        if self.link.stops().suspended.take().is_some() {
+            log::info!("the suspended stop cleared with the new link");
+        }
+        self.notifications.clear(&CauseKey::Suspended);
         log::info!("linked to a Player");
         if was_linked {
             (self.link.hooks.cancel_queue)();
@@ -628,6 +733,8 @@ mod tests {
                 text: "Linked as Ada#1234".into(),
                 offer_link: false,
                 keyring_locked: false,
+                stop: None,
+                update_required: false,
             }
         );
         assert_eq!(Calls::get(&h.calls.post_link), 1);
@@ -1174,5 +1281,123 @@ mod tests {
             .unwrap();
         h.account().lose_link();
         assert_eq!(h.shown().len(), 2);
+    }
+
+    fn suspended() -> Stop {
+        Stop::Suspended {
+            message: "This Player is suspended. Contact support@pagle.app.".into(),
+        }
+    }
+
+    fn update_required() -> Stop {
+        Stop::UpdateRequired {
+            message: "This version of Pagle Companion is too old. Update it to keep uploading."
+                .into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_suspended_stop_sends_nothing_until_the_next_link() {
+        // CMP-R50: a suspended stop: every request but update checks, config
+        // reads, self-revoke and the device flow stops, with a notification
+        // (CMP-R111); held in memory, so it clears at the next start or link
+        let h = Harness::windows(linked(None)).await;
+        h.os.write(OLD).unwrap();
+        h.account().enter_stop(suspended());
+
+        assert!(h.account().is_stopped());
+        assert!(matches!(
+            h.account()
+                .send(Method::GET, "in-game/following", |r| r)
+                .await,
+            Err(SendError::Stopped)
+        ));
+        assert!(h.server.received_requests().await.unwrap().is_empty());
+        assert_eq!(
+            h.shown(),
+            ["This Player is suspended. Contact support@pagle.app."]
+        );
+        assert_eq!(Calls::get(&h.calls.cancel_queue), 1);
+        assert!(Calls::get(&h.calls.changed) >= 1);
+        let status = h.account().status();
+        assert_eq!(
+            status.stop.as_deref(),
+            Some("This Player is suspended. Contact support@pagle.app.")
+        );
+        assert!(!status.update_required);
+        // Entering it again raises nothing more.
+        h.account().enter_stop(suspended());
+        assert_eq!(h.shown().len(), 1);
+
+        // Self-revoke still goes out (Unlink).
+        stub_server::script(
+            &h.server,
+            "DELETE",
+            "companion/credential",
+            vec![ResponseTemplate::new(204)],
+        )
+        .await;
+        h.account().unlink().await;
+        assert_eq!(
+            h.bearers("companion/credential").await,
+            [format!("Bearer {OLD}")]
+        );
+
+        // The next link clears it, and its notification may come again.
+        h.account()
+            .store_link(approval(NEW, "Ada#1234"))
+            .await
+            .unwrap();
+        assert!(!h.account().is_stopped());
+        assert_eq!(h.account().status().stop, None);
+        h.account().enter_stop(suspended());
+        assert_eq!(h.shown().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_new_process_starts_outside_any_stop() {
+        // CMP-R50: the suspended stop is held in memory, so it clears at the
+        // next start
+        let h = Harness::windows(linked(None)).await;
+        h.account().enter_stop(suspended());
+        let restarted = Link::new(
+            Keychain::new(Box::new(h.os.clone()), None),
+            Hooks::default(),
+        );
+        assert!(
+            !restarted
+                .account(&h.api, &h.state, &h.notifications)
+                .is_stopped()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_required_shows_its_message_first_and_outlives_a_link() {
+        // CMP UI, Status: during a stop, its stop message; DST-R56: no
+        // Companion API request but config reads and self-revoke; #18: with
+        // the suspended stop too, update required's text shows (the backend
+        // refuses update_required before suspended, DST-R94)
+        let h = Harness::windows(linked(None)).await;
+        h.os.write(OLD).unwrap();
+        h.account().enter_stop(suspended());
+        h.account().enter_stop(update_required());
+        let status = h.account().status();
+        assert_eq!(
+            status.stop.as_deref(),
+            Some("This version of Pagle Companion is too old. Update it to keep uploading.")
+        );
+        assert!(status.update_required);
+        // No notification of its own here: DST-R57's comes with Track C.
+        assert_eq!(h.shown().len(), 1);
+
+        h.account()
+            .store_link(approval(NEW, "Ada#1234"))
+            .await
+            .unwrap();
+        assert!(h.account().is_stopped());
+        assert_eq!(
+            h.account().status().stop.as_deref(),
+            Some("This version of Pagle Companion is too old. Update it to keep uploading.")
+        );
     }
 }

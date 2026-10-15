@@ -12,8 +12,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::watch;
 
-use crate::device_flow::{self, End};
-use crate::link::{KEYRING_RETRY, LinkStatus};
+use crate::device_flow::{self, End, Failure};
+use crate::link::{KEYRING_RETRY, LinkStatus, Stop};
 use crate::tray::{self, Companion};
 
 /// The Linking part (CMP UI, Linking).
@@ -143,7 +143,7 @@ pub fn link_changed(app: &AppHandle) {
         return;
     };
     let status = companion.account().status();
-    tray::show_link(app, status.linked);
+    tray::show_link(app, &status);
     let _ = app.emit("link-status", status);
 }
 
@@ -186,6 +186,11 @@ pub fn start_link(app: AppHandle) -> Result<(), String> {
         // CMP-R2: the window of a process without the lock is read-only.
         return Err("Another Pagle Companion is running for this user.".into());
     }
+    if companion.account().update_required() {
+        // CMP UI, Status: disabled while update required (DST-R56 allows no
+        // device flow).
+        return Err(device_flow::UPDATE_REQUIRED_TEXT.into());
+    }
     // CMP-R100: pressing Link to Pagle ends the first run's step 1, so local
     // state is written from here on and the link outlives the process. The
     // rest of step 1 (answers from the ticks, the autostart entry) is the
@@ -208,6 +213,7 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
         Ok(code) => code,
         Err(failure) => {
             log::info!("linking failed: {failure:?}");
+            enter_update_required(&app, &failure);
             if linking.show(attempt, ended_view(failure.text()), None) {
                 emit_linking(&app);
             }
@@ -243,14 +249,25 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
             Err(text) => ended_view(text),
         },
         End::Failed(failure) => {
-            // `update_required` stops linking; the update-required state
-            // itself (CMP-R50, DST-R56) comes with the replies ticket.
             log::info!("linking ended: {failure:?}");
+            enter_update_required(&app, &failure);
             ended_view(failure.text())
         }
     };
     if linking.show(attempt, view, None) {
         emit_linking(&app);
+    }
+}
+
+/// `update_required` on the device flow stops linking and enters update
+/// required (CMP-R60, CMP-R50).
+fn enter_update_required(app: &AppHandle, failure: &Failure) {
+    if let Failure::UpdateRequired(message) = failure {
+        app.state::<Companion>()
+            .account()
+            .enter_stop(Stop::UpdateRequired {
+                message: message.clone(),
+            });
     }
 }
 

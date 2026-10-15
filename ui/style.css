@@ -59,3 +59,11 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
 .log .notice { margin-top: 6px; font-size: 13px; }
 .log .notice a { color: inherit; }
 .run-line p { margin-top: 4px; font-size: 13px; color: var(--muted); }
+.run-line a { color: inherit; }
+/* Results the Player may act on, and held characters (CMP UI, CMP-R53). */
+.run-line p.divergence, .run-line p.deleted, .run-line p.dev-log, .run-line p.log-cap,
+.run-line p.too-large, .run-line p.failed, .run-line p.held-characters {
+  background: var(--notice-bg); color: var(--notice-fg); padding: 2px 6px; border-radius: 4px;
+}
+.run-line .actions { flex-wrap: wrap; margin: 6px 0 2px; }
+.run-line .confirm p { color: inherit; }

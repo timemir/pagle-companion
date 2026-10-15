@@ -15,7 +15,7 @@ use crate::catch_logs::{self, CatchLogs};
 use crate::cli::{self, Mode};
 use crate::credential_store::Keychain;
 use crate::installs::{self, Scanner};
-use crate::link::{Account, Hooks, Link};
+use crate::link::{Account, Hooks, Link, LinkStatus};
 use crate::linking::{self, Linking};
 use crate::local_log::Logger;
 use crate::notify::Notifications;
@@ -156,7 +156,9 @@ pub fn run(mode: Mode) {
             catch_logs::window::answer_catch_log,
             catch_logs::window::pick_folder,
             catch_logs::window::open_my_anglers,
+            catch_logs::window::open_sign_in,
             upload::window::last_uploaded,
+            upload::window::replace_catch_log,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -259,7 +261,7 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Not linked", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Pagle Companion", true, None::<&str>)?;
-    // Disabled while not linked (CMP UI, tray menu).
+    // Disabled while not linked or during a stop (CMP UI, tray menu).
     let upload_now = MenuItem::with_id(app, "upload-now", "Upload now", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&status, &open, &upload_now, &quit])?;
@@ -267,6 +269,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         status,
         upload_now,
         linked: AtomicBool::new(false),
+        stop: Mutex::new(None),
     });
 
     let mut tray = TrayIconBuilder::with_id("main")
@@ -294,13 +297,22 @@ struct TrayItems {
     upload_now: MenuItem<tauri::Wry>,
     /// The link as last shown.
     linked: AtomicBool,
+    /// The stop message as last shown.
+    stop: Mutex<Option<String>>,
 }
 
-/// The tray's status line (CMP UI, tray menu): "Not linked", or the
-/// window's "Last uploaded {relative time}" ("Nothing uploaded yet" before
-/// anything is). The stop messages come with #29.
-pub fn tray_status_line(linked: bool, last_uploaded: Option<i64>, now: i64) -> String {
-    if linked {
+/// The tray's status line (CMP UI, tray menu): during a stop its stop
+/// message, else "Not linked", or the window's "Last uploaded {relative
+/// time}" ("Nothing uploaded yet" before anything is).
+pub fn tray_status_line(
+    linked: bool,
+    stop: Option<&str>,
+    last_uploaded: Option<i64>,
+    now: i64,
+) -> String {
+    if let Some(stop) = stop {
+        stop.to_owned()
+    } else if linked {
         upload::window::last_uploaded_text(last_uploaded, now)
     } else {
         "Not linked".into()
@@ -308,13 +320,16 @@ pub fn tray_status_line(linked: bool, last_uploaded: Option<i64>, now: i64) -> S
 }
 
 /// Shows the link in the tray: the status line, and **Upload now**, which is
-/// disabled while not linked (CMP UI, tray menu).
-pub fn show_link(app: &AppHandle, linked: bool) {
+/// disabled while not linked or during a stop (CMP UI, tray menu).
+pub fn show_link(app: &AppHandle, status: &LinkStatus) {
     let Some(items) = app.try_state::<TrayItems>() else {
         return;
     };
-    items.linked.store(linked, Ordering::SeqCst);
-    let _ = items.upload_now.set_enabled(linked);
+    items.linked.store(status.linked, Ordering::SeqCst);
+    *items.stop.lock().unwrap_or_else(|e| e.into_inner()) = status.stop.clone();
+    let _ = items
+        .upload_now
+        .set_enabled(status.linked && status.stop.is_none());
     show_tray_status(app);
 }
 
@@ -326,8 +341,10 @@ pub fn show_tray_status(app: &AppHandle) {
         return;
     };
     let last = companion.state.read(upload::window::last_uploaded_at);
+    let stop = items.stop.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let line = tray_status_line(
         items.linked.load(Ordering::SeqCst),
+        stop.as_deref(),
         last,
         upload::window::now(),
     );
@@ -450,16 +467,28 @@ mod tests {
     fn the_tray_says_not_linked_until_linked() {
         // CMP UI, tray menu: the status line reads "Not linked" while not
         // linked
-        assert_eq!(tray_status_line(false, None, 0), "Not linked");
-        assert_eq!(tray_status_line(false, Some(0), 600), "Not linked");
-        assert_eq!(tray_status_line(true, None, 0), "Nothing uploaded yet");
+        assert_eq!(tray_status_line(false, None, None, 0), "Not linked");
+        assert_eq!(tray_status_line(false, None, Some(0), 600), "Not linked");
+        assert_eq!(
+            tray_status_line(true, None, None, 0),
+            "Nothing uploaded yet"
+        );
+    }
+
+    #[test]
+    fn the_tray_shows_the_stop_message_during_a_stop() {
+        // CMP UI, tray menu: a status line "Last uploaded …", "Not linked",
+        // or the stop message (CMP-R50)
+        let stop = "This Player is suspended. Contact support@pagle.app.";
+        assert_eq!(tray_status_line(true, Some(stop), Some(0), 600), stop);
+        assert_eq!(tray_status_line(false, Some(stop), None, 0), stop);
     }
 
     #[test]
     fn the_tray_shows_last_uploaded_once_there_is_one() {
         // CMP UI, tray menu: a status line "Last uploaded {relative time}"
         assert_eq!(
-            tray_status_line(true, Some(1_000), 1_000 + 2 * 3_600),
+            tray_status_line(true, None, Some(1_000), 1_000 + 2 * 3_600),
             "Last uploaded 2 hours ago"
         );
     }
