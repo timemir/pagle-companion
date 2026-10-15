@@ -31,6 +31,7 @@ mod stub_server;
 #[cfg(test)]
 mod tauri_conf;
 pub mod tray;
+pub mod updater;
 pub mod upload;
 pub mod upload_doc;
 pub mod xdg;

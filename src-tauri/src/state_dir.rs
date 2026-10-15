@@ -50,6 +50,11 @@ impl StateDir {
         self.path.join("companion.log")
     }
 
+    /// The updater's failed-verification count (DST-R57, CMP Data).
+    pub fn updater_file(&self) -> PathBuf {
+        self.path.join("updater.json")
+    }
+
     /// Where the webview keeps its data, never Tauri's default folders (CMP-R1).
     pub fn webview_dir(&self) -> PathBuf {
         self.path.join("webview")
@@ -119,6 +124,8 @@ mod tests {
         assert_eq!(dir.state_file(), dir.path().join("state.json"));
         assert_eq!(dir.log_file(), dir.path().join("companion.log"));
         assert_eq!(dir.webview_dir(), dir.path().join("webview"));
+        // CMP Data, DST-R57: the updater's own updater.json
+        assert_eq!(dir.updater_file(), dir.path().join("updater.json"));
     }
 
     #[cfg(unix)]

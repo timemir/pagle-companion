@@ -1,8 +1,8 @@
 //! What tray mode and headless mode share (CMP-R1): the [`Companion`] with
 //! local state, the link and the notifications; the parts that find
-//! installs, read, upload and write in-game files, set up by [`manage`]; and
-//! [`start_watching`], which only the holder of the watcher lock runs
-//! (CMP-R2). Each mode keeps the parts in its own [`Host`].
+//! installs, read, upload and write in-game files, and the updater, set up
+//! by [`manage`]; and [`start_watching`], which only the holder of the
+//! watcher lock runs (CMP-R2). Each mode keeps the parts in its own [`Host`].
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -20,6 +20,7 @@ use crate::notify::{Notifications, Notifier};
 use crate::readings::{self, Readings};
 use crate::state::{self, Loaded, State, Store};
 use crate::state_dir::{StateDir, WatcherLock};
+use crate::updater::{self, Updater};
 use crate::upload::{self, Uploads, queue::Trigger};
 
 /// What the window shows of this process (`status` command).
@@ -146,6 +147,13 @@ pub fn manage<H: Host>(
             Box::new(move || in_game::folders::window::delete_folders(&host))
         },
     };
+    let updater_hooks = updater::Hooks {
+        // "Read the Companion config…" reads config after each check here
+        // (DST-R51), and "Install a waiting update…" offers Restart to update
+        // once one is waiting (DST-R54).
+        after_check: Box::new(|_| {}),
+    };
+    host.manage(Updater::new(&state_dir, &version, updater_hooks).map_err(api::ApiError::Client)?);
     host.manage(Companion {
         api: Api::new(&version, api::base_url())?,
         notifications: Notifications::new(notifier),
@@ -184,4 +192,6 @@ pub fn start_watching<H: Host>(host: &H) {
     catch_logs::window::start(host);
     upload::window::start(host);
     in_game::timer::window::start(host);
+    // DST-R51: update checks in every mode that watches, tray and headless.
+    updater::start(host);
 }

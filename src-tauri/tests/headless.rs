@@ -77,6 +77,12 @@ mod linux {
                 .env_remove("XDG_DATA_HOME")
                 .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
                 .env("PAGLE_COMPANION_BASE_URL", "http://127.0.0.1:9")
+                // Update checks go to nothing, never to GitHub.
+                .env(
+                    "PAGLE_COMPANION_UPDATE_URL",
+                    "http://127.0.0.1:9/latest.json",
+                )
+                .env_remove("APPIMAGE")
                 .env_remove("DISPLAY")
                 .env_remove("WAYLAND_DISPLAY")
                 .stdin(Stdio::null())

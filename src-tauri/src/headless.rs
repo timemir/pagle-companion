@@ -14,9 +14,12 @@
 //! Otherwise it watches until `SIGTERM`, `SIGHUP` or `SIGINT`, then releases
 //! the lock and exits 0.
 //!
-//! Not here yet: update checks and config reads (DST-R51, DST-R63), and
-//! DST-R58's exit after an update; "Read the Companion config and enforce
-//! update required" wires them into both modes.
+//! Update checks run here as in tray mode (DST-R51, `updater`, started with
+//! the other parts): on Linux the AppImage is replaced as soon as an update
+//! verifies (DST-R54). Not here yet: config reads (DST-R63) and DST-R58's
+//! exit once the new file is in place while update required; "Read the
+//! Companion config and enforce update required" adds them through the
+//! updater's `after_check` hook.
 
 use std::error::Error;
 

@@ -86,6 +86,9 @@ pub fn run(mode: Mode) {
 
     let app = builder
         .plugin(tauri_plugin_dialog::init())
+        // DST-R50: its configuration is plugins.updater. Checks and downloads
+        // are `updater`'s, in both modes, through the plugin's types.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             status,
             autostart::window::start_at_login,

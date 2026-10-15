@@ -33,6 +33,14 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 sha2 = "0.10"
+# 2.13 and later need Tauri 2.12; stay on the Tauri this app is built with.
+# Only its configuration and latest.json types are used, so no zip support.
+tauri-plugin-updater = { version = "~2.12", default-features = false, features = ["rustls-tls"] }
+# The plugin's own verifier, called directly so headless mode can use it
+# (DST-R53).
+minisign-verify = "0.2"
+semver = "1"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"
@@ -46,6 +54,7 @@ zbus = "5"
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+minisign = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util"] }
 
 [profile.release]

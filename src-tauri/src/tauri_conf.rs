@@ -1,5 +1,6 @@
 //! Checks `tauri.conf.json` and the NSIS hooks against DST Contracts,
-//! "Tauri configuration", for the rows the Windows installer owns.
+//! "Tauri configuration", for the rows the Windows installer and the updater
+//! own.
 
 use std::path::Path;
 
@@ -94,6 +95,34 @@ fn an_update_or_an_install_over_keeps_local_state() {
     let body = macro_body("NSIS_HOOK_PREUNINSTALL");
     assert!(body.contains("${If} $UpdateMode = 1\n  ${OrIf} $0 == \"1\""));
     assert!(body.contains("${If} $PagleKeepState = 0"));
+}
+
+#[test]
+fn the_updater_checks_the_one_endpoint() {
+    // DST-R50: plugins.updater.endpoints is the single latest.json URL
+    assert_eq!(
+        conf()["plugins"]["updater"]["endpoints"],
+        serde_json::json!([
+            "https://github.com/timemir/pagle-companion/releases/latest/download/latest.json"
+        ])
+    );
+}
+
+#[test]
+fn updates_install_passive_on_windows() {
+    // DST-R13: plugins.updater.windows.installMode is passive, read by the
+    // plugin as its passive mode (a progress bar, no questions)
+    let conf = conf();
+    assert_eq!(
+        conf["plugins"]["updater"]["windows"]["installMode"],
+        "passive"
+    );
+    let config: tauri_plugin_updater::Config =
+        serde_json::from_value(conf["plugins"]["updater"].clone()).unwrap();
+    assert_eq!(
+        config.windows.unwrap().install_mode.nsis_args(),
+        ["/P"].as_slice()
+    );
 }
 
 /// The lines between `!macro <name>` and its `!macroend`.
