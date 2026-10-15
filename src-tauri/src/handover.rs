@@ -13,7 +13,9 @@
 //! - `systemctl --user start pagle-companion.service` in
 //!   [`after_releasing_lock`], except when quitting for `--quit` or removal
 //!   (CMP-R70). Tray mode quits for `--quit` and for **Quit** alike today
-//!   (`app.exit(0)`), so #16 tells them apart.
+//!   (`app.exit(0)`), so #16 tells them apart. (`--remove` sends that
+//!   `--quit`; removal from the Linux tray item exits with
+//!   `std::process::exit` and never reaches this step: `removal::window`.)
 //! - Tray mode exiting on `SIGTERM` or `SIGHUP` (logout, the switch to Game
 //!   Mode) through the same exit path. Headless mode's own signal handling is
 //!   in `headless`.

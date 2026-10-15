@@ -353,16 +353,8 @@ impl<N: Notifier> Account<'_, N> {
     /// failure is ignored, since the credential expires unused (CMP-R63
     /// step 2).
     async fn self_revoke(&self, credential: &str) {
-        let sent = self
-            .api
-            .request(Method::DELETE, "companion/credential")
-            .bearer_auth(credential)
-            .timeout(REVOKE_TIMEOUT)
-            .send()
-            .await;
-        match sent {
-            Ok(reply) => log::info!("self-revoke answered {}", reply.status()),
-            Err(e) => log::warn!("self-revoke failed: {e}"),
+        if let Err(e) = self_revoke(self.api, credential, REVOKE_TIMEOUT).await {
+            log::warn!("{e}");
         }
     }
 
@@ -516,6 +508,28 @@ impl<N: Notifier> Account<'_, N> {
         self.forget();
         self.notifications.raise(&Cause::CredentialInvalid);
         (self.link.hooks.changed)();
+    }
+}
+
+/// Self-revoke (ACC-R57): one `DELETE /api/v1/companion/credential` with
+/// `credential`, given up on after `timeout` (the revoke timeout, CMP
+/// Tunables). It is never tried again: a credential not revoked expires
+/// unused (ACC-R54). Unlink, Link again… and removal (CMP-R63 step 2,
+/// CMP-R64, CMP-R70 step 1) all send it this way. Logs the answer.
+pub async fn self_revoke(api: &Api, credential: &str, timeout: Duration) -> Result<(), String> {
+    let sent = api
+        .request(Method::DELETE, "companion/credential")
+        .bearer_auth(credential)
+        .timeout(timeout)
+        .send()
+        .await;
+    match sent {
+        Ok(reply) if reply.status().is_success() => {
+            log::info!("self-revoke answered {}", reply.status());
+            Ok(())
+        }
+        Ok(reply) => Err(format!("self-revoke answered {}", reply.status())),
+        Err(e) => Err(format!("self-revoke failed: {e}")),
     }
 }
 

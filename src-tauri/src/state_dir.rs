@@ -32,6 +32,12 @@ impl StateDir {
         Ok(Self { path })
     }
 
+    /// The state directory at `path`, as it is: nothing is created. Removal
+    /// uses it (CMP-R70), so a missing directory stays missing.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

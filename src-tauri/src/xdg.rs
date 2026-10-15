@@ -5,7 +5,7 @@
 //! all point at `$APPIMAGE` quoted this way.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `$XDG_CONFIG_HOME`, or `~/.config` when it is unset. A relative or empty
 /// value counts as unset, as the XDG Base Directory Specification says (and
@@ -21,6 +21,28 @@ pub fn config_home(xdg_config_home: Option<OsString>, home: Option<PathBuf>) -> 
 /// [`config_home`] of this process's environment.
 pub fn this_config_home() -> Option<PathBuf> {
     config_home(std::env::var_os("XDG_CONFIG_HOME"), dirs::home_dir())
+}
+
+/// The Game Mode unit's name (CMP-R90).
+pub const UNIT_NAME: &str = "pagle-companion.service";
+
+/// The Game Mode unit, `$XDG_CONFIG_HOME/systemd/user/pagle-companion.service`
+/// (CMP Contracts, Game Mode unit).
+pub fn unit_path(config_home: &Path) -> PathBuf {
+    config_home.join("systemd").join("user").join(UNIT_NAME)
+}
+
+/// The menu entry, `~/.local/share/applications/app.pagle.companion.desktop`
+/// (DST-R31, DST Contracts "Desktop entry").
+pub fn menu_entry_path(home: &Path) -> PathBuf {
+    home.join(".local/share/applications/app.pagle.companion.desktop")
+}
+
+/// The menu entry's icon,
+/// `~/.local/share/icons/hicolor/256x256/apps/app.pagle.companion.png`
+/// (DST-R31).
+pub fn menu_icon_path(home: &Path) -> PathBuf {
+    home.join(".local/share/icons/hicolor/256x256/apps/app.pagle.companion.png")
 }
 
 /// `$APPIMAGE`: the AppImage this process runs from. `None` for a
@@ -88,6 +110,26 @@ mod tests {
     fn no_config_home_without_a_home_folder() {
         // CMP-R3: nothing to point at without $XDG_CONFIG_HOME or ~
         assert_eq!(config_home(None, None), None);
+    }
+
+    #[test]
+    fn the_unit_and_the_menu_entry_are_at_their_contract_paths() {
+        // CMP Contracts, Game Mode unit; DST-R31, DST Contracts "Desktop
+        // entry"
+        let cfg = Path::new("/home/u/.config");
+        assert_eq!(
+            unit_path(cfg),
+            Path::new("/home/u/.config/systemd/user/pagle-companion.service")
+        );
+        let home = Path::new("/home/u");
+        assert_eq!(
+            menu_entry_path(home),
+            Path::new("/home/u/.local/share/applications/app.pagle.companion.desktop")
+        );
+        assert_eq!(
+            menu_icon_path(home),
+            Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/app.pagle.companion.png")
+        );
     }
 
     #[test]

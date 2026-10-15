@@ -19,7 +19,7 @@ use crate::local_log::Logger;
 use crate::os_notify::OsNotifier;
 use crate::state_dir::{self, StateDir};
 use crate::upload::{self, queue::Trigger};
-use crate::{catch_logs, in_game, installs, linking, readings};
+use crate::{catch_logs, in_game, installs, linking, readings, removal};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -107,6 +107,7 @@ pub fn run(mode: Mode) {
             catch_logs::window::open_sign_in,
             upload::window::last_uploaded,
             upload::window::replace_catch_log,
+            removal::window::remove_companion,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -172,7 +173,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     // Disabled while not linked or during a stop (CMP UI, tray menu).
     let upload_now = MenuItem::with_id(app, "upload-now", "Upload now", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&status, &open, &upload_now, &quit])?;
+    let menu = Menu::with_items(app, &[&status, &open, &upload_now])?;
+    // Linux only, before Quit (CMP-R71, CMP UI).
+    if removal::TRAY_ITEM_OFFERED {
+        let remove = MenuItem::with_id(app, "remove", removal::window::ITEM, true, None::<&str>)?;
+        menu.append(&remove)?;
+    }
+    menu.append(&quit)?;
     app.manage(TrayItems {
         status,
         upload_now,
@@ -189,6 +196,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "open" => show_main_window(app),
             // CMP-R45: every confirmed logId, held back or not, no skip.
             "upload-now" => upload::window::trigger_all(app, Trigger::UploadNow),
+            "remove" => removal::window::ask(app),
             "quit" => app.exit(0),
             _ => {}
         });
@@ -290,6 +298,10 @@ fn take_watcher_lock(app: AppHandle) {
         handover::before_taking_lock(&companion);
         let mut waited = false;
         loop {
+            // Removal takes the lock itself (CMP-R71).
+            if removal::window::is_removing() {
+                return;
+            }
             match companion.state_dir.try_lock_watcher() {
                 Ok(Some(lock)) => {
                     companion.hold_watcher(lock);

@@ -30,6 +30,8 @@ pub struct Status {
     /// Another process holds the watcher lock: this one watches nothing and
     /// the window is read-only (CMP-R2).
     pub read_only: bool,
+    /// Settings offer **Remove Pagle Companion**: on Linux only (CMP-R71).
+    pub can_remove: bool,
 }
 
 /// The process's shared parts, for every feature to reach with
@@ -67,6 +69,12 @@ impl Companion {
         *self.watcher_slot() = Some(lock);
     }
 
+    /// Takes the watcher lock out of this process's keeping, for removal on
+    /// Linux, which holds it until it deletes the state directory (CMP-R71).
+    pub fn take_watcher(&self) -> Option<WatcherLock> {
+        self.watcher_slot().take()
+    }
+
     /// Lets go of the watcher lock, so another process can take it (CMP-R2,
     /// CMP-R92).
     pub fn release_watcher(&self) {
@@ -79,6 +87,7 @@ impl Companion {
         Status {
             version: self.version.clone(),
             read_only: !self.is_watcher(),
+            can_remove: crate::removal::TRAY_ITEM_OFFERED,
         }
     }
 

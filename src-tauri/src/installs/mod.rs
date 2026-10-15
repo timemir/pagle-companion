@@ -106,6 +106,17 @@ pub struct Scan {
     pub skipped: Vec<Skipped>,
 }
 
+/// The Forever product uid of local state: the last successful config
+/// read's, or the built-in one until one has succeeded (CMP-R12, CMP-R70).
+pub fn forever_product_uid(state: &crate::state::State) -> String {
+    state
+        .config
+        .as_ref()
+        .map_or(BUILT_IN_FOREVER_PRODUCT_UID.to_owned(), |c| {
+            c.forever_product_uid.clone()
+        })
+}
+
 /// Runs CMP-R10 to CMP-R13 and CMP-R15 over `sources` and the manual
 /// installs kept in local state, finding installs whose `.flavor.info` names
 /// `uid`.

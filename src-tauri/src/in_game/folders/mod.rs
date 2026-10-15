@@ -358,6 +358,20 @@ pub fn delete_data_addon_folders(flavors: &[String]) {
     delete_folders(&RealFs, flavors);
 }
 
+/// Every install the Companion knows: the flavor folders a scan `found`,
+/// then each install local state names (`manual`) that isn't among them
+/// already (CMP-R85, as CMP-R70 has it).
+pub fn known_installs(found: Vec<String>, manual: Vec<String>) -> Vec<String> {
+    let mut flavors = found;
+    for manual in manual {
+        let key = paths::same_folder_key(&manual);
+        if !flavors.iter().any(|f| paths::same_folder_key(f) == key) {
+            flavors.push(manual);
+        }
+    }
+    flavors
+}
+
 /// Which installs a data file was written in (CMP-R83). Each is a flavor
 /// folder as passed in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -431,8 +445,8 @@ struct Failure {
 /// through [`window`]'s functions, which pass it the scanner's installs.
 pub struct Writer {
     fs: Box<dyn Fs>,
-    /// Held across every change to the folders.
-    busy: Mutex<()>,
+    /// Held across every change to the folders; true once stopped.
+    busy: Mutex<bool>,
     failures: Mutex<BTreeMap<(String, DataFile), Failure>>,
 }
 
@@ -455,7 +469,7 @@ impl Writer {
     pub fn with_fs(fs: Box<dyn Fs>) -> Self {
         Self {
             fs,
-            busy: Mutex::new(()),
+            busy: Mutex::new(false),
             failures: Mutex::default(),
         }
     }
@@ -466,8 +480,11 @@ impl Writer {
     /// CMP-R83). An install whose write fails keeps its old file and shows
     /// the write-failure message until a write there succeeds.
     pub fn write(&self, flavors: &[String], file: DataFile, body: &[u8]) -> WriteReport {
-        let _busy = lock(&self.busy);
+        let stopped = lock(&self.busy);
         let mut report = WriteReport::default();
+        if *stopped {
+            return report;
+        }
         for flavor in flavors {
             let Some(addon) = Addon::of(flavor) else {
                 continue;
@@ -500,8 +517,10 @@ impl Writer {
     /// differs from what `Pagle.toc` now gives (CMP-R83). The timer calls it
     /// at start and every in-game check interval.
     pub fn refresh_tocs(&self, flavors: &[String]) {
-        let _busy = lock(&self.busy);
-        self.refresh_tocs_locked(flavors);
+        let stopped = lock(&self.busy);
+        if !*stopped {
+            self.refresh_tocs_locked(flavors);
+        }
     }
 
     fn refresh_tocs_locked(&self, flavors: &[String]) {
@@ -548,11 +567,21 @@ impl Writer {
     /// At start: deletes leftover `.*.tmp` files in installs that have the
     /// Pagle addon, then refreshes the TOCs (CMP-R83).
     pub fn start(&self, flavors: &[String]) {
-        let _busy = lock(&self.busy);
+        let stopped = lock(&self.busy);
+        if *stopped {
+            return;
+        }
         for addon in flavors.iter().filter_map(|f| Addon::of(f)) {
             sweep_tmp(self.fs.as_ref(), &addon);
         }
         self.refresh_tocs_locked(flavors);
+    }
+
+    /// Stops writing for good, once a change under way has ended: removal on
+    /// Linux stops watching before it deletes the folders (CMP-R71). Later
+    /// writes, TOC refreshes and start sweeps do nothing.
+    pub fn stop(&self) {
+        *lock(&self.busy) = true;
     }
 
     /// Deletes both folders in every install of `flavors` where they exist

@@ -11,7 +11,7 @@ use serde::Serialize;
 use super::{DataFile, Qualifying, WriteFailure, WriteReport, Writer};
 use crate::companion::Companion;
 use crate::host::Host;
-use crate::installs::{Scanner, paths};
+use crate::installs::Scanner;
 
 /// The event that carries a new [`View`] to the window.
 pub const EVENT: &str = "in-game-folders";
@@ -35,16 +35,11 @@ fn installs<H: Host>(app: &H) -> Vec<String> {
 /// Every install the Companion knows: those the scan found, and those local
 /// state names (CMP-R85, as CMP-R70 has it).
 fn known_installs<H: Host>(app: &H) -> Vec<String> {
-    let mut flavors = installs(app);
-    if let Some(companion) = app.try_state::<Companion>() {
-        for manual in companion.state.read(|s| s.manual_installs.clone()) {
-            let key = paths::same_folder_key(&manual);
-            if !flavors.iter().any(|f| paths::same_folder_key(f) == key) {
-                flavors.push(manual);
-            }
-        }
-    }
-    flavors
+    let manual = app
+        .try_state::<Companion>()
+        .map(|companion| companion.state.read(|s| s.manual_installs.clone()))
+        .unwrap_or_default();
+    super::known_installs(installs(app), manual)
 }
 
 fn show<H: Host>(app: &H) {

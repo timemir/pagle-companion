@@ -22,6 +22,7 @@ pub mod notify;
 pub mod os_notify;
 pub mod pagle_log;
 pub mod readings;
+pub mod removal;
 pub mod state;
 pub mod state_dir;
 #[cfg(test)]
@@ -38,8 +39,8 @@ use cli::Mode;
 pub fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match cli::parse(&args) {
-        // Removal (CMP-R70) comes with Track C.
-        Mode::Remove => std::process::exit(0),
+        // In a process of its own, without Tauri; always status 0 (CMP-R70).
+        Mode::Remove => std::process::exit(removal::run()),
         // Exits with status 2 on Windows (CMP Contracts, Command line).
         Mode::Headless => std::process::exit(headless::run()),
         mode => tray::run(mode),

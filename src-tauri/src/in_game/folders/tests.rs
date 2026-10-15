@@ -633,6 +633,41 @@ fn the_free_delete_is_the_one_removal_calls() {
 }
 
 #[test]
+fn a_stopped_writer_writes_nothing_more() {
+    // CMP-R71: removal on Linux stops watching before it deletes the
+    // folders, so nothing writes them again
+    let tmp = tempfile::tempdir().unwrap();
+    let a = install(tmp.path(), "WoW/_classic_beta_", Some(TOC_LINES));
+    let writer = Writer::new();
+    writer.stop();
+
+    let report = writer.write(std::slice::from_ref(&a), DataFile::Following, BODY);
+    assert!(!report.succeeded());
+    writer.start(std::slice::from_ref(&a));
+    writer.refresh_tocs(std::slice::from_ref(&a));
+    assert_eq!(entries(&Path::new(&a).join("Interface/AddOns")), ["Pagle"]);
+}
+
+#[test]
+fn known_installs_are_the_scans_then_those_local_state_names() {
+    // CMP-R85, CMP-R70 step 4: every install the scan found or local state
+    // names, each once
+    let found = vec!["C:/WoW/_classic_beta_".to_owned()];
+    let manual = vec![
+        "C:/WoW/_classic_beta_".to_owned(),
+        "D:/Games/WoW/_classic_beta_".to_owned(),
+    ];
+    assert_eq!(
+        known_installs(found, manual),
+        ["C:/WoW/_classic_beta_", "D:/Games/WoW/_classic_beta_"]
+    );
+    assert_eq!(
+        known_installs(Vec::new(), vec!["E:/WoW/_classic_beta_".to_owned()]),
+        ["E:/WoW/_classic_beta_"]
+    );
+}
+
+#[test]
 fn hashes_are_lowercase_hex_sha256() {
     // IGV-R32, CMP-R81: the ETag is the lowercase hex SHA-256 of the file, in
     // double quotes

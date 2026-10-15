@@ -7,7 +7,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 /// The local log size (CMP Tunables): a file is rotated before it would grow
@@ -19,7 +20,9 @@ pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub struct RotatingFile {
     path: PathBuf,
     max_bytes: u64,
+    /// `None` until the first line, and again once closed.
     inner: Mutex<Option<Open>>,
+    closed: AtomicBool,
 }
 
 struct Open {
@@ -37,13 +40,26 @@ impl RotatingFile {
             path: path.into(),
             max_bytes,
             inner: Mutex::new(None),
+            closed: AtomicBool::new(false),
         }
+    }
+
+    /// Lets go of the file for good: later lines are dropped, and the file is
+    /// never opened (or created) again. Removal closes it before it deletes
+    /// the state directory (CMP-R70 step 5), so the directory can go.
+    pub fn close(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        self.closed.store(true, Ordering::SeqCst);
+        *inner = None;
     }
 
     /// Appends one line, rotating first if it would take the file past the
     /// local log size.
     pub fn write_line(&self, line: &str) -> io::Result<()> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if self.closed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let bytes = line.len() as u64 + 1;
         if inner.is_none() {
             *inner = Some(self.open()?);
@@ -104,14 +120,29 @@ impl Logger {
     /// Sends the `log` macros of the whole process to `path`. Only the first
     /// call in a process takes effect.
     pub fn install(path: impl Into<PathBuf>) {
-        let logger = Box::new(Self {
+        if INSTALLED.get().is_some() {
+            return;
+        }
+        let logger: &'static Logger = Box::leak(Box::new(Self {
             file: RotatingFile::new(path),
-        });
-        if log::set_boxed_logger(logger).is_ok() {
+        }));
+        if log::set_logger(logger).is_ok() {
+            let _ = INSTALLED.set(logger);
             log::set_max_level(log::LevelFilter::Info);
         }
     }
+
+    /// Closes the installed local log file for the rest of the process
+    /// ([`RotatingFile::close`]). Without one it does nothing.
+    pub fn close() {
+        if let Some(logger) = INSTALLED.get() {
+            logger.file.close();
+        }
+    }
 }
+
+/// The logger [`Logger::install`] installed in this process.
+static INSTALLED: OnceLock<&'static Logger> = OnceLock::new();
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
@@ -200,6 +231,23 @@ mod tests {
 
         RotatingFile::new(&path).write_line("later").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "earlier\nlater\n");
+    }
+
+    #[test]
+    fn a_closed_file_takes_no_more_lines_and_can_be_deleted() {
+        // CMP-R70 step 5: the local log file goes with the state directory;
+        // nothing writes it again once closed
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("pagle-companion");
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("companion.log");
+        let log = RotatingFile::new(&path);
+        log.write_line("before").unwrap();
+
+        log.close();
+        fs::remove_dir_all(&dir).unwrap();
+        log.write_line("after").unwrap();
+        assert!(!dir.exists());
     }
 
     #[test]

@@ -8,7 +8,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
-use super::{BUILT_IN_FOREVER_PRODUCT_UID, Inputs, POLL_INTERVAL, Scanner, Snapshot};
+use super::{Inputs, POLL_INTERVAL, Scanner, Snapshot};
 use crate::companion::Companion;
 use crate::host::Host;
 
@@ -37,13 +37,7 @@ impl View {
 /// The Forever product uid: the last successful config read's, or the
 /// built-in one until one has succeeded (CMP-R12).
 pub fn forever_product_uid(companion: &Companion) -> String {
-    companion.state.read(|s| {
-        s.config
-            .as_ref()
-            .map_or(BUILT_IN_FOREVER_PRODUCT_UID.to_owned(), |c| {
-                c.forever_product_uid.clone()
-            })
-    })
+    companion.state.read(super::forever_product_uid)
 }
 
 /// Starts scanning for this process, which holds the watcher lock (CMP-R2),

@@ -14,13 +14,17 @@ pub enum Mode {
     Quit,
 }
 
+/// The argument removal starts a child with, to make a running tray-mode
+/// process quit (CMP-R70).
+pub const QUIT: &str = "--quit";
+
 /// Picks the mode. `--remove` wins over every other argument, then `--quit`,
 /// then `--headless`, then `--autostart`; unknown arguments are ignored.
 pub fn parse<S: AsRef<str>>(args: &[S]) -> Mode {
     let has = |flag: &str| args.iter().any(|a| a.as_ref() == flag);
     if has("--remove") {
         Mode::Remove
-    } else if has("--quit") {
+    } else if has(QUIT) {
         Mode::Quit
     } else if has("--headless") {
         Mode::Headless

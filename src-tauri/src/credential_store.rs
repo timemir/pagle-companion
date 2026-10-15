@@ -164,6 +164,20 @@ impl Keychain {
         }
     }
 
+    /// Every store of this platform, the one `kind` names first (CMP-R62):
+    /// removal reads the credential from the first that holds it and deletes
+    /// it from all of them (CMP-R70 steps 1 and 2).
+    pub fn every_store(&self, kind: Option<StoreKind>) -> Vec<&dyn CredentialStore> {
+        let current = self.current(kind);
+        let mut stores = vec![current];
+        for store in std::iter::once(self.os.as_ref()).chain(self.file.as_deref()) {
+            if !std::ptr::addr_eq(store, current) {
+                stores.push(store);
+            }
+        }
+        stores
+    }
+
     /// The store holding the credential, by `credentialStore` in local state
     /// (CMP-R62). Without a credential file, or without a choice, it is the
     /// OS store.
