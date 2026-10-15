@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuil
 
 use crate::api::{self, Api};
 use crate::cli::{self, Mode};
+use crate::installs::{self, Scanner};
 use crate::local_log::Logger;
 use crate::notify::Notifications;
 use crate::os_notify::OsNotifier;
@@ -120,7 +121,13 @@ pub fn run(mode: Mode) {
     let autostart = mode == (Mode::Tray { autostart: true });
 
     let app = builder
-        .invoke_handler(tauri::generate_handler![status])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            status,
+            installs::window::installs,
+            installs::window::add_wow_folder,
+            installs::window::remove_wow_folder,
+        ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
             Ok(())
@@ -174,6 +181,7 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
         version,
         watcher: Mutex::new(None),
     });
+    app.manage(Scanner::new());
 
     build_tray(app)?;
     if opens_window_at_start(autostart, first_run) {
@@ -242,6 +250,7 @@ fn take_watcher_lock(app: AppHandle) {
                 Ok(Some(lock)) => {
                     *companion.watcher_slot() = Some(lock);
                     log::info!("took the watcher lock");
+                    installs::window::start(&app);
                     let _ = app.emit("status", companion.status());
                     return;
                 }

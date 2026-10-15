@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod cli;
+pub mod installs;
 pub mod local_log;
 pub mod lua;
 pub mod notify;

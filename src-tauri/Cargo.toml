@@ -25,9 +25,13 @@ humantime = "2"
 dirs = "6"
 flate2 = "1"
 crc32fast = "1"
+dunce = "1"
+notify = "8"
+tauri-plugin-dialog = "2"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"

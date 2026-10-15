@@ -6,6 +6,7 @@
     <title>Pagle Companion</title>
     <link rel="stylesheet" href="style.css" />
     <script src="main.js" defer></script>
+    <script src="folders.js" defer></script>
   </head>
   <body>
     <main>
@@ -15,6 +16,13 @@
         <h2 id="status-heading">Status</h2>
         <p id="link-status">Not linked</p>
         <p id="last-uploaded">Nothing uploaded yet</p>
+      </section>
+      <section aria-labelledby="folders-heading">
+        <h2 id="folders-heading">WoW folders</h2>
+        <p id="no-install" hidden>No WoW Forever install found. If WoW Forever is installed, add its folder.</p>
+        <ul id="installs" class="installs"></ul>
+        <p id="folder-error" class="notice" role="alert" hidden></p>
+        <button id="add-folder" type="button" disabled>Add a WoW folder…</button>
       </section>
       <footer><span id="version"></span></footer>
     </main>
