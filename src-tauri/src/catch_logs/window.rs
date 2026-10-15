@@ -2,13 +2,14 @@
 //! the picks, and the links to My Anglers and sign-in. The list itself is
 //! `ui/catch-logs.js`.
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 
 use super::{CatchLogs, View};
+use crate::companion::Companion;
+use crate::host::Host;
 use crate::installs::Scanner;
 use crate::linking;
 use crate::readings::{Readings, Snapshot};
-use crate::tray::Companion;
 use crate::upload;
 
 /// The event that carries a new [`View`] to the window.
@@ -21,7 +22,7 @@ const READ_ONLY: &str = "Another Pagle Companion is running for this user.";
 /// confirmed set, for this process, which holds the watcher lock (CMP-R2),
 /// and keeps the window's list up to date. Call it after the readings have
 /// started.
-pub fn start(app: &AppHandle) {
+pub fn start<H: Host>(app: &H) {
     let updates = app.state::<Readings>().subscribe();
     let app = app.clone();
     std::thread::spawn(move || {
@@ -34,7 +35,7 @@ pub fn start(app: &AppHandle) {
 }
 
 /// Runs the decisions on `snapshot` and shows the list again.
-pub fn refresh(app: &AppHandle, snapshot: &Snapshot) {
+pub fn refresh<H: Host>(app: &H, snapshot: &Snapshot) {
     let companion = app.state::<Companion>();
     app.state::<CatchLogs>()
         .refresh(&companion.state, &companion.notifications, snapshot);
@@ -45,14 +46,14 @@ pub fn refresh(app: &AppHandle, snapshot: &Snapshot) {
 /// Opens or closes the first-run window's hold on notifications (CMP-R100,
 /// #9): see [`CatchLogs::set_first_run_window`]. Closing it raises what is
 /// due.
-pub fn set_first_run_window(app: &AppHandle, open: bool) {
+pub fn set_first_run_window<H: Host>(app: &H, open: bool) {
     app.state::<CatchLogs>().set_first_run_window(open);
     if !open && let Some(snapshot) = app.state::<Readings>().snapshot() {
         refresh(app, &snapshot);
     }
 }
 
-fn current(app: &AppHandle) -> View {
+fn current<H: Host>(app: &H) -> View {
     let installs: Vec<String> = app
         .state::<Scanner>()
         .installs()
@@ -66,11 +67,11 @@ fn current(app: &AppHandle) -> View {
 }
 
 /// Shows the list again.
-pub fn emit(app: &AppHandle) {
-    let _ = app.emit(EVENT, current(app));
+pub fn emit<H: Host>(app: &H) {
+    app.emit(EVENT, current(app));
 }
 
-fn watcher(app: &AppHandle) -> Result<(), String> {
+fn watcher<H: Host>(app: &H) -> Result<(), String> {
     if app.state::<Companion>().is_watcher() {
         Ok(())
     } else {

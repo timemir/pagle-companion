@@ -7,11 +7,11 @@
 //! [`qualifying`] and [`data_files_hash_to`].
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
 
 use super::{DataFile, Qualifying, WriteFailure, WriteReport, Writer};
+use crate::companion::Companion;
+use crate::host::Host;
 use crate::installs::{Scanner, paths};
-use crate::tray::Companion;
 
 /// The event that carries a new [`View`] to the window.
 pub const EVENT: &str = "in-game-folders";
@@ -24,7 +24,7 @@ pub struct View {
 }
 
 /// The scanner's installs, as of its last scan.
-fn installs(app: &AppHandle) -> Vec<String> {
+fn installs<H: Host>(app: &H) -> Vec<String> {
     app.state::<Scanner>()
         .installs()
         .into_iter()
@@ -34,7 +34,7 @@ fn installs(app: &AppHandle) -> Vec<String> {
 
 /// Every install the Companion knows: those the scan found, and those local
 /// state names (CMP-R85, as CMP-R70 has it).
-fn known_installs(app: &AppHandle) -> Vec<String> {
+fn known_installs<H: Host>(app: &H) -> Vec<String> {
     let mut flavors = installs(app);
     if let Some(companion) = app.try_state::<Companion>() {
         for manual in companion.state.read(|s| s.manual_installs.clone()) {
@@ -47,15 +47,15 @@ fn known_installs(app: &AppHandle) -> Vec<String> {
     flavors
 }
 
-fn show(app: &AppHandle) {
+fn show<H: Host>(app: &H) {
     let failures = app.state::<Writer>().failures();
-    let _ = app.emit(EVENT, View { failures });
+    app.emit(EVENT, View { failures });
 }
 
 /// At start, for this process, which holds the watcher lock (CMP-R2): once
 /// the first scan has ended, deletes leftover `.tmp` files and refreshes the
 /// TOCs (CMP-R83).
-pub fn start(app: &AppHandle) {
+pub fn start<H: Host>(app: &H) {
     let first_scan = app.state::<Scanner>().subscribe();
     let app = app.clone();
     std::thread::spawn(move || {
@@ -71,7 +71,7 @@ pub fn start(app: &AppHandle) {
 /// Writes a body that passed CMP-R82 as `file`'s data file into every
 /// install that has the Pagle addon (CMP-R80, CMP-R83). The download is
 /// successful when [`WriteReport::succeeded`].
-pub fn write(app: &AppHandle, file: DataFile, body: &[u8]) -> WriteReport {
+pub fn write<H: Host>(app: &H, file: DataFile, body: &[u8]) -> WriteReport {
     let report = app.state::<Writer>().write(&installs(app), file, body);
     show(app);
     report
@@ -79,26 +79,26 @@ pub fn write(app: &AppHandle, file: DataFile, body: &[u8]) -> WriteReport {
 
 /// The TOC refresh the timer makes at start and every in-game check
 /// (CMP-R83).
-pub fn refresh_tocs(app: &AppHandle) {
+pub fn refresh_tocs<H: Host>(app: &H) {
     app.state::<Writer>().refresh_tocs(&installs(app));
     show(app);
 }
 
 /// Which installs qualify, and which lack each data file (CMP-R80).
-pub fn qualifying(app: &AppHandle) -> Qualifying {
+pub fn qualifying<H: Host>(app: &H) -> Qualifying {
     app.state::<Writer>().qualifying(&installs(app))
 }
 
 /// Whether the Anglers download may send `If-None-Match` with the kept
 /// `etag`: `file` in every qualifying install hashes to it (CMP-R81).
-pub fn data_files_hash_to(app: &AppHandle, file: DataFile, etag: &str) -> bool {
+pub fn data_files_hash_to<H: Host>(app: &H, file: DataFile, etag: &str) -> bool {
     app.state::<Writer>()
         .data_files_hash_to(&installs(app), file, etag)
 }
 
 /// Deletes both folders in every install the Companion knows (CMP-R85): the
 /// link's hook on Unlink and on losing the link.
-pub fn delete_folders(app: &AppHandle) {
+pub fn delete_folders<H: Host>(app: &H) {
     let Some(writer) = app.try_state::<Writer>() else {
         return;
     };

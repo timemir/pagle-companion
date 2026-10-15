@@ -5,7 +5,7 @@
 use tauri::{AppHandle, Manager};
 
 use super::Done;
-use crate::tray::Companion;
+use crate::companion::Companion;
 
 /// The window's text when turning the toggle on fails.
 pub const TURN_ON_FAILED: &str = "Couldn't turn on Start at login.";

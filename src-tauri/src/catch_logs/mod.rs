@@ -1734,6 +1734,35 @@ mod tests {
     }
 
     #[test]
+    fn headless_mode_keeps_a_new_log_awaiting_and_a_later_tray_start_asks() {
+        // CMP-R40: in headless mode nothing is asked; the log stays awaiting
+        // until a tray-mode process asks. CMP-R1: headless mode shows no
+        // notification.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let snapshot = snapshot(vec![holding(ONE, LOG_A, 2)]);
+        let headless = CatchLogs::new(Hooks::default());
+        let store = Store::new(&path, state_with(&[]));
+        let silent: Notifications<Box<dyn Notifier>> =
+            Notifications::new(Box::new(crate::notify::Silent));
+        headless.refresh(&store, &silent, &snapshot);
+        assert!(headless.confirmed().is_empty());
+
+        let Loaded::State(saved) = state::load(&path).unwrap() else {
+            panic!("state.json wasn't written");
+        };
+        assert_eq!(saved.logs[LOG_A].answer, None);
+
+        // The tray-mode process that starts next asks about it.
+        let tray = running(saved, Hooks::default());
+        tray.refresh(&snapshot);
+        assert_eq!(
+            tray.recorder.shown(),
+            ["Found a Catch log: Ada Brook. Upload it?"]
+        );
+    }
+
+    #[test]
     fn a_pick_must_be_a_folder_that_holds_the_log() {
         // CMP-R42: one button per folder that holds it
         let running = running(state_with(&[]), Hooks::default());

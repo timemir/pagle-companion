@@ -5,9 +5,9 @@
 //! `catch_logs`'.
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
 
 use super::{Readings, Snapshot};
+use crate::host::Host;
 use crate::installs::{POLL_INTERVAL, Scanner};
 
 /// The event that carries a new [`View`] to the window.
@@ -56,14 +56,14 @@ impl View {
 
 /// Starts reading for this process, which holds the watcher lock (CMP-R2),
 /// at every scan of the scanner, and keeps the window's section up to date.
-pub fn start(app: &AppHandle) {
+pub fn start<H: Host>(app: &H) {
     let readings = app.state::<Readings>();
     let updates = readings.subscribe();
     readings.start(app.state::<Scanner>().subscribe_scans());
     let app = app.clone();
     std::thread::spawn(move || {
         for update in updates {
-            let _ = app.emit(EVENT, View::of(Some(update.snapshot)));
+            app.emit(EVENT, View::of(Some(update.snapshot)));
         }
     });
 }

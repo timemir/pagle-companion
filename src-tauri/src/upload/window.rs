@@ -1,4 +1,4 @@
-//! Uploading in tray mode: the queue's worker, CMP-R45's triggers (a
+//! Uploading, in tray and headless mode alike: the queue's worker, CMP-R45's triggers (a
 //! debounced change, start, later scans, the **Upload** switch, **Upload
 //! now**, linking, **Replace**), which queue nothing while not linked or
 //! during a stop, and "Last uploaded" in the window's Status and the tray
@@ -7,16 +7,17 @@
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 
 use super::queue::Trigger;
 use super::{Ctx, Env, Uploads, plan};
 use crate::catch_logs::{self, CatchLogs};
+use crate::companion::Companion;
+use crate::host::Host;
 use crate::in_game::folders::{self, DataFile, Qualifying, WriteReport};
 use crate::installs::paths;
 use crate::readings::{self, Reading, Readings};
 use crate::state::State;
-use crate::tray::{self, Companion};
 
 /// The event that carries the Status part's "Last uploaded …" text.
 pub const LAST_UPLOADED_EVENT: &str = "last-uploaded";
@@ -51,7 +52,7 @@ pub fn last_uploaded_text(last: Option<i64>, now: i64) -> String {
 
 /// Starts the queue's worker, for this process, which holds the watcher
 /// lock (CMP-R2), and shows relative times again every [`TICK`].
-pub fn start(app: &AppHandle) {
+pub fn start<H: Host>(app: &H) {
     let worker = app.clone();
     tauri::async_runtime::spawn(async move {
         let uploads = worker.state::<Uploads>();
@@ -89,7 +90,7 @@ pub fn start(app: &AppHandle) {
 /// `update` in: the first update is the start's (every confirmed `logId`),
 /// a later scan's is a scan's (with its skip), and each folder read anew is
 /// a debounced change of the `logId` it uploads from.
-pub fn after_reading(app: &AppHandle, update: &readings::Update) {
+pub fn after_reading<H: Host>(app: &H, update: &readings::Update) {
     let uploads = app.state::<Uploads>();
     let confirmed = app.state::<CatchLogs>().confirmed();
     if let Some(trigger) = uploads.reading_trigger(update.scan) {
@@ -107,7 +108,7 @@ pub fn after_reading(app: &AppHandle, update: &readings::Update) {
 
 /// Queues a run of every confirmed `logId` for `trigger`, while linked and
 /// outside a stop (CMP-R45, CMP-R55).
-pub fn trigger_all(app: &AppHandle, trigger: Trigger) {
+pub fn trigger_all<H: Host>(app: &H, trigger: Trigger) {
     if !may_run(app) {
         return;
     }
@@ -119,13 +120,13 @@ pub fn trigger_all(app: &AppHandle, trigger: Trigger) {
 
 /// Queues a run of `log_id` for `trigger`, while linked and outside a stop
 /// (CMP-R45, CMP-R55).
-pub fn trigger_one(app: &AppHandle, log_id: &str, trigger: Trigger) {
+pub fn trigger_one<H: Host>(app: &H, log_id: &str, trigger: Trigger) {
     if may_run(app) {
         app.state::<Uploads>().trigger(log_id, trigger);
     }
 }
 
-fn may_run(app: &AppHandle) -> bool {
+fn may_run<H: Host>(app: &H) -> bool {
     app.try_state::<Companion>().is_some_and(|companion| {
         let account = companion.account();
         account.is_linked() && !account.is_stopped()
@@ -151,13 +152,13 @@ pub fn replace_catch_log(app: AppHandle, log_id: String) -> Result<(), String> {
 
 /// Shows local state's upload times again: each row's state line, the
 /// Status part's "Last uploaded …" and the tray's status line.
-pub fn show(app: &AppHandle) {
+pub fn show<H: Host>(app: &H) {
     catch_logs::window::emit(app);
-    let _ = app.emit(LAST_UPLOADED_EVENT, current(app));
-    tray::show_tray_status(app);
+    app.emit(LAST_UPLOADED_EVENT, current(app));
+    app.show_tray_status();
 }
 
-fn current(app: &AppHandle) -> String {
+fn current<H: Host>(app: &H) -> String {
     let last = app.state::<Companion>().state.read(last_uploaded_at);
     last_uploaded_text(last, now())
 }
@@ -168,11 +169,11 @@ pub fn last_uploaded(app: AppHandle) -> String {
     current(&app)
 }
 
-/// What a queue item in tray mode works with: the app's readings, clock and
-/// data addon folders.
-pub struct AppEnv(pub AppHandle);
+/// What a queue item works with: the process's readings, clock and data
+/// addon folders.
+pub struct AppEnv<H>(pub H);
 
-impl Env for AppEnv {
+impl<H: Host> Env for AppEnv<H> {
     fn read(&self, folder: &str) -> impl Future<Output = Reading> + Send {
         let app = self.0.clone();
         let folder = folder.to_owned();

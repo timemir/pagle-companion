@@ -9,13 +9,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 use tokio::sync::watch;
 
 use crate::autostart;
+use crate::companion::Companion;
 use crate::device_flow::{self, End, Failure};
+use crate::host::Host;
 use crate::link::{KEYRING_RETRY, LinkStatus, Stop};
-use crate::tray::{self, Companion};
 
 /// The Linking part (CMP UI, Linking).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -139,22 +140,22 @@ fn open_in_browser(url: &str) {
 }
 
 /// Reads the link's status and shows it in the window and the tray.
-pub fn link_changed(app: &AppHandle) {
+pub fn link_changed<H: Host>(app: &H) {
     let Some(companion) = app.try_state::<Companion>() else {
         return;
     };
     let status = companion.account().status();
-    tray::show_link(app, &status);
-    let _ = app.emit("link-status", status);
+    app.show_link(&status);
+    app.emit("link-status", status);
 }
 
-fn emit_linking(app: &AppHandle) {
-    let _ = app.emit("linking", app.state::<Linking>().view());
+fn emit_linking<H: Host>(app: &H) {
+    app.emit("linking", app.state::<Linking>().view());
 }
 
 /// Reads the credential at start, then again every poll interval while the
 /// keyring doesn't answer (CMP-R62).
-pub fn start(app: &AppHandle) {
+pub fn start<H: Host>(app: &H) {
     let app = app.clone();
     std::thread::spawn(move || {
         link_changed(&app);
@@ -266,7 +267,7 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
 
 /// `update_required` on the device flow stops linking and enters update
 /// required (CMP-R60, CMP-R50).
-fn enter_update_required(app: &AppHandle, failure: &Failure) {
+fn enter_update_required<H: Host>(app: &H, failure: &Failure) {
     if let Failure::UpdateRequired(message) = failure {
         app.state::<Companion>()
             .account()

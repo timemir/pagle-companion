@@ -1,21 +1,21 @@
-//! The in-game timer in tray mode (CMP-R81, CMP-R101): its checks, once the
-//! first scan has ended and then every in-game check interval, and the check
-//! right after linking. Each check is [`Uploads::in_game_check`] over the
-//! app's installs; the queue's worker sends what it queues.
-
-use tauri::{AppHandle, Manager};
+//! The in-game timer, in tray and headless mode alike (CMP-R81, CMP-R101):
+//! its checks, once the first scan has ended and then every in-game check
+//! interval, and the check right after linking. Each check is
+//! [`Uploads::in_game_check`] over the process's installs; the queue's worker
+//! sends what it queues.
 
 use super::CHECK_INTERVAL;
 use crate::catch_logs::CatchLogs;
+use crate::companion::Companion;
+use crate::host::Host;
 use crate::installs::Scanner;
-use crate::tray::Companion;
 use crate::upload::window::AppEnv;
 use crate::upload::{Ctx, Uploads};
 
 /// Starts the timer, for this process, which holds the watcher lock
 /// (CMP-R2): the start's check once the first scan has ended, so the installs
 /// are known, then one every in-game check interval.
-pub fn start(app: &AppHandle) {
+pub fn start<H: Host>(app: &H) {
     let first_scan = app.state::<Scanner>().subscribe();
     let app = app.clone();
     std::thread::spawn(move || {
@@ -32,7 +32,7 @@ pub fn start(app: &AppHandle) {
 
 /// Right after any link (CMP-R101): both downloads are owed again, and the
 /// timer is checked at once.
-pub fn after_link(app: &AppHandle) {
+pub fn after_link<H: Host>(app: &H) {
     let Some(uploads) = app.try_state::<Uploads>() else {
         return;
     };
@@ -41,7 +41,7 @@ pub fn after_link(app: &AppHandle) {
 }
 
 /// One check of the timer (CMP-R81, CMP-R83).
-fn check(app: &AppHandle) {
+fn check<H: Host>(app: &H) {
     let (Some(companion), Some(uploads), Some(catch_logs)) = (
         app.try_state::<Companion>(),
         app.try_state::<Uploads>(),

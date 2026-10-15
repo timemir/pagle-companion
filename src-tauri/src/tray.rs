@@ -1,31 +1,25 @@
 //! Tray mode (CMP-R1): the tray icon and its menu, the window, the
-//! single-instance channel and the watcher lock (CMP-R2).
+//! single-instance channel and the watcher lock (CMP-R2). The parts it
+//! shares with headless mode are `companion`'s.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-use crate::api::{self, Api};
 use crate::autostart;
-use crate::catch_logs::{self, CatchLogs};
 use crate::cli::{self, Mode};
-use crate::credential_store::Keychain;
-use crate::in_game::{self, folders::Writer};
-use crate::installs::{self, Scanner};
-use crate::link::{Account, Hooks, Link, LinkStatus};
-use crate::linking::{self, Linking};
+use crate::companion::{self, Companion, Status};
+use crate::handover;
+use crate::link::LinkStatus;
 use crate::local_log::Logger;
-use crate::notify::Notifications;
 use crate::os_notify::OsNotifier;
-use crate::readings::{self, Readings};
-use crate::state::{self, Loaded, State, Store};
-use crate::state_dir::{self, StateDir, WatcherLock};
-use crate::upload::{self, Uploads, queue::Trigger};
+use crate::state_dir::{self, StateDir};
+use crate::upload::{self, queue::Trigger};
+use crate::{catch_logs, in_game, installs, linking, readings};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -58,57 +52,6 @@ pub fn second_start(argv: &[String]) -> SecondStart {
 /// it closed except on a first run (CMP Contracts, Command line; CMP-R100).
 pub fn opens_window_at_start(autostart: bool, first_run: bool) -> bool {
     !autostart || first_run
-}
-
-/// What the window shows of this process (`status` command).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Status {
-    pub version: String,
-    /// Another process holds the watcher lock: this one watches nothing and
-    /// the window is read-only (CMP-R2).
-    pub read_only: bool,
-}
-
-/// The tray-mode process's shared parts, managed by Tauri for every later
-/// feature to reach with `app.state::<Companion>()`.
-pub struct Companion {
-    pub state_dir: StateDir,
-    pub version: String,
-    pub api: Api,
-    pub notifications: Notifications<OsNotifier>,
-    /// Local state; change it only through `state.update` (CMP Data).
-    pub state: Store,
-    /// The link to a Player and its credential; use it through
-    /// [`Companion::account`].
-    pub link: Link,
-    watcher: Mutex<Option<WatcherLock>>,
-}
-
-impl Companion {
-    /// The link at work: requests that carry the credential
-    /// (`account().send(…)`), Unlink, and losing the link (CMP-R49, CMP-R63,
-    /// CMP-R65).
-    pub fn account(&self) -> Account<'_, OsNotifier> {
-        self.link
-            .account(&self.api, &self.state, &self.notifications)
-    }
-
-    /// Whether this process holds the watcher lock and so may watch (CMP-R2).
-    pub fn is_watcher(&self) -> bool {
-        self.watcher_slot().is_some()
-    }
-
-    pub fn status(&self) -> Status {
-        Status {
-            version: self.version.clone(),
-            read_only: !self.is_watcher(),
-        }
-    }
-
-    fn watcher_slot(&self) -> MutexGuard<'_, Option<WatcherLock>> {
-        self.watcher.lock().unwrap_or_else(|e| e.into_inner())
-    }
 }
 
 #[tauri::command]
@@ -179,14 +122,18 @@ pub fn run(mode: Mode) {
         .build(tauri::generate_context!())
         .expect("the Tauri runtime failed");
 
-    app.run(|_, event| {
+    app.run(|app, event| match event {
         // Only Quit (an explicit exit code) ends the process.
-        if let RunEvent::ExitRequested {
+        RunEvent::ExitRequested {
             code: None, api, ..
-        } = event
-        {
-            api.prevent_exit();
+        } => api.prevent_exit(),
+        RunEvent::Exit => {
+            if let Some(companion) = app.try_state::<Companion>() {
+                companion.release_watcher();
+                handover::after_releasing_lock(&companion);
+            }
         }
+        _ => {}
     });
 }
 
@@ -196,70 +143,15 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     let version = app.package_info().version.to_string();
     log::info!("Pagle Companion {version} starting in tray mode");
 
-    let state = match state::load(&state_dir.state_file()) {
-        Ok(Loaded::State(state)) => state,
-        Ok(Loaded::Missing) => State::default(),
-        Ok(Loaded::Broken) => {
-            log::warn!("state.json couldn't be read; renamed it state.json.broken");
-            State::default()
-        }
-        Err(e) => {
-            log::error!("couldn't read state.json: {e}");
-            State::default()
-        }
-    };
+    let state = companion::load_state(&state_dir);
     let first_run = !state.first_run_done;
-
-    let hooks = Hooks {
-        cancel_queue: {
-            let app = app.clone();
-            Box::new(move || app.state::<Uploads>().cancel())
-        },
-        start_post_link_runs: {
-            let app = app.clone();
-            // CMP-R101: a run for every confirmed logId, and both in-game
-            // downloads, which queue behind the runs (CMP-R46).
-            Box::new(move || {
-                upload::window::trigger_all(&app, Trigger::PostLink);
-                in_game::timer::window::after_link(&app);
-            })
-        },
-        changed: {
-            let app = app.clone();
-            Box::new(move || linking::link_changed(&app))
-        },
-        // CMP-R85: both folders, in every install it knows.
-        delete_data_addon_folders: {
-            let app = app.clone();
-            Box::new(move || in_game::folders::window::delete_folders(&app))
-        },
-    };
-    app.manage(Companion {
-        api: Api::new(&version, api::base_url())?,
-        notifications: Notifications::new(OsNotifier::new(app.clone())),
-        state: Store::new(state_dir.state_file(), state),
-        link: Link::new(Keychain::platform(&state_dir), hooks),
+    companion::manage(
+        app,
         state_dir,
         version,
-        watcher: Mutex::new(None),
-    });
-    app.manage(Scanner::new());
-    app.manage(Writer::new());
-    app.manage(Linking::default());
-    app.manage(Readings::new());
-    app.manage(Uploads::new());
-    // The first-run window (#9) holds notifications with
-    // `catch_logs::window::set_first_run_window`.
-    app.manage(CatchLogs::new(catch_logs::Hooks {
-        start_run: {
-            let app = app.clone();
-            Box::new(move |log_id| upload::window::trigger_one(&app, log_id, Trigger::SwitchOn))
-        },
-        stop_runs: {
-            let app = app.clone();
-            Box::new(move |log_id| app.state::<Uploads>().stop_runs(log_id))
-        },
-    }));
+        state,
+        Box::new(OsNotifier::new(app.clone())),
+    )?;
 
     // CMP-R3, CMP-R91: at every tray-mode start. (`autostart` here is the
     // command line's flag, hence the full path.)
@@ -395,18 +287,14 @@ pub fn show_main_window(app: &AppHandle) {
 fn take_watcher_lock(app: AppHandle) {
     std::thread::spawn(move || {
         let companion = app.state::<Companion>();
+        handover::before_taking_lock(&companion);
         let mut waited = false;
         loop {
             match companion.state_dir.try_lock_watcher() {
                 Ok(Some(lock)) => {
-                    *companion.watcher_slot() = Some(lock);
+                    companion.hold_watcher(lock);
                     log::info!("took the watcher lock");
-                    installs::window::start(&app);
-                    in_game::folders::window::start(&app);
-                    readings::window::start(&app);
-                    catch_logs::window::start(&app);
-                    upload::window::start(&app);
-                    in_game::timer::window::start(&app);
+                    companion::start_watching(&app);
                     let _ = app.emit("status", companion.status());
                     return;
                 }

@@ -6,8 +6,12 @@ pub mod api;
 pub mod autostart;
 pub mod catch_logs;
 pub mod cli;
+pub mod companion;
 pub mod credential_store;
 pub mod device_flow;
+pub mod handover;
+pub mod headless;
+pub mod host;
 pub mod in_game;
 pub mod installs;
 pub mod link;
@@ -29,18 +33,13 @@ pub mod xdg;
 
 use cli::Mode;
 
-/// Exit status of `--headless` on Windows, where headless mode doesn't exist
-/// (CMP Contracts, Command line).
-const HEADLESS_ON_WINDOWS: i32 = 2;
-
 pub fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match cli::parse(&args) {
         // Removal (CMP-R70) comes with Track C.
         Mode::Remove => std::process::exit(0),
-        Mode::Headless if cfg!(windows) => std::process::exit(HEADLESS_ON_WINDOWS),
-        // Headless mode (CMP-R1) comes with Track C.
-        Mode::Headless => std::process::exit(0),
+        // Exits with status 2 on Windows (CMP Contracts, Command line).
+        Mode::Headless => std::process::exit(headless::run()),
         mode => tray::run(mode),
     }
 }

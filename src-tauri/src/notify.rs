@@ -76,7 +76,21 @@ pub trait Notifier: Send + Sync {
     fn show(&self, text: &str);
 }
 
-/// The one notification service of a tray-mode process.
+impl Notifier for Box<dyn Notifier> {
+    fn show(&self, text: &str) {
+        (**self).show(text);
+    }
+}
+
+/// Headless mode's notifier: it shows nothing (CMP-R1). Causes are still
+/// kept, so a log stays awaiting without asking (CMP-R40).
+pub struct Silent;
+
+impl Notifier for Silent {
+    fn show(&self, _text: &str) {}
+}
+
+/// The one notification service of a process.
 pub struct Notifications<N: Notifier> {
     notifier: N,
     raised: Mutex<HashSet<CauseKey>>,

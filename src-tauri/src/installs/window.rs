@@ -5,11 +5,12 @@
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 use super::{BUILT_IN_FOREVER_PRODUCT_UID, Inputs, POLL_INTERVAL, Scanner, Snapshot};
-use crate::tray::Companion;
+use crate::companion::Companion;
+use crate::host::Host;
 
 /// The event that carries a new [`View`] to the window.
 pub const EVENT: &str = "installs";
@@ -47,7 +48,7 @@ pub fn forever_product_uid(companion: &Companion) -> String {
 
 /// Starts scanning for this process, which holds the watcher lock (CMP-R2),
 /// and keeps the window's section up to date.
-pub fn start(app: &AppHandle) {
+pub fn start<H: Host>(app: &H) {
     let scanner = app.state::<Scanner>();
     let updates = scanner.subscribe();
     let inputs_app = app.clone();
@@ -56,13 +57,13 @@ pub fn start(app: &AppHandle) {
         Inputs {
             sources: super::system::db_sources(),
             manual: companion.state.read(|s| s.manual_installs.clone()),
-            uid: forever_product_uid(&companion),
+            uid: forever_product_uid(companion),
         }
     });
     let app = app.clone();
     std::thread::spawn(move || {
         for snapshot in updates {
-            let _ = app.emit(EVENT, View::of(Some(snapshot)));
+            app.emit(EVENT, View::of(Some(snapshot)));
         }
     });
 }
@@ -90,7 +91,7 @@ pub async fn add_wow_folder(app: AppHandle) -> Result<bool, String> {
         return Ok(false);
     };
     let picked: PathBuf = picked.into_path().map_err(|e| e.to_string())?;
-    let installs = super::picked_installs(&picked, &forever_product_uid(&companion))?;
+    let installs = super::picked_installs(&picked, &forever_product_uid(companion))?;
     companion
         .state
         .update(|s| super::add_manual(&mut s.manual_installs, &installs))
