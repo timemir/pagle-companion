@@ -4,7 +4,11 @@
 
 pub mod api;
 pub mod cli;
+pub mod credential_store;
+pub mod device_flow;
 pub mod installs;
+pub mod link;
+pub mod linking;
 pub mod local_log;
 pub mod lua;
 pub mod notify;
@@ -12,6 +16,8 @@ pub mod os_notify;
 pub mod pagle_log;
 pub mod state;
 pub mod state_dir;
+#[cfg(test)]
+mod stub_server;
 pub mod tray;
 pub mod upload_doc;
 

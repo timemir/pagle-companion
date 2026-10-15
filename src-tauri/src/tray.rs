@@ -11,7 +11,10 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuil
 
 use crate::api::{self, Api};
 use crate::cli::{self, Mode};
+use crate::credential_store::Keychain;
 use crate::installs::{self, Scanner};
+use crate::link::{Account, Hooks, Link};
+use crate::linking::{self, Linking};
 use crate::local_log::Logger;
 use crate::notify::Notifications;
 use crate::os_notify::OsNotifier;
@@ -70,10 +73,21 @@ pub struct Companion {
     pub notifications: Notifications<OsNotifier>,
     /// Local state; change it only through `state.update` (CMP Data).
     pub state: Store,
+    /// The link to a Player and its credential; use it through
+    /// [`Companion::account`].
+    pub link: Link,
     watcher: Mutex<Option<WatcherLock>>,
 }
 
 impl Companion {
+    /// The link at work: requests that carry the credential
+    /// (`account().send(…)`), Unlink, and losing the link (CMP-R49, CMP-R63,
+    /// CMP-R65).
+    pub fn account(&self) -> Account<'_, OsNotifier> {
+        self.link
+            .account(&self.api, &self.state, &self.notifications)
+    }
+
     /// Whether this process holds the watcher lock and so may watch (CMP-R2).
     pub fn is_watcher(&self) -> bool {
         self.watcher_slot().is_some()
@@ -127,6 +141,12 @@ pub fn run(mode: Mode) {
             installs::window::installs,
             installs::window::add_wow_folder,
             installs::window::remove_wow_folder,
+            linking::link_status,
+            linking::linking_view,
+            linking::start_link,
+            linking::cancel_link,
+            linking::open_link_page,
+            linking::unlink,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -173,17 +193,29 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     };
     let first_run = !state.first_run_done;
 
+    let hooks = Hooks {
+        changed: {
+            let app = app.clone();
+            Box::new(move || linking::link_changed(&app))
+        },
+        // The queue's cancel and post-link runs (#28) and the data addon
+        // folders (B4) plug in here.
+        ..Hooks::default()
+    };
     app.manage(Companion {
         api: Api::new(&version, api::base_url())?,
         notifications: Notifications::new(OsNotifier::new(app.clone())),
         state: Store::new(state_dir.state_file(), state),
+        link: Link::new(Keychain::platform(&state_dir), hooks),
         state_dir,
         version,
         watcher: Mutex::new(None),
     });
     app.manage(Scanner::new());
+    app.manage(Linking::default());
 
     build_tray(app)?;
+    linking::start(app);
     if opens_window_at_start(autostart, first_run) {
         show_main_window(app);
     }
@@ -198,6 +230,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let upload_now = MenuItem::with_id(app, "upload-now", "Upload now", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&status, &open, &upload_now, &quit])?;
+    app.manage(TrayItems { status, upload_now });
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Pagle Companion")
@@ -214,6 +247,32 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     }
     tray.build(app)?;
     Ok(())
+}
+
+/// The tray menu's items that follow the link.
+struct TrayItems {
+    status: MenuItem<tauri::Wry>,
+    upload_now: MenuItem<tauri::Wry>,
+}
+
+/// The tray's status line as far as linking decides it (CMP UI, tray menu):
+/// "Not linked", or what the window says before anything is uploaded.
+pub fn tray_status_line(linked: bool) -> &'static str {
+    if linked {
+        "Nothing uploaded yet"
+    } else {
+        "Not linked"
+    }
+}
+
+/// Shows the link in the tray: the status line, and **Upload now**, which is
+/// disabled while not linked (CMP UI, tray menu).
+pub fn show_link(app: &AppHandle, linked: bool) {
+    let Some(items) = app.try_state::<TrayItems>() else {
+        return;
+    };
+    let _ = items.status.set_text(tray_status_line(linked));
+    let _ = items.upload_now.set_enabled(linked);
 }
 
 /// Opens the window, creating it on first use, with the webview's data in the
@@ -323,6 +382,14 @@ mod tests {
         assert!(opens_window_at_start(false, true));
         assert!(!opens_window_at_start(true, false));
         assert!(opens_window_at_start(true, true));
+    }
+
+    #[test]
+    fn the_tray_says_not_linked_until_linked() {
+        // CMP UI, tray menu: the status line reads "Not linked" while not
+        // linked
+        assert_eq!(tray_status_line(false), "Not linked");
+        assert_eq!(tray_status_line(true), "Nothing uploaded yet");
     }
 
     #[test]

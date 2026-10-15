@@ -34,3 +34,11 @@ footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
 .install-root { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .accounts { margin: 2px 0 0; padding-left: 18px; }
 button.link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
+/* Status and Linking (CMP UI) */
+[hidden] { display: none !important; }
+.actions { display: flex; gap: 8px; margin: 8px 0; }
+.confirm { border: 1px solid var(--muted); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.user-code { font: 600 32px/1.2 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: .08em; margin: 4px 0 8px; }
+/* Dark on light in both themes, so phones can scan it. */
+.qr { width: 200px; margin: 8px 0; background: #fff; padding: 8px; border-radius: 6px; }
+.qr svg { display: block; width: 100%; height: auto; }

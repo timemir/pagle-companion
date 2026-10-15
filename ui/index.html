@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="style.css" />
     <script src="main.js" defer></script>
     <script src="folders.js" defer></script>
+    <script src="linking.js" defer></script>
   </head>
   <body>
     <main>
@@ -15,7 +16,32 @@
       <section aria-labelledby="status-heading">
         <h2 id="status-heading">Status</h2>
         <p id="link-status">Not linked</p>
+        <p id="keyring-locked" class="notice" hidden>Pagle Companion can't open your keyring. Unlock it to keep uploading.</p>
+        <p class="actions">
+          <button id="link-start" type="button" hidden>Link to Pagle</button>
+          <button id="link-again" type="button" hidden>Link again…</button>
+          <button id="unlink" type="button" hidden>Unlink</button>
+        </p>
+        <div id="unlink-confirm" class="confirm" role="alertdialog" aria-labelledby="unlink-question" hidden>
+          <p id="unlink-question">Unlink this Companion? Pagle keeps your Catch logs; this computer stops uploading.</p>
+          <p class="actions">
+            <button id="unlink-yes" type="button">Unlink</button>
+            <button id="unlink-no" type="button">Cancel</button>
+          </p>
+        </div>
         <p id="last-uploaded">Nothing uploaded yet</p>
+      </section>
+      <section id="linking" aria-labelledby="linking-heading" aria-live="polite" hidden>
+        <h2 id="linking-heading">Linking</h2>
+        <p id="linking-starting">Starting…</p>
+        <div id="linking-waiting" hidden>
+          <p id="user-code" class="user-code"></p>
+          <p>Go to <a id="verification-uri" href="#"></a> and enter this code, or scan:</p>
+          <div id="qr" class="qr"></div>
+          <p>Waiting for you to approve…</p>
+        </div>
+        <p id="linking-outcome" hidden></p>
+        <p class="actions"><button id="link-cancel" type="button">Cancel</button></p>
       </section>
       <section aria-labelledby="folders-heading">
         <h2 id="folders-heading">WoW folders</h2>
