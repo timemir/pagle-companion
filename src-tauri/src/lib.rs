@@ -5,11 +5,14 @@
 pub mod api;
 pub mod cli;
 pub mod local_log;
+pub mod lua;
 pub mod notify;
 pub mod os_notify;
+pub mod pagle_log;
 pub mod state;
 pub mod state_dir;
 pub mod tray;
+pub mod upload_doc;
 
 use cli::Mode;
 

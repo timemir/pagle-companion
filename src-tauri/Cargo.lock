@@ -2485,7 +2485,9 @@ dependencies = [
 name = "pagle-companion"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "dirs",
+ "flate2",
  "humantime",
  "log",
  "notify-rust",
