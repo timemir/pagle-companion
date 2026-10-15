@@ -1,0 +1,264 @@
+# Releases (DST-R40 to R49, DST Contracts "Release workflow"): an annotated
+# tag v<version> builds both packages into a draft Release, verifies their
+# updater signatures, writes latest.json and only then publishes. A published
+# Release is never edited, replaced or deleted (DST-R49).
+#
+# Recovering: a run whose draft, build-windows or build-linux failed is
+# retried by deleting its draft and the tag and pushing the tag again; only
+# publish and winget may be re-run in place (DST-R44).
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+# Two tags never build at once, and a run is never cancelled (DST-R44).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # actions/checkout can make an annotated tag look lightweight, so the
+      # tag object is fetched explicitly before it is tested (DST-R44).
+      - name: Fetch the tag
+        run: git fetch --no-tags --depth=1 origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+
+      - name: List the Releases, drafts included
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/list-releases.sh > "$RUNNER_TEMP/releases.json"
+
+      - id: check
+        name: Check the tag, the version files and the Releases
+        run: |
+          version=$(bash ci/release-check.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/releases.json")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  draft:
+    needs: check
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the tag
+        run: git fetch --no-tags --depth=1 origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+
+      # Named "Pagle Companion <version>", its body the tag's message (DST-R41).
+      - id: draft
+        name: Create the draft Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          bash ci/tag-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+          id=$(jq -n --arg tag "$GITHUB_REF_NAME" --arg name "Pagle Companion $VERSION" \
+              --rawfile body "$RUNNER_TEMP/notes.md" \
+              '{tag_name: $tag, name: $name, body: $body, draft: true, prerelease: false}' \
+            | gh api --method POST "repos/$GITHUB_REPOSITORY/releases" --input - --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  # Unsigned (DST-R20): the updater key is the only signing secret.
+  build-windows:
+    needs: draft
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      # Uploads only the NSIS installer and its .sig (DST-R43). tauri-action
+      # 1.0 renamed the spec's includeUpdaterJson to uploadUpdaterJson.
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.draft.outputs.id }}
+          uploadUpdaterJson: false
+          args: --bundles nsis
+
+      - name: Check that nothing is Authenticode-signed (DST-R20)
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe) +
+                   @(Get-Item src-tauri/target/release/pagle-companion.exe)
+          foreach ($file in $files) {
+            $status = (Get-AuthenticodeSignature $file.FullName).Status
+            if ($status -ne 'NotSigned') {
+              Write-Output "::error::$($file.Name) is $status, not NotSigned (DST-R20)"
+              exit 1
+            }
+            Write-Output "$($file.Name): $status"
+          }
+
+  build-linux:
+    needs: draft
+    # ubuntu-22.04 is the Linux build runner and floor (DST-R30, DST Tunables).
+    runs-on: ubuntu-22.04
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      # Uploads only the AppImage and its .sig (DST-R43).
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.draft.outputs.id }}
+          uploadUpdaterJson: false
+          args: --bundles appimage
+
+  # DST-R46. Until the last step the draft is invisible to the updater, so
+  # latest.json never names a missing or unverified file. Safe to re-run.
+  publish:
+    needs: [check, draft, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.check.outputs.version }}
+      RELEASE_ID: ${{ needs.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the tag
+        run: git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      # A re-run after publishing stops here: a published Release is never
+      # changed (DST-R49).
+      - name: Read the draft
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
+          if ! jq -e --arg tag "$TAG" '.draft and .tag_name == $tag' "$RUNNER_TEMP/release.json" > /dev/null; then
+            echo "::error::Release $RELEASE_ID isn't the draft of $TAG any more; a published Release is never changed (DST-R49)"
+            exit 1
+          fi
+
+      - id: assets
+        name: 1. Check the draft holds exactly the four assets
+        run: bash ci/release-assets.sh "$RUNNER_TEMP/release.json" "$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 2. Verify each .sig against the public key at the tag
+        env:
+          INSTALLER: ${{ steps.assets.outputs.installer }}
+          APPIMAGE: ${{ steps.assets.outputs.appimage }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/assets"
+          for name in "$INSTALLER" "$INSTALLER.sig" "$APPIMAGE" "$APPIMAGE.sig"; do
+            id=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .id' "$RUNNER_TEMP/release.json")
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$id" \
+              > "$RUNNER_TEMP/assets/$name"
+          done
+          pubkey=$(git show "refs/tags/$TAG:src-tauri/tauri.conf.json" | jq -er '.plugins.updater.pubkey')
+          for name in "$INSTALLER" "$APPIMAGE"; do
+            bash ci/verify-sig.sh "$pubkey" "$RUNNER_TEMP/assets/$name" "$RUNNER_TEMP/assets/$name.sig"
+          done
+
+      - name: 3. Write and attach latest.json
+        run: |
+          bash ci/tag-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
+          bash ci/latest-json.sh "$RUNNER_TEMP/release.json" "$VERSION" "$TAG" \
+            "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/assets" > "$RUNNER_TEMP/latest.json"
+          cat "$RUNNER_TEMP/latest.json"
+
+          # Replace a latest.json left by an earlier attempt.
+          for id in $(jq -r '.assets[] | select(.name == "latest.json") | .id' "$RUNNER_TEMP/release.json"); do
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+          done
+          upload_url=$(jq -r '.upload_url | sub("\\{.*\\}$"; "")' "$RUNNER_TEMP/release.json")
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            --data-binary "@$RUNNER_TEMP/latest.json" \
+            "$upload_url?name=latest.json" > /dev/null
+
+          # Exactly five assets now (DST-R41).
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
+          bash ci/release-assets.sh "$RUNNER_TEMP/release.json" "$VERSION" > /dev/null
+          if ! jq -e '[.assets[] | select(.name == "latest.json" and .state == "uploaded")] | length == 1' \
+              "$RUNNER_TEMP/release.json" > /dev/null; then
+            echo "::error::the draft doesn't hold exactly one uploaded latest.json (DST-R41)"
+            exit 1
+          fi
+
+      - name: 4. Check the version again, then publish as the latest Release
+        run: |
+          bash ci/list-releases.sh > "$RUNNER_TEMP/releases.json"
+          bash ci/version-above-latest.sh "$VERSION" "$RUNNER_TEMP/releases.json"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false -F prerelease=false -f make_latest=true > /dev/null
+
+  # DST-R21: only while WINGET_ENABLED is true, set once the first manifest
+  # is merged into winget-pkgs. A failure leaves the Release published; re-run
+  # this job or submit by hand.
+  winget:
+    needs: [check, publish]
+    if: vars.WINGET_ENABLED == 'true'
+    runs-on: windows-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: installer
+        name: Read the installer URL from the published latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern latest.json --dir "$RUNNER_TEMP" --clobber
+          bash ci/winget-args.sh "$RUNNER_TEMP/latest.json" "$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Open the winget-pkgs pull request
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          URL: ${{ steps.installer.outputs.url }}
+          VERSION: ${{ steps.installer.outputs.version }}
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile "$env:RUNNER_TEMP/wingetcreate.exe"
+          & "$env:RUNNER_TEMP/wingetcreate.exe" update timemir.PagleCompanion --urls $env:URL --version $env:VERSION --submit --token $env:WINGET_TOKEN
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -50,3 +50,20 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+  # The release workflow's scripts (DST-R21, R25, R40 to R46), without GitHub.
+  release-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: ShellCheck
+        run: shellcheck -x ci/*.sh
+
+      - name: Test
+        run: bash ci/test.sh
