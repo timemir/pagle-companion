@@ -11,6 +11,7 @@ pub mod companion;
 pub mod credential_store;
 pub mod device_flow;
 pub mod first_run;
+pub mod game_mode;
 pub mod handover;
 pub mod headless;
 pub mod host;
@@ -29,6 +30,7 @@ pub mod state;
 pub mod state_dir;
 #[cfg(test)]
 mod stub_server;
+pub mod systemctl;
 #[cfg(test)]
 mod tauri_conf;
 pub mod tray;

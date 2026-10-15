@@ -89,6 +89,10 @@
       <section class="everyday" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
         <label class="switch"><input id="start-at-login" type="checkbox" role="switch" disabled /><span>Start at login</span></label>
+        <div id="game-mode-setting" hidden>
+          <label class="switch"><input id="game-mode" type="checkbox" role="switch" disabled /><span>Keep uploading in Game Mode (experimental)</span></label>
+          <p class="muted"><button id="steam-deck-report" type="button" class="link">Report how it works on your Steam Deck</button></p>
+        </div>
         <p id="settings-error" class="notice" role="alert" hidden></p>
         <p class="actions"><button id="remove" type="button" hidden>Remove Pagle Companion</button></p>
         <div id="remove-confirm" class="confirm" role="alertdialog" aria-labelledby="remove-question" hidden>

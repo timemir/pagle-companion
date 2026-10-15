@@ -13,14 +13,16 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuil
 use crate::autostart;
 use crate::cli::{self, Mode};
 use crate::companion::{self, Companion, Status};
-use crate::handover;
+use crate::handover::{self, Exit};
 use crate::link::LinkStatus;
 use crate::local_log::Logger;
 use crate::os_notify::OsNotifier;
 use crate::state::State;
 use crate::state_dir::{self, StateDir};
 use crate::upload::{self, queue::Trigger};
-use crate::{appimage, catch_logs, first_run, in_game, installs, linking, readings, removal};
+use crate::{
+    appimage, catch_logs, first_run, game_mode, in_game, installs, linking, readings, removal,
+};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -68,7 +70,11 @@ pub fn run(mode: Mode) {
         .plugin(tauri_plugin_single_instance::init(
             |app, argv, _cwd| match second_start(&argv) {
                 SecondStart::OpenWindow => show_main_window(app),
-                SecondStart::Quit => app.exit(0),
+                SecondStart::Quit => {
+                    // CMP-R92: quitting for --quit doesn't start the unit.
+                    handover::note_exit(Exit::QuitArgument);
+                    app.exit(0);
+                }
                 SecondStart::Nothing => {}
             },
         ));
@@ -117,6 +123,9 @@ pub fn run(mode: Mode) {
             upload::window::last_uploaded,
             upload::window::replace_catch_log,
             removal::window::remove_companion,
+            game_mode::window::game_mode,
+            game_mode::window::set_game_mode,
+            game_mode::window::open_steam_deck_report,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -144,7 +153,12 @@ pub fn run(mode: Mode) {
         RunEvent::Exit => {
             if let Some(companion) = app.try_state::<Companion>() {
                 companion.release_watcher();
-                handover::after_releasing_lock(&companion);
+                let exit = if removal::window::is_removing() {
+                    Exit::Removal
+                } else {
+                    handover::noted_exit()
+                };
+                handover::after_releasing_lock(&companion, exit);
             }
         }
         _ => {}
@@ -156,6 +170,8 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     Logger::install(state_dir.log_file());
     let version = app.package_info().version.to_string();
     log::info!("Pagle Companion {version} starting in tray mode");
+    #[cfg(target_os = "linux")]
+    quit_on_signals(app);
 
     let state = companion::load_state(&state_dir);
     ask_then_start(app, state_dir, version, state, autostart)
@@ -232,6 +248,42 @@ fn start(
     Ok(())
 }
 
+/// **Quit**: exits, and while the Game Mode toggle is on starts the unit
+/// (CMP-R92).
+pub fn quit(app: &AppHandle) {
+    handover::note_exit(Exit::Quit);
+    app.exit(0);
+}
+
+/// CMP-R92: `SIGTERM` or `SIGHUP` (logout, the switch to Game Mode) quits
+/// through the same exit path as **Quit**, so the lock is released and the
+/// unit started. The handlers are the process's own: a child process starts
+/// with the default ones.
+#[cfg(target_os = "linux")]
+fn quit_on_signals(app: &AppHandle) {
+    use tokio::signal::unix::{SignalKind, signal};
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let (mut term, mut hup) = match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            (Ok(term), Ok(hup)) => (term, hup),
+            (Err(e), _) | (_, Err(e)) => {
+                log::error!("couldn't listen for SIGTERM and SIGHUP: {e}");
+                return;
+            }
+        };
+        let name = tokio::select! {
+            _ = term.recv() => "SIGTERM",
+            _ = hup.recv() => "SIGHUP",
+        };
+        log::info!("quitting on {name}");
+        handover::note_exit(Exit::Signal);
+        app.exit(0);
+    });
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Not linked", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Pagle Companion", true, None::<&str>)?;
@@ -262,7 +314,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             // CMP-R45: every confirmed logId, held back or not, no skip.
             "upload-now" => upload::window::trigger_all(app, Trigger::UploadNow),
             "remove" => removal::window::ask(app),
-            "quit" => app.exit(0),
+            "quit" => self::quit(app),
             _ => {}
         });
     if let Some(icon) = app.default_window_icon() {
@@ -360,6 +412,8 @@ pub fn show_main_window(app: &AppHandle) {
 fn take_watcher_lock(app: AppHandle) {
     std::thread::spawn(move || {
         let companion = app.state::<Companion>();
+        // CMP-R91, then CMP-R92's stop: the unit runs this AppImage.
+        game_mode::window::at_start(&companion);
         handover::before_taking_lock(&companion);
         let mut waited = false;
         loop {
@@ -373,6 +427,7 @@ fn take_watcher_lock(app: AppHandle) {
                     log::info!("took the watcher lock");
                     companion::start_watching(&app);
                     let _ = app.emit("status", companion.status());
+                    companion.finish_credential_moves();
                     return;
                 }
                 Ok(None) => {
@@ -460,7 +515,7 @@ mod tests {
 
     #[test]
     fn the_tray_shows_the_stop_message_during_a_stop() {
-        // CMP UI, tray menu: a status line "Last uploaded …", "Not linked",
+        // CMP UI, tray menu: a status line "Last uploaded â€¦", "Not linked",
         // or the stop message (CMP-R50)
         let stop = "This Player is suspended. Contact support@pagle.app.";
         assert_eq!(tray_status_line(true, Some(stop), Some(0), 600), stop);

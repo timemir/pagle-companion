@@ -201,6 +201,38 @@ impl Keychain {
         matches!(file.read(), Ok(Some(_))).then_some(Some(StoreKind::File))
     }
 
+    /// The store `kind` names, when this platform has it: the Secret Service
+    /// and the credential file are Linux's (CMP-R62).
+    pub fn store(&self, kind: StoreKind) -> Option<&dyn CredentialStore> {
+        let file = self.file.as_deref()?;
+        Some(match kind {
+            StoreKind::File => file,
+            StoreKind::SecretService => self.os.as_ref(),
+        })
+    }
+
+    /// CMP-R62: a move writes the credential to the new store, then deletes
+    /// it from the old one, and a delete that fails is retried at the next
+    /// start. So at a start, with the credential in the store `kind` names,
+    /// every other store of this platform lets go of it. Nothing to do
+    /// without a choice of store (Windows, or never linked). Returns the
+    /// deletes that failed, by store, to be tried again at the next start.
+    pub fn delete_from_other_stores(&self, kind: Option<StoreKind>) -> Vec<String> {
+        if kind.is_none() {
+            return Vec::new();
+        }
+        self.every_store(kind)
+            .into_iter()
+            .skip(1)
+            .filter_map(|store| {
+                store
+                    .delete()
+                    .err()
+                    .map(|e| format!("{}: {e}", store.place()))
+            })
+            .collect()
+    }
+
     /// Stores a new link's credential (CMP-R61, CMP-R62) and returns the
     /// `credentialStore` to keep in local state. On Windows: Windows
     /// Credential Manager. On Linux: the credential file in Game Mode;
@@ -252,6 +284,7 @@ pub(crate) mod testing {
         credential: Option<String>,
         fail_reads: Option<StoreError>,
         fail_writes: Option<StoreError>,
+        fail_deletes: Option<StoreError>,
         writes: usize,
     }
 
@@ -279,6 +312,10 @@ pub(crate) mod testing {
 
         pub fn fail_writes(&self, error: Option<StoreError>) {
             self.lock().fail_writes = error;
+        }
+
+        pub fn fail_deletes(&self, error: Option<StoreError>) {
+            self.lock().fail_deletes = error;
         }
 
         pub fn writes(&self) -> usize {
@@ -314,7 +351,11 @@ pub(crate) mod testing {
         }
 
         fn delete(&self) -> Result<(), StoreError> {
-            self.lock().credential = None;
+            let mut inner = self.lock();
+            if let Some(e) = &inner.fail_deletes {
+                return Err(e.clone());
+            }
+            inner.credential = None;
             Ok(())
         }
     }
@@ -531,6 +572,55 @@ mod tests {
             keychain.current(Some(StoreKind::File)).place(),
             "its settings folder"
         );
+    }
+
+    #[test]
+    fn a_start_deletes_the_credential_from_the_store_it_moved_out_of() {
+        // CMP-R62: moving writes the credential to the new store first, then
+        // deletes it from the old one; a delete that fails is retried at the
+        // next start
+        let (secret_service, file, keychain) = linux_keychain();
+        secret_service.write(CREDENTIAL).unwrap();
+        file.write(CREDENTIAL).unwrap();
+        secret_service.fail_deletes(Some(locked()));
+
+        let failed = keychain.delete_from_other_stores(Some(StoreKind::File));
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0].starts_with("your keyring"), "{failed:?}");
+        assert_eq!(secret_service.credential().as_deref(), Some(CREDENTIAL));
+
+        secret_service.fail_deletes(None);
+        assert!(
+            keychain
+                .delete_from_other_stores(Some(StoreKind::File))
+                .is_empty()
+        );
+        assert_eq!(secret_service.credential(), None);
+        assert_eq!(file.credential().as_deref(), Some(CREDENTIAL));
+
+        secret_service.write(CREDENTIAL).unwrap();
+        keychain.delete_from_other_stores(Some(StoreKind::SecretService));
+        assert_eq!(file.credential(), None);
+        assert_eq!(secret_service.credential().as_deref(), Some(CREDENTIAL));
+    }
+
+    #[test]
+    fn without_a_choice_of_store_a_start_deletes_nothing() {
+        // CMP-R62: credentialStore is Linux only and chosen by a link; on
+        // Windows, or before any link, there is no old store
+        let (secret_service, file, keychain) = linux_keychain();
+        secret_service.write(CREDENTIAL).unwrap();
+        file.write(CREDENTIAL).unwrap();
+        assert!(keychain.delete_from_other_stores(None).is_empty());
+        assert_eq!(secret_service.credential().as_deref(), Some(CREDENTIAL));
+        assert_eq!(file.credential().as_deref(), Some(CREDENTIAL));
+
+        let manager = MemoryStore::new("Windows Credential Manager");
+        manager.write(CREDENTIAL).unwrap();
+        let windows = Keychain::new(Box::new(manager.clone()), None);
+        assert!(windows.delete_from_other_stores(None).is_empty());
+        assert_eq!(manager.credential().as_deref(), Some(CREDENTIAL));
+        assert!(windows.store(StoreKind::File).is_none());
     }
 
     #[test]

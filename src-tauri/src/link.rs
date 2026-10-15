@@ -139,6 +139,12 @@ impl Link {
         self.keychain.holding().is_some()
     }
 
+    /// The stores, for the Game Mode toggle's moves and the retried delete
+    /// at start (CMP-R62, CMP-R90).
+    pub fn keychain(&self) -> &Keychain {
+        &self.keychain
+    }
+
     /// Whether the last read found the keyring not answering (CMP-R62).
     pub fn keyring_locked(&self) -> bool {
         self.keyring_locked.load(Ordering::SeqCst)
@@ -456,7 +462,9 @@ impl<N: Notifier> Account<'_, N> {
             // The credential moved: the new store holds it, so the old one
             // lets go.
             if let Err(e) = old_store.delete() {
-                log::warn!("couldn't delete the credential from its old store: {e}");
+                log::warn!(
+                    "couldn't delete the credential from its old store; trying again at the next start: {e}"
+                );
             }
         }
         let saved = self.state.update(|s| {

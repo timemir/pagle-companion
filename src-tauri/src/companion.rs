@@ -65,22 +65,40 @@ impl Companion {
         self.watcher_slot().is_some()
     }
 
-    /// Keeps the watcher lock this process took.
+    /// Keeps the watcher lock this process took. Only now does it write
+    /// local state (CMP-R2).
     pub fn hold_watcher(&self, lock: WatcherLock) {
         *self.watcher_slot() = Some(lock);
+        if let Err(e) = self.state.take_writes() {
+            log::error!("couldn't write state.json: {e}");
+        }
     }
 
     /// Takes the watcher lock out of this process's keeping, for removal on
     /// Linux, which holds it until it deletes the state directory (CMP-R71).
     pub fn take_watcher(&self) -> Option<WatcherLock> {
+        self.state.give_up_writes();
         self.watcher_slot().take()
     }
 
     /// Lets go of the watcher lock, so another process can take it (CMP-R2,
     /// CMP-R92).
     pub fn release_watcher(&self) {
+        self.state.give_up_writes();
         if self.watcher_slot().take().is_some() {
             log::info!("released the watcher lock");
+        }
+    }
+
+    /// CMP-R62: at a start, a delete from the store the credential moved
+    /// out of that failed is tried again. The watcher runs it: only it links
+    /// or moves the credential (CMP-R2).
+    pub fn finish_credential_moves(&self) {
+        let kind = self.state.read(|s| s.credential_store);
+        for failed in self.link.keychain().delete_from_other_stores(kind) {
+            log::info!(
+                "couldn't delete the credential from its old store; trying again at the next start: {failed}"
+            );
         }
     }
 
@@ -157,7 +175,8 @@ pub fn manage<H: Host>(
     host.manage(Companion {
         api: Api::new(&version, api::base_url())?,
         notifications: Notifications::new(notifier),
-        state: Store::new(state_dir.state_file(), state),
+        // Written only while this process holds the watcher lock (CMP-R2).
+        state: Store::until_watcher(state_dir.state_file(), state),
         link: Link::new(Keychain::platform(&state_dir), hooks),
         state_dir,
         version,

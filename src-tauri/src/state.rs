@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
@@ -224,15 +225,60 @@ fn broken_path(path: &Path) -> std::path::PathBuf {
 pub struct Store {
     path: PathBuf,
     state: Mutex<State>,
+    /// Whether this process may write `path`: only the holder of the
+    /// watcher lock writes local state (CMP-R2). Changed only with `state`
+    /// locked.
+    writes: AtomicBool,
+    /// Changes kept in memory because this process couldn't write them.
+    unwritten: AtomicBool,
 }
 
 impl Store {
-    /// Holds `state`, which was read from (or will be written to) `path`.
+    /// Holds `state`, which was read from (or will be written to) `path`,
+    /// and writes it after every change.
     pub fn new(path: impl Into<PathBuf>, state: State) -> Self {
         Self {
             path: path.into(),
             state: Mutex::new(state),
+            writes: AtomicBool::new(true),
+            unwritten: AtomicBool::new(false),
         }
+    }
+
+    /// Like [`Store::new`], but writes nothing until [`Store::take_writes`]:
+    /// a process's own store, until it holds the watcher lock (CMP-R2). A
+    /// read-only window's process keeps its changes in memory, so two
+    /// processes never write the same file.
+    pub fn until_watcher(path: impl Into<PathBuf>, state: State) -> Self {
+        let store = Self::new(path, state);
+        store.writes.store(false, Ordering::SeqCst);
+        store
+    }
+
+    /// This process took the watcher lock, so it writes local state from now
+    /// on (CMP-R2). Changes it kept in memory meanwhile are written at once.
+    /// Without any, local state is read again from the file, which the
+    /// process that held the lock until now (the Game Mode unit's, CMP-R92)
+    /// may have changed since this one read it.
+    pub fn take_writes(&self) -> io::Result<()> {
+        let mut state = self.lock();
+        self.writes.store(true, Ordering::SeqCst);
+        if self.unwritten.swap(false, Ordering::SeqCst) {
+            log::info!("writing the changes kept while another process held the watcher lock");
+            if state.first_run_done {
+                save(&self.path, &state)?;
+            }
+        } else if let Some(newer) = fs::read(&self.path).ok().and_then(|b| parse(&b)) {
+            *state = newer;
+        }
+        Ok(())
+    }
+
+    /// This process let go of the watcher lock: later changes stay in memory
+    /// (CMP-R2).
+    pub fn give_up_writes(&self) {
+        let _state = self.lock();
+        self.writes.store(false, Ordering::SeqCst);
     }
 
     /// Reads local state with `f`, without writing anything.
@@ -241,12 +287,15 @@ impl Store {
     }
 
     /// Changes local state with `f`, then writes it whole unless a first run
-    /// hasn't ended step 1 yet. A failed write keeps the change in memory, so
-    /// the next update writes it.
+    /// hasn't ended step 1 yet, or this process may not write it (CMP-R2). A
+    /// failed or held-back write keeps the change in memory, so the next
+    /// write takes it along.
     pub fn update<R>(&self, f: impl FnOnce(&mut State) -> R) -> io::Result<R> {
         let mut state = self.lock();
         let result = f(&mut state);
-        if state.first_run_done {
+        if !self.writes.load(Ordering::SeqCst) {
+            self.unwritten.store(true, Ordering::SeqCst);
+        } else if state.first_run_done {
             save(&self.path, &state)?;
         }
         Ok(result)
@@ -260,6 +309,60 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn done(battle_tag: &str) -> State {
+        State {
+            first_run_done: true,
+            battle_tag: Some(battle_tag.into()),
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn only_the_watcher_writes_local_state() {
+        // CMP-R2: only the process holding the watcher lock writes; a
+        // read-only process keeps its changes in memory
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.json");
+        let store = Store::until_watcher(&path, State::default());
+
+        store.update(|s| *s = done("Ada#1234")).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            store.read(|s| s.battle_tag.clone()).as_deref(),
+            Some("Ada#1234")
+        );
+
+        // Taking the lock writes what was kept.
+        store.take_writes().unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("Ada#1234"));
+
+        // Letting go of it writes nothing more.
+        store.give_up_writes();
+        store
+            .update(|s| s.battle_tag = Some("Bo#1".into()))
+            .unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("Bo#1"));
+    }
+
+    #[test]
+    fn taking_the_lock_reads_what_the_last_watcher_wrote() {
+        // CMP-R92: the Game Mode unit's headless process watched and wrote
+        // local state until the tray-mode start stopped it; CMP-R2: the new
+        // watcher carries on from that, not from what it read before
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.json");
+        save(&path, &done("Old#1")).unwrap();
+        let store = Store::until_watcher(&path, done("Old#1"));
+
+        // The headless process writes, then lets go of the lock.
+        save(&path, &done("New#2")).unwrap();
+        store.take_writes().unwrap();
+        assert_eq!(
+            store.read(|s| s.battle_tag.clone()).as_deref(),
+            Some("New#2")
+        );
+    }
 
     /// CMP Data's example of `state.json`, version 1, verbatim.
     const EXAMPLE: &str = r#"{ "v": 1,

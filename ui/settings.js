@@ -1,6 +1,8 @@
 // The window's Settings (CMP UI): "Start at login" (CMP-R3), on by default.
 // Turning it off deletes the autostart entry; the Companion keeps the setting
-// and says when it couldn't change the entry. On Linux, Remove Pagle
+// and says when it couldn't change the entry. On SteamOS as an AppImage,
+// "Keep uploading in Game Mode (experimental)" (CMP-R90), off by default,
+// with the Steam Deck report link (DST-R71). On Linux, Remove Pagle
 // Companion (CMP-R71).
 (() => {
   const { invoke } = window.__TAURI__.core;
@@ -36,6 +38,47 @@
         busy = false;
         render();
       });
+  });
+
+  // Keep uploading in Game Mode (CMP-R90): turning it on or off runs
+  // systemctl, which may take a moment; a failure leaves it as it was and
+  // shows the Companion's text.
+  const gameModeSetting = document.getElementById("game-mode-setting");
+  const gameMode = document.getElementById("game-mode");
+  let gameModeKnown = false;
+  let gameModeBusy = false;
+
+  function renderGameMode() {
+    gameMode.disabled = readOnly || !gameModeKnown || gameModeBusy;
+  }
+
+  gameMode.addEventListener("change", () => {
+    const on = gameMode.checked;
+    gameModeBusy = true;
+    error.hidden = true;
+    renderGameMode();
+    invoke("set_game_mode", { on })
+      .then((now) => {
+        gameMode.checked = now;
+      })
+      .catch((message) => {
+        gameMode.checked = !on;
+        error.textContent = String(message);
+        error.hidden = false;
+      })
+      .finally(() => {
+        gameModeBusy = false;
+        renderGameMode();
+      });
+  });
+  document.getElementById("steam-deck-report").addEventListener("click", () => {
+    invoke("open_steam_deck_report");
+  });
+  invoke("game_mode").then((view) => {
+    gameMode.checked = view.on;
+    gameModeSetting.hidden = !view.shown;
+    gameModeKnown = true;
+    renderGameMode();
   });
 
   // On Linux, Remove Pagle Companion behind its question (CMP-R71). Remove
@@ -74,10 +117,12 @@
     readOnly = status.readOnly;
     showRemove(status);
     render();
+    renderGameMode();
   });
   listen("status", (event) => {
     readOnly = event.payload.readOnly;
     showRemove(event.payload);
     render();
+    renderGameMode();
   });
 })();

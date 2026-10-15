@@ -22,16 +22,12 @@ use crate::link::{self, REVOKE_TIMEOUT};
 use crate::local_log::Logger;
 use crate::state::State;
 use crate::state_dir::{self, StateDir, WatcherLock};
+use crate::systemctl::{OsSystemctl, wait_until};
 use crate::tray::LOCK_WAIT;
 use crate::xdg;
 
 /// How often the lock wait tries the lock.
 const LOCK_POLL: Duration = Duration::from_millis(100);
-
-/// How long a `systemctl` call may take before removal ends it and carries
-/// on. Not a spec tunable: it only keeps a hung `systemctl` from holding up
-/// the removal wait (DST Tunables).
-pub const COMMAND_WAIT: Duration = Duration::from_secs(10);
 
 /// How long step 5 keeps trying to delete the state directory, while the
 /// processes that just quit (and on Windows the webview's own processes)
@@ -98,42 +94,7 @@ impl Commands for OsCommands {
     }
 
     fn systemctl(&mut self, args: &[&str]) -> Result<bool, String> {
-        let spawned = Command::new("systemctl")
-            .arg("--user")
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let mut child = match spawned {
-            Ok(child) => child,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(format!("couldn't run systemctl: {e}")),
-        };
-        match wait_until(&mut child, Instant::now() + COMMAND_WAIT) {
-            Some(status) if status.success() => Ok(true),
-            Some(status) => Err(format!(
-                "systemctl --user {} exited with {status}",
-                args.join(" ")
-            )),
-            None => Err(format!("systemctl --user {} took too long", args.join(" "))),
-        }
-    }
-}
-
-/// Waits for `child` until `deadline`, then kills it. `None` if it had to be
-/// killed.
-fn wait_until(child: &mut Child, deadline: Instant) -> Option<std::process::ExitStatus> {
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => sleep(LOCK_POLL),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+        OsSystemctl::new().call(args)
     }
 }
 

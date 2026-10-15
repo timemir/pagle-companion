@@ -101,6 +101,8 @@ pub fn start(state_dir: StateDir, version: &str) -> Result<Start, Box<dyn Error>
     log::info!("took the watcher lock");
     linking::start(&parts);
     companion::start_watching(&parts);
+    // CMP-R62: a failed delete from a store the credential moved out of.
+    parts.state::<Companion>().finish_credential_moves();
     Ok(Start::Watching(Watching { parts }))
 }
 
