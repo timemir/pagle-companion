@@ -487,9 +487,13 @@ mod tests {
             let (busy, stop) = (busy.clone(), Arc::clone(&stop));
             std::thread::spawn(move || {
                 let mut n = 0u64;
+                // Paced, so events keep arriving without starving the rest
+                // of the suite's file I/O (an unpaced loop slowed every
+                // test on Windows, where each write is scanned).
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     n += 1;
                     let _ = fs::write(busy.join("Pagle.lua"), n.to_string());
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             })
         };

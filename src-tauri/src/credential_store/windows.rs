@@ -170,14 +170,24 @@ fn read_attributes(target: &str) -> Result<(String, u32), StoreError> {
 mod tests {
     use super::*;
 
+    /// Credential Manager sometimes loses one of two writes that one process
+    /// makes to different entries at the same moment (seen as a read right
+    /// after a write finding nothing), so these tests take turns.
+    static CREDENTIAL_MANAGER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A test-only entry, deleted when dropped, so tests never touch the
-    /// Companion's real `pagle-companion:credential`.
-    struct TestEntry(CredentialManager);
+    /// Companion's real `pagle-companion:credential`. It holds the turn until
+    /// then.
+    struct TestEntry(
+        CredentialManager,
+        #[allow(dead_code)] std::sync::MutexGuard<'static, ()>,
+    );
 
     impl TestEntry {
         fn new(name: &str) -> Self {
+            let turn = CREDENTIAL_MANAGER.lock().unwrap_or_else(|e| e.into_inner());
             let target = format!("pagle-companion-test:{name}:{}", std::process::id());
-            Self(CredentialManager::with_target(target))
+            Self(CredentialManager::with_target(target), turn)
         }
     }
 

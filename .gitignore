@@ -2,3 +2,4 @@
 /src-tauri/target/
 /src-tauri/gen/schemas/
 /ci/test-build.conf.json
+/.claude/worktrees/
