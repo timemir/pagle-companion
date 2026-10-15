@@ -21,7 +21,12 @@
 ; ("Uninstall before installing" on its reinstall page) inherits it, and knows
 ; that it runs during an install over an existing one, not a real uninstall.
 ; Tauri runs it there without /UPDATE (in update mode it doesn't run it at
-; all), so /UPDATE alone can't tell the two apart.
+; all), so /UPDATE alone can't tell the two apart. Picking "Uninstall Pagle
+; Companion" on the reinstall page of the same version counts as an install
+; over too: Tauri's installer goes on to install afterwards.
+;
+; An installer sets the marker and an older version's uninstaller reads it, so
+; its name never changes.
 !define PAGLE_INSTALLER_ENV "PAGLE_COMPANION_INSTALLER"
 
 ; Tauri's finish page offers a desktop shortcut through MUI's "show readme"
@@ -92,7 +97,9 @@ FunctionEnd
 ; the Installed apps entry whatever `--remove` did. During an update (/UPDATE)
 ; or an install over an existing one (the installer's marker), `--remove`
 ; doesn't run and local state is kept, including the autostart entry, which
-; Tauri's uninstaller would otherwise delete.
+; Tauri's uninstaller would otherwise delete. The Companion is still closed
+; then: its files can't be replaced while it runs, and the installer would
+; close it anyway (DST-R10).
 !macro NSIS_HOOK_PREUNINSTALL
   ReadEnvStr $0 ${PAGLE_INSTALLER_ENV}
   ${If} $UpdateMode = 1
@@ -115,13 +122,29 @@ FunctionEnd
     ; --remove writes nothing to stdout, so that is the whole run.
     nsExec::Exec /TIMEOUT=${PAGLE_REMOVAL_WAIT_MS} '"$INSTDIR\${MAINBINARYNAME}.exe" --remove'
     Pop $0
-    DetailPrint "--remove: $0"
+    ${If} $0 == "timeout"
+      DetailPrint "--remove still ran after the removal wait and was ended"
+    ${Else}
+      DetailPrint "--remove: $0"
+    ${EndIf}
   ${EndIf}
 !macroend
 
+; After Tauri has deleted the program files, the Start menu shortcut, the
+; Installed apps entry and the autostart entry.
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $PagleKeepState = 1
-  ${AndIf} $PagleRunValue != ""
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" $PagleRunValue
+    ; Tauri's uninstaller deleted the autostart entry; the install that goes
+    ; on keeps it (DST-R10).
+    ${If} $PagleRunValue != ""
+      WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}" $PagleRunValue
+    ${EndIf}
+  ${Else}
+    ; Tauri keeps the install location (and the installer's language) in
+    ; Software\Pagle\Pagle Companion unless "Delete the application data" is
+    ; ticked. An uninstall leaves nothing of the install behind, ticked or
+    ; not (DST-R14).
+    DeleteRegKey SHCTX "${MANUPRODUCTKEY}"
+    DeleteRegKey /ifempty SHCTX "${MANUKEY}"
   ${EndIf}
 !macroend
