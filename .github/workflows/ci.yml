@@ -9,9 +9,11 @@ on:
 permissions:
   contents: read
 
+# Pull requests cancel their own superseded runs; every commit on main gets its
+# own run, so parallel pushes never hide each other's results.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
