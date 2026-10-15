@@ -82,6 +82,10 @@ fn is_change(filter: &Filter, kind: &EventKind, path: &Path) -> bool {
 
 type Filters = Arc<Mutex<HashMap<PathBuf, Filter>>>;
 
+fn lock_filters(filters: &Filters) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Filter>> {
+    filters.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A set of watched folders. Changes in watched folders are reported to the
 /// callback given to [`Watches::new`], from the watcher's own thread; changes
 /// in polled folders are returned by [`Watches::poll`].
@@ -107,7 +111,7 @@ impl Watches {
                     return;
                 }
             };
-            let filters = filters.lock().unwrap_or_else(|e| e.into_inner());
+            let filters = lock_filters(&filters);
             for path in &event.paths {
                 // The folder itself, or one of its entries.
                 for dir in [Some(path.as_path()), path.parent()].into_iter().flatten() {
@@ -142,16 +146,24 @@ impl Watches {
 
     /// Makes `wanted` the set of folders watched: stops watching the others,
     /// and watches the new ones, or polls those that can't be watched.
+    ///
+    /// The filters' lock is never held across a call into the watcher: the
+    /// watcher's own thread, which runs the event handler that takes that
+    /// lock, answers `watch` and `unwatch` (notify's inotify backend), so
+    /// holding it there could deadlock.
     pub fn set(&mut self, wanted: &[(PathBuf, Filter)]) {
-        let mut watched = self.watched.lock().unwrap_or_else(|e| e.into_inner());
-        let stale: Vec<PathBuf> = watched
-            .keys()
-            .filter(|dir| !wanted.iter().any(|(w, _)| w == *dir))
-            .cloned()
-            .collect();
-        for dir in stale {
-            watched.remove(&dir);
-            if let Some(watcher) = self.watcher.as_mut() {
+        let stale: Vec<PathBuf> = {
+            let mut watched = lock_filters(&self.watched);
+            let stale = watched
+                .keys()
+                .filter(|dir| !wanted.iter().any(|(w, _)| w == *dir))
+                .cloned()
+                .collect();
+            watched.retain(|dir, _| wanted.iter().any(|(w, _)| w == dir));
+            stale
+        };
+        if let Some(watcher) = self.watcher.as_mut() {
+            for dir in stale {
                 let _ = watcher.unwatch(&dir);
             }
         }
@@ -159,32 +171,29 @@ impl Watches {
             .retain(|dir, _| wanted.iter().any(|(w, _)| w == dir));
 
         for (dir, filter) in wanted {
-            if watched.contains_key(dir) || self.polled.contains_key(dir) {
+            if lock_filters(&self.watched).contains_key(dir) || self.polled.contains_key(dir) {
                 continue;
             }
             let refused = if is_network_path(dir) {
                 Some("it is on a network file system".to_owned())
+            } else if let Some(watcher) = self.watcher.as_mut() {
+                // In place before the watch starts, so no event is missed.
+                lock_filters(&self.watched).insert(dir.clone(), filter.clone());
+                let refused = watcher.watch(dir, RecursiveMode::NonRecursive).err();
+                if refused.is_some() {
+                    lock_filters(&self.watched).remove(dir);
+                }
+                refused.map(|e| e.to_string())
             } else {
-                match self.watcher.as_mut() {
-                    None => Some("folder watching isn't available".to_owned()),
-                    Some(watcher) => watcher
-                        .watch(dir, RecursiveMode::NonRecursive)
-                        .err()
-                        .map(|e| e.to_string()),
-                }
+                Some("folder watching isn't available".to_owned())
             };
-            match refused {
-                None => {
-                    watched.insert(dir.clone(), filter.clone());
-                }
-                Some(reason) => {
-                    log::info!(
-                        "checking {} every poll interval instead of watching it: {reason}",
-                        dir.display()
-                    );
-                    self.polled
-                        .insert(dir.clone(), (filter.clone(), fingerprint(dir, filter)));
-                }
+            if let Some(reason) = refused {
+                log::info!(
+                    "checking {} every poll interval instead of watching it: {reason}",
+                    dir.display()
+                );
+                self.polled
+                    .insert(dir.clone(), (filter.clone(), fingerprint(dir, filter)));
             }
         }
     }
@@ -462,5 +471,46 @@ mod tests {
 
         fs::create_dir(account.join("ADA#1")).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), account);
+    }
+
+    #[test]
+    fn changing_the_watched_set_while_events_arrive_never_hangs() {
+        // CMP-R15, CMP-R20: folders are watched and unwatched as account
+        // folders and SavedVariables/ appear or go, while the game saves
+        let tmp = tempfile::tempdir().unwrap();
+        let busy = tmp.path().join("SavedVariables");
+        let other = tmp.path().join("Account");
+        fs::create_dir(&busy).unwrap();
+        fs::create_dir(&other).unwrap();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (busy, stop) = (busy.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let mut n = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    n += 1;
+                    let _ = fs::write(busy.join("Pagle.lua"), n.to_string());
+                }
+            })
+        };
+
+        let (done_tx, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut watches = Watches::new(|_| {});
+            let pagle = Filter::Name("Pagle.lua".into());
+            for _ in 0..200 {
+                watches.set(&[(busy.clone(), pagle.clone())]);
+                watches.set(&[
+                    (busy.clone(), pagle.clone()),
+                    (other.clone(), Filter::Entries),
+                ]);
+                watches.set(&[(other.clone(), Filter::Entries)]);
+            }
+            let _ = done_tx.send(());
+        });
+        let finished = done.recv_timeout(Duration::from_secs(60));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        assert!(finished.is_ok(), "Watches::set hung");
     }
 }
