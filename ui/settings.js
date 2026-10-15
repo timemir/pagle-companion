@@ -2,7 +2,7 @@
 // Turning it off deletes the autostart entry; the Companion keeps the setting
 // and says when it couldn't change the entry. On SteamOS as an AppImage,
 // "Keep uploading in Game Mode (experimental)" (CMP-R90), off by default,
-// with the Steam Deck report link (DST-R71). On Linux, Remove Pagle
+// with the Steam Deck report link (DST-R71). Quit, and on Linux Remove Pagle
 // Companion (CMP-R71).
 (() => {
   const { invoke } = window.__TAURI__.core;
@@ -106,6 +106,12 @@
       error.textContent = String(message);
       error.hidden = false;
     });
+  });
+
+  // Quit (CMP UI): the tray's Quit, also here for desktops without a tray.
+  // It works from a read-only window too.
+  document.getElementById("quit").addEventListener("click", () => {
+    invoke("quit_companion");
   });
 
   invoke("start_at_login").then((on) => {

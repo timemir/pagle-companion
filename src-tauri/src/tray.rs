@@ -104,6 +104,7 @@ pub fn run(mode: Mode) {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             status,
+            quit_companion,
             autostart::window::start_at_login,
             autostart::window::set_start_at_login,
             installs::window::installs,
@@ -260,6 +261,13 @@ fn start(
 pub fn quit(app: &AppHandle) {
     handover::note_exit(Exit::Quit);
     app.exit(0);
+}
+
+/// **Quit** in the window's Settings (CMP UI), the same as the tray's: where
+/// no tray is available, Settings is the only way to quit.
+#[tauri::command]
+fn quit_companion(app: AppHandle) {
+    quit(&app);
 }
 
 /// CMP-R92: `SIGTERM` or `SIGHUP` (logout, the switch to Game Mode) quits
