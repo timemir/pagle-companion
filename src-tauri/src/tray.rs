@@ -14,6 +14,7 @@ use crate::api::{self, Api};
 use crate::catch_logs::{self, CatchLogs};
 use crate::cli::{self, Mode};
 use crate::credential_store::Keychain;
+use crate::in_game::{self, folders::Writer};
 use crate::installs::{self, Scanner};
 use crate::link::{Account, Hooks, Link, LinkStatus};
 use crate::linking::{self, Linking};
@@ -145,6 +146,7 @@ pub fn run(mode: Mode) {
             installs::window::installs,
             installs::window::add_wow_folder,
             installs::window::remove_wow_folder,
+            in_game::folders::window::in_game_folders,
             linking::link_status,
             linking::linking_view,
             linking::start_link,
@@ -220,8 +222,11 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
             let app = app.clone();
             Box::new(move || linking::link_changed(&app))
         },
-        // The data addon folders (B4) plug in here.
-        ..Hooks::default()
+        // CMP-R85: both folders, in every install it knows.
+        delete_data_addon_folders: {
+            let app = app.clone();
+            Box::new(move || in_game::folders::window::delete_folders(&app))
+        },
     };
     app.manage(Companion {
         api: Api::new(&version, api::base_url())?,
@@ -233,6 +238,7 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
         watcher: Mutex::new(None),
     });
     app.manage(Scanner::new());
+    app.manage(Writer::new());
     app.manage(Linking::default());
     app.manage(Readings::new());
     app.manage(Uploads::new());
@@ -386,6 +392,7 @@ fn take_watcher_lock(app: AppHandle) {
                     *companion.watcher_slot() = Some(lock);
                     log::info!("took the watcher lock");
                     installs::window::start(&app);
+                    in_game::folders::window::start(&app);
                     readings::window::start(&app);
                     catch_logs::window::start(&app);
                     upload::window::start(&app);

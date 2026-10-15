@@ -32,6 +32,7 @@ http = "1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"

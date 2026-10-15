@@ -1,6 +1,7 @@
 // The window's WoW folders section (CMP UI): each install with its account
-// folders, "Add a WoW folder…" and Remove (CMP-R13), and each account
-// folder's read problem (CMP-R30, CMP-R31) and polling note (CMP-R22).
+// folders, "Add a WoW folder…" and Remove (CMP-R13), each account folder's
+// read problem (CMP-R30, CMP-R31) and polling note (CMP-R22), and the data
+// addon folders' write failures (CMP-R83).
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -12,6 +13,7 @@
 
   let view = null;
   let readings = null;
+  let inGame = null;
   let readOnly = false;
 
   function element(tag, className, text) {
@@ -83,7 +85,19 @@
     if (install.accountsPolled) {
       item.append(element("p", "muted", pollText(view.pollSeconds)));
     }
+    for (const failure of writeFailures((f) => f.flavor === install.flavor)) {
+      item.append(failureLine(failure));
+    }
     return item;
+  }
+
+  // "Couldn't write the in-game files to {data addon folder path}." (CMP-R83).
+  function writeFailures(which) {
+    return inGame ? inGame.failures.filter(which) : [];
+  }
+
+  function failureLine(failure) {
+    return element("div", "read-problem", failure.text);
   }
 
   // A manual install that no longer qualifies: greyed, "Not found" (CMP-R13).
@@ -101,6 +115,13 @@
     if (snapshot) {
       for (const install of snapshot.installs) list.append(installRow(install));
       for (const path of snapshot.notFound) list.append(notFoundRow(path));
+      // A failing install the last scan no longer lists still shows.
+      const shown = new Set(snapshot.installs.map((i) => i.flavor));
+      for (const failure of writeFailures((f) => !shown.has(f.flavor))) {
+        const item = element("li", "install");
+        item.append(failureLine(failure));
+        list.append(item);
+      }
     }
     // CMP-R2: nothing changes from a read-only window.
     add.disabled = readOnly || !snapshot;
@@ -129,7 +150,14 @@
     render();
   }
 
+  function setInGame(next) {
+    inGame = next;
+    render();
+  }
+
   invoke("installs").then(setView);
+  invoke("in_game_folders").then(setInGame);
+  listen("in-game-folders", (event) => setInGame(event.payload));
   invoke("readings").then(setReadings);
   listen("readings", (event) => setReadings(event.payload));
   listen("installs", (event) => setView(event.payload));
