@@ -17,9 +17,10 @@ use crate::handover;
 use crate::link::LinkStatus;
 use crate::local_log::Logger;
 use crate::os_notify::OsNotifier;
+use crate::state::State;
 use crate::state_dir::{self, StateDir};
 use crate::upload::{self, queue::Trigger};
-use crate::{catch_logs, in_game, installs, linking, readings, removal};
+use crate::{appimage, catch_logs, in_game, installs, linking, readings, removal};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -145,6 +146,55 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     log::info!("Pagle Companion {version} starting in tray mode");
 
     let state = companion::load_state(&state_dir);
+    ask_then_start(app, state_dir, version, state, autostart)
+}
+
+/// DST-R32: on Linux, the question about moving out of Downloads comes before
+/// anything else, first run included (CMP-R100). The rest of the start
+/// follows its answer, unless **Move** starts the moved copy and exits.
+#[cfg(target_os = "linux")]
+fn ask_then_start(
+    app: &AppHandle,
+    state_dir: StateDir,
+    version: String,
+    state: State,
+    autostart: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state_file = state_dir.state_file();
+    let mode = Mode::Tray { autostart };
+    appimage::window::ask_then(app, mode, state_file, state, move |app, state| {
+        if let Err(e) = start(app, state_dir, version, state, autostart) {
+            log::error!("couldn't start tray mode: {e}");
+            app.exit(1);
+        }
+    });
+    Ok(())
+}
+
+/// No AppImage, so no question, off Linux.
+#[cfg(not(target_os = "linux"))]
+fn ask_then_start(
+    app: &AppHandle,
+    state_dir: StateDir,
+    version: String,
+    state: State,
+    autostart: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    start(app, state_dir, version, state, autostart)
+}
+
+/// The rest of a tray-mode start, once DST-R32's question (if any) is
+/// answered.
+fn start(
+    app: &AppHandle,
+    state_dir: StateDir,
+    version: String,
+    state: State,
+    autostart: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // DST-R31: at every start.
+    appimage::menu::at_start();
+
     let first_run = !state.first_run_done;
     companion::manage(
         app,

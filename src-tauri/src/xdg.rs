@@ -1,5 +1,6 @@
 //! The Linux desktop's shared conventions: `$XDG_CONFIG_HOME` (`~/.config`
-//! when unset, CMP-R3 "here and below") and the Desktop Entry
+//! when unset, CMP-R3 "here and below"), `$XDG_DATA_HOME` (`~/.local/share`
+//! when unset, where the menu entry is, DST-R31) and the Desktop Entry
 //! Specification's quoting of an `Exec` path (DST-R31). The autostart entry
 //! (CMP-R3), the menu entry (DST-R31) and the Game Mode unit (CMP Contracts)
 //! all point at `$APPIMAGE` quoted this way.
@@ -32,17 +33,44 @@ pub fn unit_path(config_home: &Path) -> PathBuf {
     config_home.join("systemd").join("user").join(UNIT_NAME)
 }
 
-/// The menu entry, `~/.local/share/applications/app.pagle.companion.desktop`
-/// (DST-R31, DST Contracts "Desktop entry").
-pub fn menu_entry_path(home: &Path) -> PathBuf {
-    home.join(".local/share/applications/app.pagle.companion.desktop")
+/// `$XDG_DATA_HOME`, or `~/.local/share` when it is unset, read as
+/// [`config_home`] reads `$XDG_CONFIG_HOME`. Desktops look for menu entries
+/// and icons under it, so the menu entry goes there (DST-R31).
+pub fn data_home(xdg_data_home: Option<OsString>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg_data_home
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(|home| home.join(".local").join("share")))
+}
+
+/// [`data_home`] of this process's environment.
+pub fn this_data_home() -> Option<PathBuf> {
+    data_home(std::env::var_os("XDG_DATA_HOME"), dirs::home_dir())
+}
+
+/// The menu entry's name, which its icon shares (DST Contracts "Desktop
+/// entry": `Icon=app.pagle.companion`).
+pub const MENU_ENTRY_ID: &str = "app.pagle.companion";
+
+/// The menu entry, `<data home>/applications/app.pagle.companion.desktop`,
+/// by default `~/.local/share/applications/…` (DST-R31, DST Contracts
+/// "Desktop entry").
+pub fn menu_entry_path(data_home: &Path) -> PathBuf {
+    data_home
+        .join("applications")
+        .join(format!("{MENU_ENTRY_ID}.desktop"))
 }
 
 /// The menu entry's icon,
-/// `~/.local/share/icons/hicolor/256x256/apps/app.pagle.companion.png`
-/// (DST-R31).
-pub fn menu_icon_path(home: &Path) -> PathBuf {
-    home.join(".local/share/icons/hicolor/256x256/apps/app.pagle.companion.png")
+/// `<data home>/icons/hicolor/256x256/apps/app.pagle.companion.png`, by
+/// default `~/.local/share/icons/…` (DST-R31, DST Tunables).
+pub fn menu_icon_path(data_home: &Path) -> PathBuf {
+    data_home
+        .join("icons")
+        .join("hicolor")
+        .join("256x256")
+        .join("apps")
+        .join(format!("{MENU_ENTRY_ID}.png"))
 }
 
 /// `$APPIMAGE`: the AppImage this process runs from. `None` for a
@@ -121,15 +149,33 @@ mod tests {
             unit_path(cfg),
             Path::new("/home/u/.config/systemd/user/pagle-companion.service")
         );
-        let home = Path::new("/home/u");
+        let data = Path::new("/home/u/.local/share");
         assert_eq!(
-            menu_entry_path(home),
+            menu_entry_path(data),
             Path::new("/home/u/.local/share/applications/app.pagle.companion.desktop")
         );
         assert_eq!(
-            menu_icon_path(home),
+            menu_icon_path(data),
             Path::new("/home/u/.local/share/icons/hicolor/256x256/apps/app.pagle.companion.png")
         );
+    }
+
+    #[test]
+    fn data_home_is_xdg_data_home_else_dot_local_share() {
+        // DST-R31: the menu entry goes where desktops look for it,
+        // $XDG_DATA_HOME, which is ~/.local/share when unset; a relative or
+        // empty value counts as unset (XDG Base Directory Specification)
+        let data = std::env::temp_dir().join("data");
+        let home = Some(PathBuf::from("/home/u"));
+        let default = Some(Path::new("/home/u").join(".local").join("share"));
+        assert_eq!(
+            data_home(Some(data.clone().into()), home.clone()),
+            Some(data)
+        );
+        assert_eq!(data_home(None, home.clone()), default);
+        assert_eq!(data_home(Some("".into()), home.clone()), default);
+        assert_eq!(data_home(Some("share".into()), home), default);
+        assert_eq!(data_home(None, None), None);
     }
 
     #[test]

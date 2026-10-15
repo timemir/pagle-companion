@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use super::{Effects, Step};
 use crate::api::{self, Api};
+use crate::appimage::menu::MenuEntry;
 use crate::companion;
 use crate::credential_store::Keychain;
 use crate::in_game::folders;
@@ -156,8 +157,8 @@ pub struct System {
     pub lock_wait: Duration,
     /// `$XDG_CONFIG_HOME`, where the Game Mode unit is (Linux).
     pub config_home: Option<PathBuf>,
-    /// The home folder, where the menu entry is (Linux, DST-R31).
-    pub home: Option<PathBuf>,
+    /// `$XDG_DATA_HOME`, where the menu entry is (Linux, DST-R31).
+    pub data_home: Option<PathBuf>,
     /// `$APPIMAGE` (Linux).
     pub appimage: Option<PathBuf>,
     /// The `product.db` folders the scan reads (CMP-R10).
@@ -188,7 +189,7 @@ impl System {
             revoke_timeout: REVOKE_TIMEOUT,
             lock_wait: LOCK_WAIT,
             config_home: None,
-            home: None,
+            data_home: None,
             appimage: None,
             db_sources: Vec::new(),
             commands,
@@ -227,7 +228,7 @@ impl System {
     /// this OS user's own.
     pub fn with_this_users_folders(mut self) -> Self {
         self.config_home = xdg::this_config_home();
-        self.home = dirs::home_dir();
+        self.data_home = xdg::this_data_home();
         self.appimage = xdg::appimage().map(PathBuf::from);
         self.db_sources = installs::system::db_sources();
         self.delete_autostart = Box::new(crate::autostart::delete_entry);
@@ -377,10 +378,10 @@ impl System {
     }
 
     fn delete_menu_entry(&mut self) -> Result<(), String> {
-        let home = self.home.as_deref().ok_or("no home folder")?;
-        let entry = remove_file(&xdg::menu_entry_path(home));
-        let icon = remove_file(&xdg::menu_icon_path(home));
-        entry.and(icon)
+        let data_home = self.data_home.as_deref().ok_or("no home folder")?;
+        MenuEntry::new(data_home)
+            .delete()
+            .map_err(|e| format!("couldn't delete the menu entry: {e}"))
     }
 
     fn delete_appimage(&mut self) -> Result<(), String> {

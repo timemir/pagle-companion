@@ -109,7 +109,10 @@ impl Machine {
         let autostart = config.join("autostart/app.pagle.companion.desktop");
         fs::create_dir_all(autostart.parent().unwrap()).unwrap();
         fs::write(&autostart, "[Desktop Entry]\n").unwrap();
-        for path in [xdg::menu_entry_path(&home), xdg::menu_icon_path(&home)] {
+        for path in [
+            xdg::menu_entry_path(&home.join(".local/share")),
+            xdg::menu_icon_path(&home.join(".local/share")),
+        ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, "x").unwrap();
         }
@@ -150,7 +153,7 @@ impl Machine {
         let mut system = System::new(state, keychain, Box::new(commands));
         system.state_dir = Some(dir);
         system.config_home = Some(self.config.clone());
-        system.home = Some(self.home.clone());
+        system.data_home = Some(self.home.join(".local/share"));
         system.appimage = Some(self.appimage.clone());
         let autostart = self.autostart.clone();
         system.delete_autostart = Box::new(move || match fs::remove_file(&autostart) {
@@ -216,8 +219,8 @@ fn the_linux_tray_item_deletes_everything_and_last_the_appimage() {
             .join("Interface/AddOns/Pagle/Pagle.toc")
             .is_file()
     );
-    assert!(!xdg::menu_entry_path(&machine.home).exists());
-    assert!(!xdg::menu_icon_path(&machine.home).exists());
+    assert!(!xdg::menu_entry_path(&machine.home.join(".local/share")).exists());
+    assert!(!xdg::menu_icon_path(&machine.home.join(".local/share")).exists());
     assert!(!machine.appimage.exists());
     assert_eq!(
         commands.ran(),
@@ -250,7 +253,7 @@ fn remove_quits_others_takes_the_lock_and_deletes_the_state_directory_holding_it
     }
     // --remove leaves the unit to Linux and the menu entry and AppImage to
     // the tray item.
-    assert!(xdg::menu_entry_path(&machine.home).exists());
+    assert!(xdg::menu_entry_path(&machine.home.join(".local/share")).exists());
     assert!(machine.appimage.exists());
 }
 

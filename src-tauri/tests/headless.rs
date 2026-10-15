@@ -59,10 +59,22 @@ mod linux {
         }
 
         fn headless(&self) -> Child {
-            Command::new(BIN)
+            self.headless_from(None)
+        }
+
+        /// `--headless`, started as the AppImage at `appimage` (`$APPIMAGE`),
+        /// or not as an AppImage.
+        fn headless_from(&self, appimage: Option<&Path>) -> Child {
+            let mut command = Command::new(BIN);
+            match appimage {
+                Some(path) => command.env("APPIMAGE", path),
+                None => command.env_remove("APPIMAGE"),
+            };
+            command
                 .arg("--headless")
                 .env("HOME", &self.home)
                 .env("XDG_CONFIG_HOME", &self.config)
+                .env_remove("XDG_DATA_HOME")
                 .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
                 .env("PAGLE_COMPANION_BASE_URL", "http://127.0.0.1:9")
                 .env_remove("DISPLAY")
@@ -135,5 +147,35 @@ mod linux {
         assert!(log.contains("stopping on SIGTERM"), "{log}");
         assert!(log.contains("released the watcher lock"), "{log}");
         assert!(!sandbox.state_dir().join("webview").exists());
+        // DST-R31: without APPIMAGE, no menu entry is written.
+        assert!(!sandbox.home.join(".local").exists());
+    }
+
+    #[test]
+    fn an_appimage_start_from_downloads_writes_the_menu_entry_and_asks_nothing() {
+        // DST-R31: at every start, the menu entry and its icon for $APPIMAGE,
+        // under ~/.local/share when XDG_DATA_HOME is unset; DST-R32: headless
+        // mode never asks about moving out of Downloads, and moves nothing
+        let sandbox = Sandbox::new();
+        let appimage = sandbox.home.join("Downloads/x/Pagle Companion.AppImage");
+        fs::create_dir_all(appimage.parent().unwrap()).unwrap();
+        fs::write(&appimage, "ELF").unwrap();
+
+        let mut child = sandbox.headless_from(Some(&appimage));
+        sandbox.wait_for_log(&mut child, "took the watcher lock");
+        let share = sandbox.home.join(".local/share");
+        let entry =
+            fs::read_to_string(share.join("applications/app.pagle.companion.desktop")).unwrap();
+        let exec = format!("\nExec=\"{}\"\n", appimage.display());
+        assert!(entry.contains(&exec), "{entry}");
+        let icon = share.join("icons/hicolor/256x256/apps/app.pagle.companion.png");
+        assert!(fs::read(icon).unwrap().starts_with(b"\x89PNG"));
+        assert!(appimage.exists());
+        assert!(!sandbox.home.join("Applications").exists());
+
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        // SAFETY: kill only sends a signal to the child started above.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        assert_eq!(wait(&mut child).code(), Some(0));
     }
 }

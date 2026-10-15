@@ -125,6 +125,8 @@ pub fn run() -> i32 {
     Logger::install(state_dir.log_file());
     let version = env!("CARGO_PKG_VERSION");
     log::info!("Pagle Companion {version} starting in headless mode");
+    // DST-R31: at every start. DST-R32's question isn't asked here.
+    crate::appimage::menu::at_start();
 
     let outcome = match start(state_dir, version) {
         Ok(Start::LockHeld) => Outcome::LockHeld,

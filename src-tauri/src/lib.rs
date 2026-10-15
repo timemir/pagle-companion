@@ -3,6 +3,7 @@
 //! `docs/spec/companion/` in `timemir/pagle-backend` (CMP and DST rules).
 
 pub mod api;
+pub mod appimage;
 pub mod autostart;
 pub mod catch_logs;
 pub mod cli;
@@ -37,6 +38,8 @@ pub mod xdg;
 use cli::Mode;
 
 pub fn run() {
+    // DST-R33: first, before any thread starts and before the webview.
+    appimage::webkit_workaround();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match cli::parse(&args) {
         // In a process of its own, without Tauri; always status 0 (CMP-R70).
