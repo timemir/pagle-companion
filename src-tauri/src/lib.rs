@@ -7,6 +7,7 @@ pub mod catch_logs;
 pub mod cli;
 pub mod credential_store;
 pub mod device_flow;
+pub mod in_game;
 pub mod installs;
 pub mod link;
 pub mod linking;
