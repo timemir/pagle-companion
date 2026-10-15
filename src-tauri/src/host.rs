@@ -49,6 +49,10 @@ pub trait Host: Clone + Send + Sync + 'static {
 
     /// Shows the tray's status line again. Without a tray it does nothing.
     fn show_tray_status(&self);
+
+    /// Shows **Restart to update** in the tray while an update waits
+    /// (DST-R54). Without a tray it does nothing.
+    fn show_waiting_update(&self);
 }
 
 impl Host for AppHandle {
@@ -72,6 +76,10 @@ impl Host for AppHandle {
 
     fn show_tray_status(&self) {
         tray::show_tray_status(self);
+    }
+
+    fn show_waiting_update(&self) {
+        tray::show_waiting_update(self);
     }
 }
 
@@ -104,6 +112,8 @@ impl Host for Parts {
     fn show_link(&self, _status: &LinkStatus) {}
 
     fn show_tray_status(&self) {}
+
+    fn show_waiting_update(&self) {}
 }
 
 #[cfg(test)]

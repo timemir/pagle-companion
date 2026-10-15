@@ -8,7 +8,9 @@
 //! - a tray-mode process that exits, once it has released the lock, runs
 //!   `systemctl --user start pagle-companion.service`
 //!   ([`after_releasing_lock`]), unless it is quitting for `--quit` or
-//!   removal (CMP-R70).
+//!   removal (CMP-R70), or exiting for **Restart to update** (DST-R54): the
+//!   new version starts itself in tray mode, which would stop the unit
+//!   again at once.
 //!
 //! Tray mode quits through one exit path for **Quit**, `--quit` passed
 //! through the single-instance channel, and `SIGTERM` or `SIGHUP` (logout,
@@ -37,13 +39,17 @@ pub enum Exit {
     QuitArgument,
     /// Removal from the Linux tray item (CMP-R71).
     Removal,
+    /// **Restart to update**, or an update installed at start (DST-R54):
+    /// the new version starts in tray mode itself.
+    Update,
 }
 
 /// Whether the handover runs here: the unit is Linux's.
 pub const HANDS_OVER: bool = cfg!(target_os = "linux");
 
 /// CMP-R92: an exiting tray-mode process starts the unit while the toggle is
-/// on, unless it is quitting for `--quit` or removal (CMP-R70).
+/// on, unless it is quitting for `--quit` or removal (CMP-R70), or exiting
+/// for an update, after which the new version starts in tray mode (DST-R54).
 pub fn starts_unit(game_mode: bool, exit: Exit) -> bool {
     game_mode && matches!(exit, Exit::Quit | Exit::Signal)
 }
@@ -126,6 +132,17 @@ mod tests {
         assert!(systemctl.calls().is_empty());
         stop_unit(true, &systemctl);
         assert_eq!(systemctl.calls(), [STOP]);
+    }
+
+    #[test]
+    fn exiting_for_an_update_doesnt_start_the_unit() {
+        // CMP-R92, DST-R54: Restart to update exits and the new version
+        // starts itself in tray mode, which stops the unit before it takes
+        // the lock; so the exit starts nothing
+        assert!(!starts_unit(true, Exit::Update));
+        let systemctl = FakeSystemctl::default();
+        start_unit(true, Exit::Update, &systemctl);
+        assert!(systemctl.calls().is_empty());
     }
 
     #[test]

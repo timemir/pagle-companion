@@ -1,6 +1,11 @@
 //! Tray mode (CMP-R1): the tray icon and its menu, the window, the
 //! single-instance channel and the watcher lock (CMP-R2). The parts it
 //! shares with headless mode are `companion`'s.
+//!
+//! It installs a waiting update (DST-R54) from **Restart to update**, shown
+//! while one waits, and at start once it holds the watcher lock, before
+//! anything is watched (`updater::Updater::install`); either way it then
+//! exits, without starting the Game Mode unit (CMP-R92).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +24,8 @@ use crate::local_log::Logger;
 use crate::os_notify::OsNotifier;
 use crate::state::State;
 use crate::state_dir::{self, StateDir};
+use crate::updater::install::{CommandLine, Launch, Launcher, SystemLauncher};
+use crate::updater::{Installed, Updater};
 use crate::upload::{self, queue::Trigger};
 use crate::{
     appimage, catch_logs, first_run, game_mode, in_game, installs, linking, readings, removal,
@@ -284,11 +291,37 @@ fn quit_on_signals(app: &AppHandle) {
     });
 }
 
+/// The tray menu's item that installs a waiting update (DST UI, CMP UI).
+pub const RESTART_TO_UPDATE: &str = "Restart to update";
+const RESTART_TO_UPDATE_ID: &str = "restart-to-update";
+
+/// The tray menu's items by id, in order (CMP UI, tray menu): the status
+/// line, **Open**, **Upload now**, **Restart to update** while an update
+/// waits (DST-R54), **Remove** where offered (Linux, CMP-R71), **Quit**.
+pub fn menu_ids(update_waiting: bool, remove_offered: bool) -> Vec<&'static str> {
+    let mut ids = vec!["status", "open", "upload-now"];
+    if update_waiting {
+        ids.push(RESTART_TO_UPDATE_ID);
+    }
+    if remove_offered {
+        ids.push("remove");
+    }
+    ids.push("quit");
+    ids
+}
+
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Not linked", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Pagle Companion", true, None::<&str>)?;
     // Disabled while not linked or during a stop (CMP UI, tray menu).
     let upload_now = MenuItem::with_id(app, "upload-now", "Upload now", false, None::<&str>)?;
+    let restart_item = MenuItem::with_id(
+        app,
+        RESTART_TO_UPDATE_ID,
+        RESTART_TO_UPDATE,
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&status, &open, &upload_now])?;
     // Linux only, before Quit (CMP-R71, CMP UI).
@@ -302,6 +335,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         upload_now,
         linked: AtomicBool::new(false),
         stop: Mutex::new(None),
+        menu: menu.clone(),
+        restart_to_update: restart_item,
+        update_shown: Mutex::new(false),
     });
 
     let mut tray = TrayIconBuilder::with_id("main")
@@ -313,6 +349,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "open" => show_main_window(app),
             // CMP-R45: every confirmed logId, held back or not, no skip.
             "upload-now" => upload::window::trigger_all(app, Trigger::UploadNow),
+            RESTART_TO_UPDATE_ID => restart_to_update(app),
             "remove" => removal::window::ask(app),
             "quit" => self::quit(app),
             _ => {}
@@ -324,7 +361,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The tray menu's items that follow the link.
+/// The tray menu's items that change.
 struct TrayItems {
     status: MenuItem<tauri::Wry>,
     upload_now: MenuItem<tauri::Wry>,
@@ -332,6 +369,91 @@ struct TrayItems {
     linked: AtomicBool,
     /// The stop message as last shown.
     stop: Mutex<Option<String>>,
+    menu: Menu<tauri::Wry>,
+    restart_to_update: MenuItem<tauri::Wry>,
+    /// Whether **Restart to update** is in the menu.
+    update_shown: Mutex<bool>,
+}
+
+/// Shows **Restart to update** in the tray menu while a verified update
+/// waits, and takes it out when none does (DST-R54).
+pub fn show_waiting_update(app: &AppHandle) {
+    let (Some(items), Some(updater)) = (app.try_state::<TrayItems>(), app.try_state::<Updater>())
+    else {
+        return;
+    };
+    let waiting = updater.waiting().is_some();
+    let mut shown = items.update_shown.lock().unwrap_or_else(|e| e.into_inner());
+    if *shown == waiting {
+        return;
+    }
+    let changed = if waiting {
+        let at = menu_ids(true, removal::TRAY_ITEM_OFFERED)
+            .iter()
+            .position(|id| *id == RESTART_TO_UPDATE_ID)
+            .unwrap_or_default();
+        items.menu.insert(&items.restart_to_update, at)
+    } else {
+        items.menu.remove(&items.restart_to_update)
+    };
+    match changed {
+        Ok(()) => *shown = waiting,
+        Err(e) => log::error!("couldn't change the tray menu: {e}"),
+    }
+}
+
+/// **Restart to update** (DST-R54): installs the waiting update and exits,
+/// abandoning an Upload in flight, which the next start resumes from the
+/// server's cursor (DST-R100). An installer that fails its second
+/// verification is deleted and the item goes away.
+fn restart_to_update(app: &AppHandle) {
+    let app = app.clone();
+    // Off the main thread: verifying reads the whole installer.
+    std::thread::spawn(move || {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let installed = app
+            .state::<Updater>()
+            .install(&TrayLauncher(app.clone()), &args);
+        exit_if_started(&app, &installed);
+        show_waiting_update(&app);
+    });
+}
+
+/// DST-R54, DST-R100: at start, before anything is scanned or uploaded, a
+/// waiting update is installed. Returns whether the process is exiting.
+fn install_at_start(app: &AppHandle) -> bool {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let installed = app
+        .state::<Updater>()
+        .install_at_start(&TrayLauncher(app.clone()), &args);
+    exit_if_started(app, &installed)
+}
+
+fn exit_if_started(app: &AppHandle, installed: &Installed) -> bool {
+    let Installed::Started(version) = installed else {
+        return false;
+    };
+    log::info!("exiting for update {version}");
+    // CMP-R92: the new version starts itself in tray mode, so the unit
+    // isn't started.
+    handover::note_exit(Exit::Update);
+    app.exit(0);
+    true
+}
+
+/// Starts the new version for real. On Linux it first lets go of the
+/// single-instance channel, or the new AppImage would hand over to this
+/// process and exit (CMP-R2). On Windows the channel stays, so the
+/// installer's `--quit` reaches this process if it hasn't exited yet.
+struct TrayLauncher(AppHandle);
+
+impl Launcher for TrayLauncher {
+    fn launch(&self, launch: &Launch) -> std::io::Result<()> {
+        if let CommandLine::Args(_) = launch.command_line {
+            tauri_plugin_single_instance::destroy(&self.0);
+        }
+        SystemLauncher.launch(launch)
+    }
 }
 
 /// The tray's status line (CMP UI, tray menu): during a stop its stop
@@ -425,6 +547,9 @@ fn take_watcher_lock(app: AppHandle) {
                 Ok(Some(lock)) => {
                     companion.hold_watcher(lock);
                     log::info!("took the watcher lock");
+                    if install_at_start(&app) {
+                        return;
+                    }
                     companion::start_watching(&app);
                     let _ = app.emit("status", companion.status());
                     companion.finish_credential_moves();
@@ -529,6 +654,32 @@ mod tests {
             tray_status_line(true, None, Some(1_000), 1_000 + 2 * 3_600),
             "Last uploaded 2 hours ago"
         );
+    }
+
+    #[test]
+    fn restart_to_update_shows_only_while_an_update_waits() {
+        // DST-R54, DST UI, CMP UI tray menu: Restart to update after Upload
+        // now and before Remove and Quit, only while an update waits
+        assert_eq!(
+            menu_ids(false, false),
+            ["status", "open", "upload-now", "quit"]
+        );
+        assert_eq!(
+            menu_ids(true, false),
+            ["status", "open", "upload-now", "restart-to-update", "quit"]
+        );
+        assert_eq!(
+            menu_ids(true, true),
+            [
+                "status",
+                "open",
+                "upload-now",
+                "restart-to-update",
+                "remove",
+                "quit"
+            ]
+        );
+        assert_eq!(RESTART_TO_UPDATE, "Restart to update");
     }
 
     #[test]

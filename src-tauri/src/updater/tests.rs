@@ -629,3 +629,248 @@ fn check_soon_checks_at_the_next_tick() {
     assert_eq!(updater.tick(t0() + MINUTE), Some(Checked::UpToDate));
     assert_eq!(world.checks(), 2);
 }
+
+/// Records what would have started, and starts nothing.
+#[derive(Default)]
+struct Recorder {
+    launches: Mutex<Vec<install::Launch>>,
+    fails: bool,
+}
+
+impl Recorder {
+    fn failing() -> Self {
+        Self {
+            fails: true,
+            ..Self::default()
+        }
+    }
+
+    fn launches(&self) -> Vec<install::Launch> {
+        self.launches.lock().unwrap().clone()
+    }
+}
+
+impl install::Launcher for Recorder {
+    fn launch(&self, launch: &install::Launch) -> std::io::Result<()> {
+        if self.fails {
+            return Err(std::io::Error::other("couldn't start"));
+        }
+        self.launches.lock().unwrap().push(launch.clone());
+        Ok(())
+    }
+}
+
+fn args(args: &[&str]) -> Vec<String> {
+    args.iter().map(|a| (*a).to_owned()).collect()
+}
+
+/// The kept installer of `version`, run with `line`.
+fn installer_run(world: &World, version: &str, line: &str) -> install::Launch {
+    install::Launch {
+        program: world
+            .state_dir()
+            .join(format!("pagle-companion_{version}_x64-setup.exe")),
+        command_line: install::CommandLine::Raw(line.into()),
+    }
+}
+
+#[test]
+fn nothing_waiting_installs_nothing() {
+    // DST-R54: Restart to update exists only while an update waits; without
+    // one nothing starts
+    let world = World::new();
+    world.publish("1.0.0");
+    let updater = world.updater("1.0.0");
+    updater.tick(t0());
+    let recorder = Recorder::default();
+    assert_eq!(updater.install(&recorder, &[]), Installed::NothingWaiting);
+    assert!(recorder.launches().is_empty());
+}
+
+#[test]
+fn restart_to_update_runs_the_verified_installer_passive_with_the_same_arguments() {
+    // DST-R54, DST-R13: verified again, then run passive as an update that
+    // starts the new version with the old arguments; the next start, the
+    // new version, deletes the installer
+    let world = World::new();
+    world.publish("1.2.0");
+    let updater = world.updater("1.0.0");
+    updater.tick(t0());
+    let recorder = Recorder::default();
+
+    assert_eq!(
+        updater.install(&recorder, &args(&["--autostart"])),
+        Installed::Started(v("1.2.0"))
+    );
+    assert_eq!(
+        recorder.launches(),
+        [installer_run(
+            &world,
+            "1.2.0",
+            "/P /UPDATE /R /ARGS --autostart"
+        )]
+    );
+
+    let updated = world.updater("1.2.0");
+    assert_eq!(
+        updated.install_at_start(&recorder, &[]),
+        Installed::NothingWaiting
+    );
+    assert_eq!(world.state_files(), ["updater.json"]);
+    assert_eq!(recorder.launches().len(), 1);
+}
+
+#[test]
+fn a_tampered_installer_is_refused_deleted_counted_and_fetched_again() {
+    // DST-R54, DST-R53, DST-R57: a kept installer changed after download
+    // fails its second verification, never runs, is deleted and counted in
+    // updater.json, and is fetched again at the next check
+    let world = World::new();
+    world.publish("1.2.0");
+    let updater = world.updater("1.0.0");
+    updater.tick(t0());
+    fs::write(updater.waiting().unwrap().file, b"MZ tampered").unwrap();
+    let recorder = Recorder::default();
+
+    assert_eq!(
+        updater.install(&recorder, &[]),
+        Installed::NotVerified { in_a_row: 1 }
+    );
+    assert!(recorder.launches().is_empty());
+    assert_eq!(updater.waiting(), None);
+    assert_eq!(world.state_files(), ["updater.json"]);
+    assert_eq!(world.updater_json()["failedVerifications"], 1);
+
+    assert_eq!(updater.tick(t0() + MINUTE), None);
+    assert_eq!(
+        updater.tick(t0() + 6 * HOUR),
+        Some(Checked::Waiting(v("1.2.0")))
+    );
+    assert_eq!(world.downloads(), 2);
+    assert_eq!(world.updater_json()["failedVerifications"], 0);
+}
+
+#[test]
+fn a_start_with_an_update_waiting_installs_it_before_any_request() {
+    // DST-R54, DST-R100: at the next start the waiting installer runs before
+    // anything is scanned, checked or uploaded; a login start comes back
+    // with --autostart (DST-R13)
+    let world = World::new();
+    world.publish("1.2.0");
+    world.updater("1.0.0").tick(t0());
+    let requests = world.requests().len();
+
+    let next_start = world.updater("1.0.0");
+    let recorder = Recorder::default();
+    assert_eq!(
+        next_start.install_at_start(&recorder, &args(&["--autostart"])),
+        Installed::Started(v("1.2.0"))
+    );
+    assert_eq!(
+        recorder.launches(),
+        [installer_run(
+            &world,
+            "1.2.0",
+            "/P /UPDATE /R /ARGS --autostart"
+        )]
+    );
+    assert_eq!(world.requests().len(), requests);
+}
+
+#[test]
+fn a_tampered_installer_at_start_is_counted_and_the_start_carries_on() {
+    // DST-R54, DST-R57: at start too, a kept installer that fails its second
+    // verification is deleted and counted; the check at start fetches it
+    // again (DST-R51, DST-R53)
+    let world = World::new();
+    world.publish("1.2.0");
+    let first = world.updater("1.0.0");
+    first.tick(t0());
+    fs::write(first.waiting().unwrap().file, b"MZ tampered").unwrap();
+
+    let next_start = world.updater("1.0.0");
+    let recorder = Recorder::default();
+    assert_eq!(
+        next_start.install_at_start(&recorder, &[]),
+        Installed::NotVerified { in_a_row: 1 }
+    );
+    assert!(recorder.launches().is_empty());
+    assert_eq!(world.state_files(), ["updater.json"]);
+
+    assert_eq!(
+        next_start.tick(t0() + MINUTE),
+        Some(Checked::Waiting(v("1.2.0")))
+    );
+    assert_eq!(world.downloads(), 2);
+}
+
+#[test]
+fn an_installer_that_cant_start_stays_waiting() {
+    // DST-R54: the installer is kept until installed
+    let world = World::new();
+    world.publish("1.2.0");
+    let updater = world.updater("1.0.0");
+    updater.tick(t0());
+
+    assert_eq!(
+        updater.install(&Recorder::failing(), &[]),
+        Installed::CouldntStart
+    );
+    let waiting = updater.waiting().unwrap();
+    assert_eq!(waiting.version, v("1.2.0"));
+    assert!(waiting.file.is_file());
+}
+
+#[test]
+fn restart_to_update_on_linux_starts_the_replaced_appimage_with_the_same_arguments() {
+    // DST-R54: the AppImage was replaced when it verified; Restart to update
+    // starts the new file at $APPIMAGE with the same arguments
+    let world = World::new();
+    let appimage = world.tmp.path().join("pagle-companion.AppImage");
+    fs::write(&appimage, b"old AppImage").unwrap();
+    let bytes = world.publish("1.2.0");
+    let updater = world.updater_with(
+        "1.0.0",
+        Keeper::AppImage {
+            path: Some(appimage.clone()),
+        },
+        Hooks::default(),
+    );
+    updater.tick(t0());
+    let recorder = Recorder::default();
+
+    assert_eq!(
+        updater.install(&recorder, &args(&["--autostart"])),
+        Installed::Started(v("1.2.0"))
+    );
+    assert_eq!(
+        recorder.launches(),
+        [install::Launch {
+            program: appimage.clone(),
+            command_line: install::CommandLine::Args(vec!["--autostart".into()]),
+        }]
+    );
+    assert_eq!(fs::read(&appimage).unwrap(), bytes);
+}
+
+#[test]
+fn on_linux_nothing_is_installed_at_start() {
+    // DST-R54: at a normal Linux start the replaced AppImage is what runs;
+    // there is nothing more to install
+    let world = World::new();
+    let appimage = world.tmp.path().join("pagle-companion.AppImage");
+    fs::write(&appimage, b"new AppImage").unwrap();
+    let updater = world.updater_with(
+        "1.2.0",
+        Keeper::AppImage {
+            path: Some(appimage),
+        },
+        Hooks::default(),
+    );
+    let recorder = Recorder::default();
+    assert_eq!(
+        updater.install_at_start(&recorder, &[]),
+        Installed::NothingWaiting
+    );
+    assert!(recorder.launches().is_empty());
+}

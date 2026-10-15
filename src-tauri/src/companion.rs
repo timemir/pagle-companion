@@ -167,9 +167,11 @@ pub fn manage<H: Host>(
     };
     let updater_hooks = updater::Hooks {
         // "Read the Companion config…" reads config after each check here
-        // (DST-R51), and "Install a waiting update…" offers Restart to update
-        // once one is waiting (DST-R54).
-        after_check: Box::new(|_| {}),
+        // (DST-R51). Restart to update shows while an update waits (DST-R54).
+        after_check: {
+            let host = host.clone();
+            Box::new(move |_| host.show_waiting_update())
+        },
     };
     host.manage(Updater::new(&state_dir, &version, updater_hooks).map_err(api::ApiError::Client)?);
     host.manage(Companion {
