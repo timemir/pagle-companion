@@ -1,0 +1,117 @@
+# The Steam Deck report (DST-R71, DST Contracts "Steam Deck report template").
+# The Game Mode toggle and the download page link to its new-issue URL:
+# https://github.com/timemir/pagle-companion/issues/new?template=steam-deck-report.yml
+name: Steam Deck report
+description: Tell us how the Pagle Companion runs on your Steam Deck, in Desktop Mode and in Game Mode.
+title: Steam Deck report
+labels:
+  - steam-deck-report
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing the Companion on a Steam Deck. Steam Deck support is **beta** and Game Mode uploading is **experimental**; your report is how those labels come off. Answer "not tried" for anything you didn't try.
+
+  # 1. SteamOS version and channel
+  - type: input
+    id: steamos-version
+    attributes:
+      label: SteamOS version
+      description: Settings → System → About, e.g. 3.7.13.
+      placeholder: "3.7.13"
+    validations:
+      required: true
+  - type: dropdown
+    id: steamos-channel
+    attributes:
+      label: SteamOS channel
+      description: Settings → System → System Update Channel.
+      options:
+        - Stable
+        - Beta
+        - Preview
+    validations:
+      required: true
+
+  # 2. Pagle Companion version
+  - type: input
+    id: companion-version
+    attributes:
+      label: Pagle Companion version
+      description: Shown at the bottom of the Companion's window, e.g. "Version 1.2.3".
+      placeholder: "1.2.3"
+    validations:
+      required: true
+
+  # 3. Desktop Mode
+  - type: markdown
+    attributes:
+      value: "### Desktop Mode"
+  - type: dropdown
+    id: desktop-starts
+    attributes:
+      label: "Desktop Mode: does the Companion start?"
+      options:
+        - "yes"
+        - "no"
+        - not tried
+    validations:
+      required: true
+  - type: dropdown
+    id: desktop-tray-icon
+    attributes:
+      label: "Desktop Mode: does the tray icon show?"
+      options:
+        - "yes"
+        - "no"
+        - not tried
+    validations:
+      required: true
+  - type: dropdown
+    id: desktop-linking
+    attributes:
+      label: "Desktop Mode: does linking work?"
+      options:
+        - "yes"
+        - "no"
+        - not tried
+    validations:
+      required: true
+
+  # 4. Game Mode
+  - type: markdown
+    attributes:
+      value: |
+        ### Game Mode
+        With **Keep uploading in Game Mode** on in the Companion.
+  - type: dropdown
+    id: game-mode-reboot
+    attributes:
+      label: "Game Mode: does the unit survive a reboot?"
+      description: After rebooting, is the Companion still running in Game Mode?
+      options:
+        - "yes"
+        - "no"
+        - not tried
+    validations:
+      required: true
+  - type: dropdown
+    id: game-mode-upload
+    attributes:
+      label: "Game Mode: does an Upload arrive after a logout in Game Mode?"
+      description: Log out of a character while playing in Game Mode, then check Pagle for the new Upload.
+      options:
+        - "yes"
+        - "no"
+        - not tried
+    validations:
+      required: true
+
+  # 5. Anything else
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: Errors, odd behaviour, logs, screenshots. Optional.
+    validations:
+      required: false

@@ -2,6 +2,18 @@
 
 The Pagle Companion. Its spec lives in [`docs/spec/companion/`](https://github.com/timemir/pagle-backend/tree/main/docs/spec/companion) in `pagle-backend`.
 
+It runs on Windows and Linux. **Steam Deck support is beta**, and **uploading in Game Mode is experimental** ([DST-R70](https://github.com/timemir/pagle-backend/blob/main/docs/spec/companion/distribution.md#support-status)): neither has been tested on a Deck yet. See [Steam Deck testing](#steam-deck-testing).
+
+## Steam Deck testing
+
+If you have a Steam Deck, please [file a Steam Deck report](https://github.com/timemir/pagle-companion/issues/new?template=steam-deck-report.yml) ([DST-R71](https://github.com/timemir/pagle-backend/blob/main/docs/spec/companion/distribution.md#support-status)). The "Keep uploading in Game Mode" toggle links to the same form.
+
+The developer has no Deck, so the labels come off only on testers' reports ([DST-R72 to R74](https://github.com/timemir/pagle-backend/blob/main/docs/spec/companion/distribution.md#support-status)):
+
+- **A good report** answers "yes" to every check of a label. For **Steam Deck (beta)**: in Desktop Mode the Companion starts, its tray icon shows and linking works. For **Game Mode (experimental)**: with the toggle on, the unit survives a reboot and an Upload arrives after a logout in Game Mode. The developer marks it `deck-good`, `game-mode-good` or both.
+- **A label comes off** after 2 good reports ([Tunables](https://github.com/timemir/pagle-backend/blob/main/docs/spec/companion/distribution.md#tunables)) from different GitHub accounts, none the developer's, on the current Stable SteamOS (same major and minor version). Taking it off changes three places: the Operator switches off the website's setting (`pagle.download.steam-deck-beta` or `pagle.download.game-mode-experimental`), and the toggle's label and this README change in the next Release.
+- **A label goes back on** when an outside tester on the current Stable version answers "no" to one of its checks; the developer marks that report `deck-broken` or `game-mode-broken`. It comes off again only with new good reports on that Stable version.
+
 ## Development
 
 The Companion is a [Tauri 2](https://v2.tauri.app/) tray app: a Rust core in `src-tauri/` and a small web UI in `ui/`, served as static files.
