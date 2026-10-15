@@ -18,6 +18,7 @@ use crate::linking::{self, Linking};
 use crate::local_log::Logger;
 use crate::notify::Notifications;
 use crate::os_notify::OsNotifier;
+use crate::readings::{self, Readings};
 use crate::state::{self, Loaded, State, Store};
 use crate::state_dir::{self, StateDir, WatcherLock};
 
@@ -147,6 +148,7 @@ pub fn run(mode: Mode) {
             linking::cancel_link,
             linking::open_link_page,
             linking::unlink,
+            readings::window::readings,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -213,6 +215,7 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     });
     app.manage(Scanner::new());
     app.manage(Linking::default());
+    app.manage(Readings::new());
 
     build_tray(app)?;
     linking::start(app);
@@ -310,6 +313,7 @@ fn take_watcher_lock(app: AppHandle) {
                     *companion.watcher_slot() = Some(lock);
                     log::info!("took the watcher lock");
                     installs::window::start(&app);
+                    readings::window::start(&app);
                     let _ = app.emit("status", companion.status());
                     return;
                 }

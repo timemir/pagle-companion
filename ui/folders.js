@@ -1,5 +1,6 @@
 // The window's WoW folders section (CMP UI): each install with its account
-// folders, "Add a WoW folder…" and Remove (CMP-R13).
+// folders, "Add a WoW folder…" and Remove (CMP-R13), and each account
+// folder's read problem (CMP-R30, CMP-R31) and polling note (CMP-R22).
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -10,6 +11,7 @@
   const add = document.getElementById("add-folder");
 
   let view = null;
+  let readings = null;
   let readOnly = false;
 
   function element(tag, className, text) {
@@ -53,6 +55,20 @@
     item.append(line);
   }
 
+  // An account folder, with "Checked every …" where its SavedVariables/ is
+  // polled (CMP-R22) and CMP-R30's or CMP-R31's text where it has one.
+  function accountRow(account) {
+    const item = element("li", "", account.name);
+    const folder = readings && readings.folders.find((f) => f.path === account.path);
+    if (folder && folder.polled) {
+      item.append(element("div", "muted", pollText(readings.pollSeconds)));
+    }
+    if (folder && folder.problem) {
+      item.append(element("div", "read-problem", folder.problem));
+    }
+    return item;
+  }
+
   function installRow(install) {
     const item = element("li", "install");
     const manual = install.source === "manual";
@@ -60,7 +76,7 @@
     if (install.accounts.length > 0) {
       const accounts = element("ul", "accounts");
       for (const account of install.accounts) {
-        accounts.append(element("li", "", account.name));
+        accounts.append(accountRow(account));
       }
       item.append(accounts);
     }
@@ -108,7 +124,14 @@
     render();
   }
 
+  function setReadings(next) {
+    readings = next;
+    render();
+  }
+
   invoke("installs").then(setView);
+  invoke("readings").then(setReadings);
+  listen("readings", (event) => setReadings(event.payload));
   listen("installs", (event) => setView(event.payload));
   invoke("status").then((status) => {
     readOnly = status.readOnly;

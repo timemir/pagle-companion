@@ -130,6 +130,16 @@ impl Watches {
         }
     }
 
+    /// A set that watches nothing and polls every folder, as where the OS
+    /// refuses every watch (CMP-R22).
+    pub fn polling_only() -> Self {
+        Self {
+            watcher: None,
+            watched: Arc::default(),
+            polled: HashMap::new(),
+        }
+    }
+
     /// Makes `wanted` the set of folders watched: stops watching the others,
     /// and watches the new ones, or polls those that can't be watched.
     pub fn set(&mut self, wanted: &[(PathBuf, Filter)]) {
@@ -423,6 +433,18 @@ mod tests {
 
         watches.set(&[]);
         assert!(!watches.has_polled());
+    }
+
+    #[test]
+    fn without_a_watcher_every_folder_is_polled() {
+        // CMP-R22: where the OS refuses the watch, the folder is polled
+        let tmp = tempfile::tempdir().unwrap();
+        let mut watches = Watches::polling_only();
+        let db = Filter::Name("product.db".into());
+        watches.set(&[(tmp.path().to_path_buf(), db)]);
+        assert!(watches.is_polled(tmp.path()));
+        fs::write(tmp.path().join("product.db"), "x").unwrap();
+        assert_eq!(watches.poll(), [tmp.path().to_path_buf()]);
     }
 
     #[test]

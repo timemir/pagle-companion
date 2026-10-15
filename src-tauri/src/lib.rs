@@ -14,6 +14,7 @@ pub mod lua;
 pub mod notify;
 pub mod os_notify;
 pub mod pagle_log;
+pub mod readings;
 pub mod state;
 pub mod state_dir;
 #[cfg(test)]

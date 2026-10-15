@@ -2,7 +2,8 @@
 //! interval, when asked to (a uid change, a folder added or removed), and
 //! when a watched `Agent/` folder's `product.db` or an install's account
 //! folders change, debounced; with polling where watching fails (CMP-R22).
-//! Every scan that changes the set of installs is sent to every subscriber.
+//! Every scan that changes the set of installs is sent to every subscriber;
+//! every scan, changed or not, to every scan subscriber (CMP-R23).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,7 @@ pub struct Scanner {
 struct Shared {
     snapshot: Mutex<Option<Snapshot>>,
     subscribers: Mutex<Vec<Sender<Snapshot>>>,
+    scan_subscribers: Mutex<Vec<Sender<Snapshot>>>,
 }
 
 impl Default for Scanner {
@@ -107,6 +109,19 @@ impl Scanner {
             let _ = tx.send(snapshot.clone());
         }
         lock(&self.shared.subscribers).push(tx);
+        rx
+    }
+
+    /// A channel that receives the [`Snapshot`] after every scan, whether it
+    /// changed or not, starting with the current one if a scan has ended:
+    /// what reads the watched files at every scan listens here (CMP-R23).
+    pub fn subscribe_scans(&self) -> Receiver<Snapshot> {
+        let (tx, rx) = mpsc::channel();
+        let snapshot = lock(&self.shared.snapshot);
+        if let Some(snapshot) = snapshot.as_ref() {
+            let _ = tx.send(snapshot.clone());
+        }
+        lock(&self.shared.scan_subscribers).push(tx);
         rx
     }
 
@@ -212,6 +227,7 @@ fn note_skipped(skipped: &[Skipped], logged: &mut HashSet<PathBuf>) {
 
 fn publish(shared: &Shared, snapshot: Snapshot) {
     let mut current = lock(&shared.snapshot);
+    lock(&shared.scan_subscribers).retain(|tx| tx.send(snapshot.clone()).is_ok());
     if current.as_ref() == Some(&snapshot) {
         return;
     }
@@ -367,5 +383,28 @@ mod tests {
         assert!(logged.contains(&skip.path));
         note_skipped(&[], &mut logged);
         assert!(logged.is_empty());
+    }
+
+    #[test]
+    fn every_scan_reaches_scan_subscribers_even_when_nothing_changed() {
+        // CMP-R23: watched files are read at every scan, so a scan that finds
+        // the same installs is still told to those who read them
+        let tmp = tempfile::tempdir().unwrap();
+        let beta = flavor(tmp.path(), "WoW/_classic_beta_", UID);
+        let manual = vec![paths::canonical(&beta).unwrap()];
+        let scanner = Scanner::new();
+        let scans = scanner.subscribe_scans();
+        scanner.start(move || Inputs {
+            sources: vec![],
+            manual: manual.clone(),
+            uid: UID.into(),
+        });
+        let first = scans.recv_timeout(WAIT).unwrap();
+        assert_eq!(first.installs.len(), 1);
+
+        scanner.rescan();
+        assert_eq!(scans.recv_timeout(WAIT).unwrap(), first);
+        // A later subscriber starts with the last scan's set.
+        assert_eq!(scanner.subscribe_scans().recv_timeout(WAIT).unwrap(), first);
     }
 }
