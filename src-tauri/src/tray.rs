@@ -214,9 +214,12 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
         },
         start_post_link_runs: {
             let app = app.clone();
-            // CMP-R101: a run for every confirmed logId. The in-game
-            // downloads (B4) join here.
-            Box::new(move || upload::window::trigger_all(&app, Trigger::PostLink))
+            // CMP-R101: a run for every confirmed logId, and both in-game
+            // downloads, which queue behind the runs (CMP-R46).
+            Box::new(move || {
+                upload::window::trigger_all(&app, Trigger::PostLink);
+                in_game::timer::window::after_link(&app);
+            })
         },
         changed: {
             let app = app.clone();
@@ -396,6 +399,7 @@ fn take_watcher_lock(app: AppHandle) {
                     readings::window::start(&app);
                     catch_logs::window::start(&app);
                     upload::window::start(&app);
+                    in_game::timer::window::start(&app);
                     let _ = app.emit("status", companion.status());
                     return;
                 }

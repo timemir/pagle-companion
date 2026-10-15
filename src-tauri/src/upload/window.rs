@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::queue::Trigger;
 use super::{Ctx, Env, Uploads, plan};
 use crate::catch_logs::{self, CatchLogs};
+use crate::in_game::folders::{self, DataFile, Qualifying, WriteReport};
 use crate::installs::paths;
 use crate::readings::{self, Reading, Readings};
 use crate::state::State;
@@ -167,8 +168,9 @@ pub fn last_uploaded(app: AppHandle) -> String {
     current(&app)
 }
 
-/// What a run in tray mode works with.
-struct AppEnv(AppHandle);
+/// What a queue item in tray mode works with: the app's readings, clock and
+/// data addon folders.
+pub struct AppEnv(pub AppHandle);
 
 impl Env for AppEnv {
     fn read(&self, folder: &str) -> impl Future<Output = Reading> + Send {
@@ -191,6 +193,35 @@ impl Env for AppEnv {
 
     fn changed(&self) {
         show(&self.0);
+    }
+
+    fn qualifying(&self) -> Qualifying {
+        folders::window::qualifying(&self.0)
+    }
+
+    fn data_files_hash_to(&self, file: DataFile, etag: &str) -> impl Future<Output = bool> + Send {
+        let app = self.0.clone();
+        let etag = etag.to_owned();
+        async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                folders::window::data_files_hash_to(&app, file, &etag)
+            })
+            .await
+            .unwrap_or(false)
+        }
+    }
+
+    fn write(&self, file: DataFile, body: Vec<u8>) -> impl Future<Output = WriteReport> + Send {
+        let app = self.0.clone();
+        async move {
+            tauri::async_runtime::spawn_blocking(move || folders::window::write(&app, file, &body))
+                .await
+                .unwrap_or_default()
+        }
+    }
+
+    fn refresh_tocs(&self) {
+        folders::window::refresh_tocs(&self.0);
     }
 }
 

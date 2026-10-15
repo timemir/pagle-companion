@@ -18,8 +18,12 @@
 //! a result, recorded as `lastRun`. What each result's row says is
 //! `catch_logs::run_line`'s; the notifications a run's end raises or clears
 //! (divergence, held characters, log cap; CMP-R111) are [`causes`].
-//! Downloads (B4) classify their replies with the same [`on_refusal`].
+//!
+//! The in-game downloads (CMP-R81) are the queue's other items: the timer's
+//! checks queue the due ones ([`Uploads::in_game_check`]) and [`download`]
+//! sends them, classifying their refusals with the same [`on_refusal`].
 
+pub mod download;
 pub mod plan;
 pub mod queue;
 pub mod window;
@@ -34,20 +38,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use reqwest::header::{CONTENT_TYPE, RETRY_AFTER};
-use reqwest::{Method, RequestBuilder};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, RETRY_AFTER};
+use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::{Notify, watch};
 
 use crate::catch_logs::{self, Confirmed};
 use crate::device_flow::UPDATE_REQUIRED_TEXT;
+use crate::in_game::folders::{DataFile, Qualifying, WriteReport};
+use crate::in_game::timer::Schedule;
 use crate::link::{Account, CREDENTIAL_INVALID, SendError, Stop};
 use crate::notify::{Cause, CauseKey, Notifications, Notifier};
 use crate::readings::{LocalRead, Reading};
 use crate::state::{Answer, CatchLogState, LastRun, LogState, RunResult, State, Store};
 use crate::upload_doc;
 
+use download::DownloadEnd;
 use plan::{Backoff, Cursor, End, FileNow, PAGE_SIZE, Plan};
 use queue::{Item, Queue, Run, Trigger};
 
@@ -74,6 +81,19 @@ pub trait Env: Sync {
     fn now(&self) -> i64;
     /// Local state changed: the window and the tray show it again.
     fn changed(&self);
+    /// Which installs qualify for the data addon folders now, and which of
+    /// them lack each data file (CMP-R80).
+    fn qualifying(&self) -> Qualifying;
+    /// Whether `file` in every qualifying install hashes to `etag`, so the
+    /// download may send `If-None-Match` (CMP-R81). It reads the files, so it
+    /// runs off the async runtime's threads.
+    fn data_files_hash_to(&self, file: DataFile, etag: &str) -> impl Future<Output = bool> + Send;
+    /// Writes a body that passed CMP-R82 as `file`'s data file into every
+    /// qualifying install (CMP-R83), off the async runtime's threads.
+    fn write(&self, file: DataFile, body: Vec<u8>) -> impl Future<Output = WriteReport> + Send;
+    /// Rewrites each data addon folder's TOC that `Pagle.toc` has moved on
+    /// from (CMP-R83): at every in-game check.
+    fn refresh_tocs(&self);
 }
 
 /// What one queue item works with.
@@ -100,6 +120,8 @@ pub enum RunEnd {
     /// hold the `logId`, held back or skipped (CMP-R45). The text is for the
     /// local log file.
     NotStarted(&'static str),
+    /// The item was an in-game download, which ended so (CMP-R81).
+    Download(DownloadEnd),
 }
 
 /// A reply other than a success or a retry: a refusal, by its HTTP status
@@ -184,7 +206,7 @@ pub enum Step {
     Restart,
     /// `429`: wait `retry_after` (the retry backoff when it is missing or
     /// unreadable), then resend the same request; the whole queue waits. A
-    /// download (B4) is dropped instead, not due again before it passes.
+    /// download is dropped instead, not due again before it passes.
     Wait { retry_after: Option<Duration> },
     /// Enter the stop: the run ends, leaving `lastRun` as it was.
     Stop(Stop),
@@ -226,6 +248,8 @@ pub struct Uploads {
     backoff: Mutex<Backoff>,
     /// Whether the start's runs have been triggered (CMP-R45: "at start").
     started: AtomicBool,
+    /// When the in-game downloads are due (CMP-R81).
+    schedule: Mutex<Schedule>,
 }
 
 #[derive(Default)]
@@ -249,6 +273,7 @@ impl Uploads {
             interrupts: watch::channel(0).0,
             backoff: Mutex::default(),
             started: AtomicBool::new(false),
+            schedule: Mutex::default(),
         }
     }
 
@@ -319,8 +344,17 @@ impl Uploads {
     pub async fn run_item<N: Notifier, E: Env>(&self, ctx: &Ctx<'_, N, E>, item: Item) -> RunEnd {
         let end = match &item {
             Item::Run(run) => self.run(ctx, run).await,
+            Item::Download(file) => RunEnd::Download(self.download(ctx, *file).await),
         };
-        self.lock().queue.done();
+        let mut inner = self.lock();
+        inner.queue.done();
+        if let (Item::Download(file), RunEnd::Download(DownloadEnd::Retry)) = (&item, &end) {
+            // CMP-R50, CMP-R51: after the backoff the download starts again,
+            // behind any upload run that queued meanwhile (CMP-R46).
+            inner.queue.push_download(*file);
+            drop(inner);
+            self.queued.notify_one();
+        }
         end
     }
 
@@ -649,12 +683,7 @@ impl Uploads {
         if status.is_server_error() {
             return Reply::Retry(status.to_string());
         }
-        let retry_after = reply
-            .headers()
-            .get(RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .map(Duration::from_secs);
+        let retry_after = retry_after(reply.headers());
         let body = match reply.bytes().await {
             Ok(body) => body,
             Err(e) => return Reply::Retry(e.to_string()),
@@ -668,17 +697,7 @@ impl Uploads {
                 Err(e) => Reply::Retry(format!("{status} with a body that doesn't read: {e}")),
             };
         }
-        let json = serde_json::from_slice::<serde_json::Value>(&body).ok();
-        let text = |key: &str| {
-            json.as_ref()
-                .and_then(|j| j.get(key)?.as_str().map(str::to_owned))
-        };
-        Reply::Refused(Refusal {
-            status: status.as_u16(),
-            code: ["reason", "code", "error"].iter().find_map(|key| text(key)),
-            message: text("message"),
-            retry_after,
-        })
+        Reply::Refused(refusal(status, retry_after, &body))
     }
 
     /// Ends a run with `result` and no refusal.
@@ -832,6 +851,31 @@ pub fn notify<N: Notifier>(state: &Store, notifications: &Notifications<N>) {
             }
             None => notifications.clear(&key),
         }
+    }
+}
+
+/// A reply's `Retry-After`, in seconds, when present and readable (CMP-R50).
+fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+/// A refusal of `status` with `body` (CMP-R50): its code is the body's
+/// `reason`, `code` or `error`, whichever is present.
+fn refusal(status: StatusCode, retry_after: Option<Duration>, body: &[u8]) -> Refusal {
+    let json = serde_json::from_slice::<serde_json::Value>(body).ok();
+    let text = |key: &str| {
+        json.as_ref()
+            .and_then(|j| j.get(key)?.as_str().map(str::to_owned))
+    };
+    Refusal {
+        status: status.as_u16(),
+        code: ["reason", "code", "error"].iter().find_map(|key| text(key)),
+        message: text("message"),
+        retry_after,
     }
 }
 

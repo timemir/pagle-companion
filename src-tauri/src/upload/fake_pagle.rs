@@ -5,15 +5,23 @@
 //! it answer something else for the next requests of an endpoint (any
 //! refusal of UPL Refusals with [`refusal`]), set the `catchLog` its
 //! successes carry, and read every page it received.
+//!
+//! [`FakeInGame`] stubs the two in-game downloads the same way.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use flate2::Compression;
 use flate2::read::DeflateDecoder;
+use flate2::write::GzEncoder;
 use serde_json::json;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+use crate::in_game::backend_bodies::{ANGLERS_EXAMPLE, FOLLOWING_EXAMPLE};
+use crate::in_game::folders::{DataFile, etag_of};
+use crate::upload::download::endpoint;
 
 /// One page's upload document header, as the stub received it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,5 +315,155 @@ fn end(held: &Held) -> serde_json::Value {
     match held.entries.last() {
         Some(last) => json!({ "seq": held.entries.len(), "entryId": last.id }),
         None => json!({ "seq": 0, "entryId": null }),
+    }
+}
+
+/// One in-game download as [`FakeInGame`] received it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    pub file: DataFile,
+    pub accept_encoding: Option<String>,
+    pub if_none_match: Option<String>,
+    pub authorization: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Default)]
+struct InGameInner {
+    bodies: HashMap<DataFile, Vec<u8>>,
+    scripts: HashMap<DataFile, VecDeque<Option<ResponseTemplate>>>,
+    received: Vec<Download>,
+    /// Whether each `200` the stub answered itself went out gzip-encoded.
+    gzipped: Vec<bool>,
+}
+
+/// A stub of the in-game downloads (IGV Contracts, Endpoints): it answers
+/// each with the body a test set (the Contracts examples at first) as
+/// IGV-R34 says, `text/x-lua` and gzip-encoded when `Accept-Encoding` allows
+/// gzip; the Anglers body with its `ETag` (IGV-R32), and a `304` when
+/// `If-None-Match` matches it. Tests can make it answer something else for
+/// the next requests of an endpoint and read every request it received.
+#[derive(Clone, Default)]
+pub struct FakeInGame(Arc<Mutex<InGameInner>>);
+
+impl FakeInGame {
+    pub async fn mount(&self, server: &MockServer) {
+        for file in DataFile::ALL {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/v1/{}", endpoint(file))))
+                .respond_with(InGameEndpoint(self.clone(), file))
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, InGameInner> {
+        self.0.lock().unwrap()
+    }
+
+    /// The body `file`'s download answers from now on.
+    pub fn set_body(&self, file: DataFile, body: impl Into<Vec<u8>>) {
+        self.lock().bodies.insert(file, body.into());
+    }
+
+    /// The body `file`'s download answers.
+    pub fn body(&self, file: DataFile) -> Vec<u8> {
+        let inner = self.lock();
+        match inner.bodies.get(&file) {
+            Some(body) => body.clone(),
+            None => default_body(file).to_vec(),
+        }
+    }
+
+    /// The next downloads of `file` get these answers (`None`: the stub's
+    /// own).
+    pub fn script(&self, file: DataFile, replies: Vec<Option<ResponseTemplate>>) {
+        self.lock().scripts.entry(file).or_default().extend(replies);
+    }
+
+    /// Every download received, in order.
+    pub fn received(&self) -> Vec<Download> {
+        self.lock().received.clone()
+    }
+
+    /// The downloads of `file` received.
+    pub fn received_of(&self, file: DataFile) -> Vec<Download> {
+        self.received()
+            .into_iter()
+            .filter(|d| d.file == file)
+            .collect()
+    }
+
+    /// Whether each `200` the stub answered itself was gzip-encoded.
+    pub fn gzipped(&self) -> Vec<bool> {
+        self.lock().gzipped.clone()
+    }
+}
+
+fn default_body(file: DataFile) -> &'static [u8] {
+    match file {
+        DataFile::Following => FOLLOWING_EXAMPLE.as_bytes(),
+        DataFile::Anglers => ANGLERS_EXAMPLE.as_bytes(),
+    }
+}
+
+/// `bytes` gzip-encoded, as the backend sends a data file (IGV-R34).
+pub fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+struct InGameEndpoint(FakeInGame, DataFile);
+
+impl Respond for InGameEndpoint {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let header = |name: &str| {
+            request
+                .headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let file = self.1;
+        let seen = Download {
+            file,
+            accept_encoding: header("accept-encoding"),
+            if_none_match: header("if-none-match"),
+            authorization: header("authorization"),
+            version: header("pagle-companion-version"),
+        };
+        let body = self.0.body(file);
+        let mut inner = self.0.lock();
+        inner.received.push(seen.clone());
+        if let Some(Some(reply)) = inner.scripts.get_mut(&file).and_then(VecDeque::pop_front) {
+            return reply;
+        }
+        let etag = etag_of(&body);
+        let mut reply = ResponseTemplate::new(200)
+            .insert_header("Content-Type", "text/x-lua; charset=utf-8")
+            .insert_header("Cache-Control", "private, no-cache")
+            .insert_header("Vary", "Accept-Encoding");
+        if file == DataFile::Anglers {
+            if seen.if_none_match.as_deref() == Some(etag.as_str()) {
+                return ResponseTemplate::new(304)
+                    .insert_header("ETag", etag.as_str())
+                    .insert_header("Cache-Control", "private, no-cache")
+                    .insert_header("Vary", "Accept-Encoding");
+            }
+            reply = reply.insert_header("ETag", etag.as_str());
+        }
+        let gzip_allowed = seen
+            .accept_encoding
+            .as_deref()
+            .is_some_and(|v| v.split(',').any(|c| c.trim() == "gzip"));
+        inner.gzipped.push(gzip_allowed);
+        if gzip_allowed {
+            reply
+                .insert_header("Content-Encoding", "gzip")
+                .set_body_bytes(gzip(&body))
+        } else {
+            reply.set_body_bytes(body)
+        }
     }
 }

@@ -1,13 +1,17 @@
-//! The one queue (CMP-R46): upload runs, and later the in-game downloads
-//! (CMP-R81, B4), first in first out, one at a time. A trigger for a `logId`
-//! with a run queued and not started adds nothing, but the queued run takes
-//! on the trigger's stronger properties; one for a `logId` whose run is in
-//! progress queues one more run, at most.
+//! The one queue (CMP-R46): upload runs and the in-game downloads (CMP-R81),
+//! first in first out, one at a time; a download starts only when no upload
+//! run is waiting. A trigger for a `logId` with a run queued and not started
+//! adds nothing, but the queued run takes on the trigger's stronger
+//! properties; one for a `logId` whose run is in progress queues one more
+//! run, at most. A download already queued or in progress isn't queued
+//! again.
 //!
 //! The queue only orders items. What a run does is the runner's; when a
 //! trigger may queue at all (linked, outside a stop) is the caller's.
 
 use std::collections::VecDeque;
+
+use crate::in_game::folders::DataFile;
 
 /// What started a run (CMP-R45).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,33 +79,38 @@ pub struct Run {
     pub props: Props,
 }
 
-/// One item of the queue. The in-game downloads (CMP-R81, B4) join as a
-/// second variant; [`Queue::pop`] already starts them only when no upload
-/// run is waiting.
+/// One item of the queue: an upload run, or an in-game download (CMP-R81),
+/// which [`Queue::pop`] starts only when no upload run is waiting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Run(Run),
+    Download(DataFile),
 }
 
 impl Item {
     fn run(&self) -> Option<&Run> {
         match self {
             Item::Run(run) => Some(run),
+            Item::Download(_) => None,
         }
     }
 
     fn run_mut(&mut self) -> Option<&mut Run> {
         match self {
             Item::Run(run) => Some(run),
+            Item::Download(_) => None,
         }
     }
 }
 
-/// The queue's items, and the `logId` of the run in progress.
+/// The queue's items, and the item in progress.
 #[derive(Debug, Default)]
 pub struct Queue {
     items: VecDeque<Item>,
+    /// The `logId` of the run in progress.
     running: Option<String>,
+    /// The download in progress.
+    downloading: Option<DataFile>,
 }
 
 impl Queue {
@@ -128,6 +137,17 @@ impl Queue {
         true
     }
 
+    /// Adds the download of `file` (CMP-R81), unless it is queued or in
+    /// progress. Returns whether an item was added.
+    pub fn push_download(&mut self, file: DataFile) -> bool {
+        let queued = self.items.contains(&Item::Download(file));
+        if queued || self.downloading == Some(file) {
+            return false;
+        }
+        self.items.push_back(Item::Download(file));
+        true
+    }
+
     /// Takes the next item and marks it in progress: the first upload run,
     /// or, when no run is waiting, the first other item (CMP-R46).
     pub fn pop(&mut self) -> Option<Item> {
@@ -138,12 +158,17 @@ impl Queue {
             .or(if self.items.is_empty() { None } else { Some(0) })?;
         let item = self.items.remove(at)?;
         self.running = item.run().map(|run| run.log_id.clone());
+        self.downloading = match item {
+            Item::Download(file) => Some(file),
+            Item::Run(_) => None,
+        };
         Some(item)
     }
 
     /// The item in progress has ended.
     pub fn done(&mut self) {
         self.running = None;
+        self.downloading = None;
     }
 
     /// The `logId` of the run in progress.
@@ -163,7 +188,7 @@ impl Queue {
     /// in progress, which stops after its current request.
     pub fn clear(&mut self) -> bool {
         self.items.clear();
-        self.running.is_some()
+        self.running.is_some() || self.downloading.is_some()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -186,6 +211,7 @@ mod tests {
     fn run(item: Option<Item>) -> Run {
         match item.expect("an item") {
             Item::Run(run) => run,
+            Item::Download(file) => panic!("a download of {file:?}"),
         }
     }
 
@@ -321,5 +347,57 @@ mod tests {
         assert!(queue.is_empty());
         queue.done();
         assert_eq!(queue.running(), None);
+    }
+
+    #[test]
+    fn a_waiting_upload_run_goes_before_a_download() {
+        // CMP-R46: downloads start only when no upload run is waiting
+        let mut queue = Queue::default();
+        assert!(queue.push_download(DataFile::Following));
+        queue.push(A, Trigger::Change);
+        assert_eq!(run(queue.pop()).log_id, A);
+        queue.done();
+        assert_eq!(queue.pop(), Some(Item::Download(DataFile::Following)));
+        queue.done();
+        assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn downloads_go_first_in_first_out() {
+        // CMP-R46: one queue, first in first out
+        let mut queue = Queue::default();
+        queue.push_download(DataFile::Anglers);
+        queue.push_download(DataFile::Following);
+        assert_eq!(queue.pop(), Some(Item::Download(DataFile::Anglers)));
+        queue.done();
+        assert_eq!(queue.pop(), Some(Item::Download(DataFile::Following)));
+    }
+
+    #[test]
+    fn a_download_queued_or_in_progress_isnt_queued_again() {
+        // CMP-R81: a due download joins the queue once
+        let mut queue = Queue::default();
+        assert!(queue.push_download(DataFile::Following));
+        assert!(!queue.push_download(DataFile::Following));
+        assert_eq!(queue.items().count(), 1);
+        queue.pop();
+        assert!(!queue.push_download(DataFile::Following));
+        assert!(queue.push_download(DataFile::Anglers));
+        queue.done();
+        assert!(queue.push_download(DataFile::Following));
+    }
+
+    #[test]
+    fn cancelling_drops_queued_downloads_and_stops_the_running_one() {
+        // CMP-R63 step 1: cancels every queued and running item, downloads
+        // included
+        let mut queue = Queue::default();
+        queue.push_download(DataFile::Following);
+        queue.push_download(DataFile::Anglers);
+        queue.pop();
+        assert!(queue.clear());
+        assert!(queue.is_empty());
+        queue.done();
+        assert!(!queue.clear());
     }
 }

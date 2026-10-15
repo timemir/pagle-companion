@@ -21,6 +21,7 @@ use crate::catch_logs::{self, Confirmed, Line, Note};
 use crate::credential_store::testing::MemoryStore;
 use crate::credential_store::{CredentialStore as _, Keychain};
 use crate::device_flow::Approval;
+use crate::in_game::folders::{DataFile, Qualifying, WriteReport};
 use crate::link::{Hooks, Link, SendError, Stop};
 use crate::notify::{Notifications, Notifier};
 use crate::pagle_log::{self, Found, LocalLog};
@@ -110,6 +111,21 @@ impl Env for TestEnv {
     fn changed(&self) {
         self.changed.fetch_add(1, Ordering::SeqCst);
     }
+
+    // No install has the Pagle addon here; the downloads' tests have them.
+    fn qualifying(&self) -> Qualifying {
+        Qualifying::default()
+    }
+
+    async fn data_files_hash_to(&self, _: DataFile, _: &str) -> bool {
+        false
+    }
+
+    async fn write(&self, _: DataFile, _: Vec<u8>) -> WriteReport {
+        WriteReport::default()
+    }
+
+    fn refresh_tocs(&self) {}
 }
 
 struct Harness {
