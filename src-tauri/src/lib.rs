@@ -26,6 +26,8 @@ pub mod state;
 pub mod state_dir;
 #[cfg(test)]
 mod stub_server;
+#[cfg(test)]
+mod tauri_conf;
 pub mod tray;
 pub mod upload;
 pub mod upload_doc;

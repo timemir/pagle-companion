@@ -17,6 +17,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "appimage"],
+    "publisher": "Pagle",
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
@@ -24,7 +25,14 @@
       "icons/128x128@2x.png",
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    }
   },
   "plugins": {
     "updater": {
