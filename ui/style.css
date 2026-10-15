@@ -43,3 +43,18 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
 /* Dark on light in both themes, so phones can scan it. */
 .qr { width: 200px; margin: 8px 0; background: #fff; padding: 8px; border-radius: 6px; }
 .qr svg { display: block; width: 100%; height: auto; }
+/* Catch logs (CMP-R41) */
+.logs { list-style: none; margin: 0 0 8px; padding: 0; }
+.log { padding: 8px 0; border-bottom: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); }
+.log:last-child { border-bottom: 0; }
+.log-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.characters { font-weight: 600; overflow-wrap: anywhere; }
+.log-folder { font-size: 13px; overflow-wrap: anywhere; }
+.switch { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.state-line { margin-top: 4px; }
+.state-line.awaiting, .state-line.several-folders { border: 1px solid var(--muted); border-radius: 6px; padding: 6px 10px; }
+.state-line.not-found { color: var(--muted); }
+.state-line.problem p { background: var(--notice-bg); color: var(--notice-fg); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+.state-line .actions { flex-wrap: wrap; margin: 6px 0 2px; }
+.log .notice { margin-top: 6px; font-size: 13px; }
+.log .notice a { color: inherit; }

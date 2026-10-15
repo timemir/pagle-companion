@@ -8,6 +8,7 @@
     <script src="main.js" defer></script>
     <script src="folders.js" defer></script>
     <script src="linking.js" defer></script>
+    <script src="catch-logs.js" defer></script>
   </head>
   <body>
     <main>
@@ -42,6 +43,11 @@
         </div>
         <p id="linking-outcome" hidden></p>
         <p class="actions"><button id="link-cancel" type="button">Cancel</button></p>
+      </section>
+      <section id="catch-logs-section" aria-labelledby="catch-logs-heading" hidden>
+        <h2 id="catch-logs-heading">Catch logs</h2>
+        <ul id="catch-logs" class="logs"></ul>
+        <p id="catch-logs-error" class="notice" role="alert" hidden></p>
       </section>
       <section aria-labelledby="folders-heading">
         <h2 id="folders-heading">WoW folders</h2>

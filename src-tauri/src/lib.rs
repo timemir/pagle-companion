@@ -3,6 +3,7 @@
 //! `docs/spec/companion/` in `timemir/pagle-backend` (CMP and DST rules).
 
 pub mod api;
+pub mod catch_logs;
 pub mod cli;
 pub mod credential_store;
 pub mod device_flow;

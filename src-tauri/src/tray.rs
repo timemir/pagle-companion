@@ -10,6 +10,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use crate::api::{self, Api};
+use crate::catch_logs::{self, CatchLogs};
 use crate::cli::{self, Mode};
 use crate::credential_store::Keychain;
 use crate::installs::{self, Scanner};
@@ -149,6 +150,10 @@ pub fn run(mode: Mode) {
             linking::open_link_page,
             linking::unlink,
             readings::window::readings,
+            catch_logs::window::catch_logs,
+            catch_logs::window::answer_catch_log,
+            catch_logs::window::pick_folder,
+            catch_logs::window::open_my_anglers,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -216,6 +221,10 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
     app.manage(Scanner::new());
     app.manage(Linking::default());
     app.manage(Readings::new());
+    // The upload runs (#28) fill in `start_run` and `stop_runs`, and the
+    // first-run window (#9) holds notifications with
+    // `catch_logs::window::set_first_run_window`.
+    app.manage(CatchLogs::new(catch_logs::Hooks::default()));
 
     build_tray(app)?;
     linking::start(app);
@@ -314,6 +323,7 @@ fn take_watcher_lock(app: AppHandle) {
                     log::info!("took the watcher lock");
                     installs::window::start(&app);
                     readings::window::start(&app);
+                    catch_logs::window::start(&app);
                     let _ = app.emit("status", companion.status());
                     return;
                 }
