@@ -12,6 +12,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::watch;
 
+use crate::autostart;
 use crate::device_flow::{self, End, Failure};
 use crate::link::{KEYRING_RETRY, LinkStatus, Stop};
 use crate::tray::{self, Companion};
@@ -192,11 +193,15 @@ pub fn start_link(app: AppHandle) -> Result<(), String> {
         return Err(device_flow::UPDATE_REQUIRED_TEXT.into());
     }
     // CMP-R100: pressing Link to Pagle ends the first run's step 1, so local
-    // state is written from here on and the link outlives the process. The
-    // rest of step 1 (answers from the ticks, the autostart entry) is the
-    // first-run window's (Track C).
+    // state is written from here on and the link outlives the process, and
+    // the autostart entry is created before the browser opens (CMP-R3). The
+    // answers from the ticks are the first-run window's (#9).
+    let ends_step_1 = !companion.state.read(|s| s.first_run_done);
     if let Err(e) = companion.state.update(|s| s.first_run_done = true) {
         log::error!("couldn't write state.json: {e}");
+    }
+    if ends_step_1 {
+        autostart::window::create(&app);
     }
     let (attempt, ended) = app.state::<Linking>().begin();
     emit_linking(&app);

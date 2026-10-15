@@ -11,6 +11,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use crate::api::{self, Api};
+use crate::autostart;
 use crate::catch_logs::{self, CatchLogs};
 use crate::cli::{self, Mode};
 use crate::credential_store::Keychain;
@@ -143,6 +144,8 @@ pub fn run(mode: Mode) {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             status,
+            autostart::window::start_at_login,
+            autostart::window::set_start_at_login,
             installs::window::installs,
             installs::window::add_wow_folder,
             installs::window::remove_wow_folder,
@@ -257,6 +260,10 @@ fn setup(app: &AppHandle, autostart: bool) -> Result<(), Box<dyn std::error::Err
             Box::new(move |log_id| app.state::<Uploads>().stop_runs(log_id))
         },
     }));
+
+    // CMP-R3, CMP-R91: at every tray-mode start. (`autostart` here is the
+    // command line's flag, hence the full path.)
+    crate::autostart::window::at_start(&app.state::<Companion>());
 
     build_tray(app)?;
     linking::start(app);

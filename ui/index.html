@@ -9,6 +9,7 @@
     <script src="folders.js" defer></script>
     <script src="linking.js" defer></script>
     <script src="catch-logs.js" defer></script>
+    <script src="settings.js" defer></script>
   </head>
   <body>
     <main>
@@ -56,6 +57,11 @@
         <ul id="installs" class="installs"></ul>
         <p id="folder-error" class="notice" role="alert" hidden></p>
         <button id="add-folder" type="button" disabled>Add a WoW folder…</button>
+      </section>
+      <section aria-labelledby="settings-heading">
+        <h2 id="settings-heading">Settings</h2>
+        <label class="switch"><input id="start-at-login" type="checkbox" role="switch" disabled /><span>Start at login</span></label>
+        <p id="settings-error" class="notice" role="alert" hidden></p>
       </section>
       <footer><span id="version"></span></footer>
     </main>
