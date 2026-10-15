@@ -15,7 +15,6 @@
 pub mod window;
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 
@@ -673,8 +672,6 @@ impl Default for Hooks {
 /// `app.state::<CatchLogs>()`.
 pub struct CatchLogs {
     hooks: Hooks,
-    /// The first-run window is open: no notification is raised (CMP-R100).
-    first_run_window: AtomicBool,
     /// The `logId`s the first-run window listed, which raise no "Upload it?"
     /// notification in this process (CMP-R100).
     listed: Mutex<HashSet<String>>,
@@ -690,7 +687,6 @@ impl CatchLogs {
     pub fn new(hooks: Hooks) -> Self {
         Self {
             hooks,
-            first_run_window: AtomicBool::new(false),
             listed: Mutex::default(),
             confirmed: Mutex::default(),
             subscribers: Mutex::default(),
@@ -718,12 +714,21 @@ impl CatchLogs {
         rx
     }
 
-    /// Whether the first-run window is open (CMP-R100, #9): while it is, no
-    /// notification is raised, and every `logId` that awaits an answer
-    /// meanwhile counts as listed and raises no "Upload it?" notification in
-    /// this process. Call [`CatchLogs::refresh`] after closing it.
-    pub fn set_first_run_window(&self, open: bool) {
-        self.first_run_window.store(open, Ordering::SeqCst);
+    /// The `logId`s the first-run window listed when its step 1 ended
+    /// (CMP-R100): none of them raises an "Upload it?" notification in this
+    /// process, and one held meanwhile is dropped. (The hold itself, no
+    /// notification at all while the window is open, is
+    /// [`Notifications::hold`]'s.)
+    pub fn list<N: Notifier>(
+        &self,
+        log_ids: impl IntoIterator<Item = String>,
+        notifications: &Notifications<N>,
+    ) {
+        let mut listed = lock(&self.listed);
+        for log_id in log_ids {
+            notifications.clear(&CauseKey::AwaitingAnswer(log_id.clone()));
+            listed.insert(log_id);
+        }
     }
 
     /// Takes a new reading into local state, raises and clears CMP-R111's
@@ -764,22 +769,18 @@ impl CatchLogs {
         }
 
         let (causes, confirmed) = store.read(|s| (causes(s, snapshot), confirmed(s, snapshot)));
-        let first_run_window = self.first_run_window.load(Ordering::SeqCst);
-        let mut listed = lock(&self.listed);
+        let listed = lock(&self.listed);
         for (key, cause) in causes {
             let Some(cause) = cause else {
                 notifications.clear(&key);
                 continue;
             };
-            if let Cause::AwaitingAnswer { log_id, .. } = &cause {
-                if first_run_window {
-                    listed.insert(log_id.clone());
-                }
-                if listed.contains(log_id) {
-                    continue;
-                }
+            if let Cause::AwaitingAnswer { log_id, .. } = &cause
+                && listed.contains(log_id)
+            {
+                continue;
             }
-            if !first_run_window && notifications.raise(&cause) {
+            if notifications.raise(&cause) {
                 // Never the characters (CMP-R112).
                 log::info!("notified: {key:?}");
             }
@@ -1893,21 +1894,50 @@ mod tests {
         // open, and the logIds it listed raise no "Upload it?" notification
         // in that process
         let running = running(state_with(&[]), Hooks::default());
-        running.catch_logs.set_first_run_window(true);
+        running.notifications.hold();
         let one = snapshot(vec![holding(ONE, LOG_A, 1)]);
         running.refresh(&one);
         assert!(running.recorder.shown().is_empty());
 
-        running.catch_logs.set_first_run_window(false);
+        // Step 1 ends with LOG_A listed and still awaiting (the window was
+        // closed early); LOG_B turns up after.
+        running
+            .catch_logs
+            .list([LOG_A.to_owned()], &running.notifications);
         let more = snapshot(vec![
             holding(ONE, LOG_A, 1),
             holding(TWO, LOG_B, 1),
             holding(THREE, LOG_B, 1),
         ]);
         running.refresh(&more);
+        assert!(running.recorder.shown().is_empty());
+
+        running.notifications.release();
+        running.refresh(&more);
         assert_eq!(
             running.recorder.shown(),
             ["The same Catch log is in 2 account folders. Pick the one you play on."]
         );
+    }
+
+    #[test]
+    fn a_listed_log_picked_later_raises_no_upload_it() {
+        // CMP-R100: a logId in two folders shows CMP-R42's question in the
+        // list; once listed, its "Upload it?" never notifies in that process
+        let running = running(state_with(&[]), Hooks::default());
+        running.notifications.hold();
+        let both = snapshot(vec![holding(ONE, LOG_A, 1), holding(TWO, LOG_A, 1)]);
+        running.refresh(&both);
+        running
+            .catch_logs
+            .list([LOG_A.to_owned()], &running.notifications);
+        running.notifications.release();
+        // Still without a pick when step 1 ended: CMP-R42's notification.
+        assert_eq!(running.recorder.shown().len(), 1);
+
+        running.pick(&both, ONE).unwrap();
+        running.refresh(&both);
+        assert_eq!(running.recorder.shown().len(), 1);
+        assert_eq!(running.store.read(|s| s.logs[LOG_A].answer), None);
     }
 }

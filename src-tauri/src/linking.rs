@@ -12,7 +12,6 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tokio::sync::watch;
 
-use crate::autostart;
 use crate::companion::Companion;
 use crate::device_flow::{self, End, Failure};
 use crate::host::Host;
@@ -180,9 +179,18 @@ pub fn linking_view(linking: tauri::State<'_, Linking>) -> LinkingView {
     linking.view()
 }
 
-/// **Link to Pagle** and **Link again…** (CMP-R60, CMP-R64).
+/// **Link to Pagle** and **Link again…** (CMP-R60, CMP-R64). On a first
+/// run, **Link to Pagle** is the first-run window's (`first_run::window`),
+/// which ends step 1 before it links.
 #[tauri::command]
 pub fn start_link(app: AppHandle) -> Result<(), String> {
+    may_link(&app)?;
+    begin_link(&app);
+    Ok(())
+}
+
+/// Whether the device flow may start; the error is the text to show.
+pub fn may_link<H: Host>(app: &H) -> Result<(), String> {
     let companion = app.state::<Companion>();
     if !companion.is_watcher() {
         // CMP-R2: the window of a process without the lock is read-only.
@@ -193,21 +201,15 @@ pub fn start_link(app: AppHandle) -> Result<(), String> {
         // device flow).
         return Err(device_flow::UPDATE_REQUIRED_TEXT.into());
     }
-    // CMP-R100: pressing Link to Pagle ends the first run's step 1, so local
-    // state is written from here on and the link outlives the process, and
-    // the autostart entry is created before the browser opens (CMP-R3). The
-    // answers from the ticks are the first-run window's (#9).
-    let ends_step_1 = !companion.state.read(|s| s.first_run_done);
-    if let Err(e) = companion.state.update(|s| s.first_run_done = true) {
-        log::error!("couldn't write state.json: {e}");
-    }
-    if ends_step_1 {
-        autostart::window::create(&app);
-    }
-    let (attempt, ended) = app.state::<Linking>().begin();
-    emit_linking(&app);
-    tauri::async_runtime::spawn(run_link(app, attempt, ended));
     Ok(())
+}
+
+/// Starts a new device flow attempt in the background (CMP-R60), once
+/// [`may_link`] allowed it.
+pub fn begin_link(app: &AppHandle) {
+    let (attempt, ended) = app.state::<Linking>().begin();
+    emit_linking(app);
+    tauri::async_runtime::spawn(run_link(app.clone(), attempt, ended));
 }
 
 async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
@@ -260,8 +262,14 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
             ended_view(failure.text())
         }
     };
+    let linked = view == LinkingView::Idle;
     if linking.show(attempt, view, None) {
         emit_linking(&app);
+    }
+    if linked {
+        // CMP-R100: the first run moves on to step 3; the post-link runs
+        // were queued as the link was stored.
+        crate::first_run::window::linked(&app);
     }
 }
 

@@ -10,12 +10,40 @@
     <script src="linking.js" defer></script>
     <script src="catch-logs.js" defer></script>
     <script src="settings.js" defer></script>
+    <script src="first-run.js" defer></script>
   </head>
   <body>
     <main>
       <h1>Pagle Companion</h1>
       <p id="read-only" class="notice" hidden>Another Pagle Companion is running for this user.</p>
-      <section aria-labelledby="status-heading">
+      <section id="first-run" aria-labelledby="first-run-heading" aria-live="polite" hidden>
+        <h2 id="first-run-heading"></h2>
+        <div id="fr-scan" hidden>
+          <p id="fr-reading">Looking for your Catch logs…</p>
+          <div id="fr-no-install" hidden>
+            <p>No WoW Forever install found. If WoW Forever is installed, add its folder.</p>
+            <p class="actions"><button id="fr-add-folder" type="button">Add a WoW folder…</button></p>
+          </div>
+          <p id="fr-none" hidden>No Catch logs found yet.</p>
+          <p id="fr-intro" class="muted" hidden>The ticked Catch logs upload to Pagle once you link.</p>
+          <ul id="fr-logs" class="logs"></ul>
+          <p class="actions">
+            <button id="fr-primary" type="button">Link to Pagle</button>
+            <button id="fr-not-now" type="button">Not now</button>
+          </p>
+        </div>
+        <p id="fr-link-actions" class="actions" hidden>
+          <button id="fr-link-again" type="button">Link to Pagle</button>
+          <button id="fr-link-not-now" type="button">Not now</button>
+        </p>
+        <p id="fr-uploading" role="status" hidden>Uploading…</p>
+        <div id="fr-done" hidden>
+          <div id="fr-status"></div>
+          <p class="actions"><button id="fr-close" type="button">Close</button></p>
+        </div>
+        <p id="fr-error" class="notice" role="alert" hidden></p>
+      </section>
+      <section class="everyday" aria-labelledby="status-heading">
         <h2 id="status-heading">Status</h2>
         <p id="link-status">Not linked</p>
         <p id="keyring-locked" class="notice" hidden>Pagle Companion can't open your keyring. Unlock it to keep uploading.</p>
@@ -46,19 +74,19 @@
         <p id="linking-outcome" hidden></p>
         <p class="actions"><button id="link-cancel" type="button">Cancel</button></p>
       </section>
-      <section id="catch-logs-section" aria-labelledby="catch-logs-heading" hidden>
+      <section id="catch-logs-section" class="everyday" aria-labelledby="catch-logs-heading" hidden>
         <h2 id="catch-logs-heading">Catch logs</h2>
         <ul id="catch-logs" class="logs"></ul>
         <p id="catch-logs-error" class="notice" role="alert" hidden></p>
       </section>
-      <section aria-labelledby="folders-heading">
+      <section class="everyday" aria-labelledby="folders-heading">
         <h2 id="folders-heading">WoW folders</h2>
         <p id="no-install" hidden>No WoW Forever install found. If WoW Forever is installed, add its folder.</p>
         <ul id="installs" class="installs"></ul>
         <p id="folder-error" class="notice" role="alert" hidden></p>
         <button id="add-folder" type="button" disabled>Add a WoW folder…</button>
       </section>
-      <section aria-labelledby="settings-heading">
+      <section class="everyday" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
         <label class="switch"><input id="start-at-login" type="checkbox" role="switch" disabled /><span>Start at login</span></label>
         <p id="settings-error" class="notice" role="alert" hidden></p>

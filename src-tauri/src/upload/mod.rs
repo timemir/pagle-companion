@@ -250,6 +250,8 @@ pub struct Uploads {
     started: AtomicBool,
     /// When the in-game downloads are due (CMP-R81).
     schedule: Mutex<Schedule>,
+    /// How many post-link runs are queued or in progress (CMP-R101).
+    post_link: watch::Sender<usize>,
 }
 
 #[derive(Default)]
@@ -274,16 +276,33 @@ impl Uploads {
             backoff: Mutex::default(),
             started: AtomicBool::new(false),
             schedule: Mutex::default(),
+            post_link: watch::channel(0).0,
         }
     }
 
     /// Queues a run of `log_id` for `trigger`, or merges it into the one
     /// queued (CMP-R46).
     pub fn trigger(&self, log_id: &str, trigger: Trigger) {
-        if self.lock().queue.push(log_id, trigger) {
+        let mut inner = self.lock();
+        if inner.queue.push(log_id, trigger) {
             log::info!("queued an upload run for {log_id} ({trigger:?})");
         }
+        self.count_post_link(&inner);
+        drop(inner);
         self.queued.notify_one();
+    }
+
+    /// How many post-link runs (CMP-R101) are queued or in progress, kept
+    /// current: the first-run window shows "Uploading…" until it is 0
+    /// (CMP-R100).
+    pub fn post_link_runs(&self) -> watch::Receiver<usize> {
+        self.post_link.subscribe()
+    }
+
+    fn count_post_link(&self, inner: &Inner) {
+        let count = inner.queue.post_link_runs();
+        self.post_link
+            .send_if_modified(|n| std::mem::replace(n, count) != count);
     }
 
     /// The trigger a readings update makes for every confirmed `logId`
@@ -303,7 +322,9 @@ impl Uploads {
     /// and stops a running one after its current request.
     pub fn stop_runs(&self, log_id: &str) {
         let mut inner = self.lock();
-        if inner.queue.drop_runs(log_id) {
+        let running = inner.queue.drop_runs(log_id);
+        self.count_post_link(&inner);
+        if running {
             inner.stop = true;
             drop(inner);
             self.interrupts.send_modify(|n| *n += 1);
@@ -314,7 +335,9 @@ impl Uploads {
     /// CMP-R65): a running one stops after its current request.
     pub fn cancel(&self) {
         let mut inner = self.lock();
-        if inner.queue.clear() {
+        let running = inner.queue.clear();
+        self.count_post_link(&inner);
+        if running {
             inner.stop = true;
             drop(inner);
             self.interrupts.send_modify(|n| *n += 1);
@@ -337,6 +360,7 @@ impl Uploads {
         let mut inner = self.lock();
         let item = inner.queue.pop()?;
         inner.stop = false;
+        self.count_post_link(&inner);
         Some(item)
     }
 
@@ -348,6 +372,7 @@ impl Uploads {
         };
         let mut inner = self.lock();
         inner.queue.done();
+        self.count_post_link(&inner);
         if let (Item::Download(file), RunEnd::Download(DownloadEnd::Retry)) = (&item, &end) {
             // CMP-R50, CMP-R51: after the backoff the download starts again,
             // behind any upload run that queued meanwhile (CMP-R46).

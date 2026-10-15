@@ -168,8 +168,6 @@ pub fn manage<H: Host>(
     host.manage(Linking::default());
     host.manage(Readings::new());
     host.manage(Uploads::new());
-    // The first-run window (#9) holds notifications with
-    // `catch_logs::window::set_first_run_window`.
     host.manage(CatchLogs::new(catch_logs::Hooks {
         start_run: {
             let host = host.clone();

@@ -1,6 +1,11 @@
 //! Notifications (CMP-R110, CMP-R111): raised in tray mode only when the
 //! Player must act, each once per cause per process, and again only after
 //! that cause has cleared. A successful Upload never notifies.
+//!
+//! While the first-run window is open, no notification is shown (CMP-R100):
+//! [`Notifications::hold`] keeps every cause raised meanwhile, and
+//! [`Notifications::release`] shows those that haven't cleared since. Every
+//! cause goes through [`Notifications::raise`], so every cause is held.
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -93,33 +98,74 @@ impl Notifier for Silent {
 /// The one notification service of a process.
 pub struct Notifications<N: Notifier> {
     notifier: N,
-    raised: Mutex<HashSet<CauseKey>>,
+    raised: Mutex<Raised>,
+}
+
+#[derive(Default)]
+struct Raised {
+    /// The causes raised and not cleared since.
+    keys: HashSet<CauseKey>,
+    /// While held: the causes raised meanwhile, in order, not shown yet.
+    held: Option<Vec<Cause>>,
 }
 
 impl<N: Notifier> Notifications<N> {
     pub fn new(notifier: N) -> Self {
         Self {
             notifier,
-            raised: Mutex::new(HashSet::new()),
+            raised: Mutex::default(),
         }
     }
 
-    /// Notifies unless this cause was raised and hasn't cleared since.
-    /// Returns whether a notification was shown.
+    /// Notifies unless this cause was raised and hasn't cleared since; while
+    /// held, keeps it for [`Notifications::release`] instead. Returns
+    /// whether a notification was shown.
     pub fn raise(&self, cause: &Cause) -> bool {
-        let fresh = self.lock().insert(cause.key());
-        if fresh {
+        let mut raised = self.lock();
+        if !raised.keys.insert(cause.key()) {
+            return false;
+        }
+        if let Some(held) = &mut raised.held {
+            held.push(cause.clone());
+            return false;
+        }
+        drop(raised);
+        self.notifier.show(&cause.text());
+        true
+    }
+
+    /// Marks a cause as gone, so raising it again notifies again. A held
+    /// cause that clears is never shown.
+    pub fn clear(&self, key: &CauseKey) {
+        let mut raised = self.lock();
+        raised.keys.remove(key);
+        if let Some(held) = &mut raised.held {
+            held.retain(|cause| cause.key() != *key);
+        }
+    }
+
+    /// Shows no notification from now on until [`Notifications::release`]:
+    /// the first-run window is open (CMP-R100).
+    pub fn hold(&self) {
+        self.lock().held.get_or_insert_with(Vec::new);
+    }
+
+    /// Whether notifications are held (CMP-R100).
+    pub fn is_held(&self) -> bool {
+        self.lock().held.is_some()
+    }
+
+    /// Ends the hold and shows every cause raised during it that hasn't
+    /// cleared since, each once. Returns how many were shown.
+    pub fn release(&self) -> usize {
+        let held = self.lock().held.take().unwrap_or_default();
+        for cause in &held {
             self.notifier.show(&cause.text());
         }
-        fresh
+        held.len()
     }
 
-    /// Marks a cause as gone, so raising it again notifies again.
-    pub fn clear(&self, key: &CauseKey) {
-        self.lock().remove(key);
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<CauseKey>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Raised> {
         self.raised.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -197,6 +243,44 @@ mod tests {
             message: "two".into()
         }));
         assert_eq!(recorder.shown(), ["one"]);
+    }
+
+    #[test]
+    fn nothing_is_shown_while_held() {
+        // CMP-R100: no notification is raised while the first-run window is
+        // open
+        let recorder = Recorder::default();
+        let notifications = Notifications::new(recorder.clone());
+        notifications.hold();
+        assert!(notifications.is_held());
+
+        assert!(!notifications.raise(&divergence("3f9a2c1e7b0d4a65")));
+        assert!(!notifications.raise(&Cause::CredentialInvalid));
+        assert!(recorder.shown().is_empty());
+    }
+
+    #[test]
+    fn a_held_cause_is_shown_once_at_release_unless_it_cleared() {
+        // CMP-R100: none while the first-run window is open; CMP-R110: once
+        // per cause, again only after it cleared
+        let recorder = Recorder::default();
+        let notifications = Notifications::new(recorder.clone());
+        notifications.hold();
+        notifications.raise(&divergence("3f9a2c1e7b0d4a65"));
+        notifications.raise(&divergence("3f9a2c1e7b0d4a65"));
+        notifications.raise(&divergence("0000000000000001"));
+        notifications.clear(&divergence("0000000000000001").key());
+
+        assert_eq!(notifications.release(), 1);
+        assert!(!notifications.is_held());
+        assert_eq!(
+            recorder.shown(),
+            ["This Catch log differs from the copy on Pagle."]
+        );
+        // Raised already: not again until it clears.
+        assert!(!notifications.raise(&divergence("3f9a2c1e7b0d4a65")));
+        assert!(notifications.raise(&divergence("0000000000000001")));
+        assert_eq!(recorder.shown().len(), 2);
     }
 
     #[test]

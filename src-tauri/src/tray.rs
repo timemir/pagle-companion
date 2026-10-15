@@ -20,7 +20,7 @@ use crate::os_notify::OsNotifier;
 use crate::state::State;
 use crate::state_dir::{self, StateDir};
 use crate::upload::{self, queue::Trigger};
-use crate::{appimage, catch_logs, in_game, installs, linking, readings, removal};
+use crate::{appimage, catch_logs, first_run, in_game, installs, linking, readings, removal};
 
 pub const MAIN_WINDOW: &str = "main";
 
@@ -109,6 +109,11 @@ pub fn run(mode: Mode) {
             catch_logs::window::pick_folder,
             catch_logs::window::open_my_anglers,
             catch_logs::window::open_sign_in,
+            first_run::window::first_run,
+            first_run::window::tick_catch_log,
+            first_run::window::first_run_link,
+            first_run::window::first_run_not_now,
+            first_run::window::first_run_close,
             upload::window::last_uploaded,
             upload::window::replace_catch_log,
             removal::window::remove_companion,
@@ -122,6 +127,10 @@ pub fn run(mode: Mode) {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                if window.label() == MAIN_WINDOW {
+                    // CMP-R100: closing the first-run window.
+                    first_run::window::window_closed(window.app_handle());
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -206,6 +215,9 @@ fn start(
         state,
         Box::new(OsNotifier::new(app.clone())),
     )?;
+    // CMP-R100: before anything is watched, so nothing notifies while the
+    // first-run window is open.
+    first_run::window::manage(app, first_run);
 
     // CMP-R3, CMP-R91: at every tray-mode start. (`autostart` here is the
     // command line's flag, hence the full path.)

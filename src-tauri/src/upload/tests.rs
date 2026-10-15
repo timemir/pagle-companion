@@ -1464,3 +1464,54 @@ fn a_stop_without_a_message_shows_the_known_text() {
         })
     );
 }
+
+#[tokio::test]
+async fn run_causes_raise_nothing_while_the_first_run_window_is_open() {
+    // CMP-R100: no notification is raised while the first-run window is
+    // open, divergence, held characters and log cap included (CMP-R111)
+    let h = Harness::new(15).await;
+    h.notifications.hold();
+    h.hold(&fork(12), 12);
+    h.run(Trigger::Start).await;
+    assert!(h.shown().is_empty());
+
+    h.notifications.release();
+    assert_eq!(h.shown(), [DIFFERS]);
+}
+
+#[tokio::test]
+async fn held_characters_and_log_cap_wait_for_the_first_run_window_to_close() {
+    // CMP-R100: no notification while the first-run window is open; a cause
+    // that cleared meanwhile never shows (CMP-R110)
+    let h = Harness::new(15).await;
+    h.notifications.hold();
+    h.pagle.script_uploads(vec![Some(refusal(422, "log_cap"))]);
+    h.run(Trigger::Start).await;
+    h.pagle
+        .set_catch_log(json!({ "verification": "verified", "pendingReason": null,
+                                  "heldCharacters": 1, "leftOff": null }));
+    h.run(Trigger::Start).await;
+    assert!(h.shown().is_empty());
+
+    h.notifications.release();
+    // The log cap cleared with the upload; the held characters remain.
+    assert_eq!(h.shown(), [HELD]);
+}
+
+#[tokio::test]
+async fn post_link_runs_count_until_each_has_ended() {
+    // CMP-R100: "Uploading…" shows until each post-link run (CMP-R101) has
+    // ended
+    let h = Harness::new(15).await;
+    let count = h.uploads.post_link_runs();
+    assert_eq!(*count.borrow(), 0);
+    h.uploads.trigger(LOG_A, Trigger::PostLink);
+    assert_eq!(*count.borrow(), 1);
+    h.uploads.run_queued(&h.ctx()).await;
+    assert_eq!(*count.borrow(), 0);
+
+    // A cancelled one has ended too (CMP-R63 step 1).
+    h.uploads.trigger(LOG_A, Trigger::PostLink);
+    h.uploads.cancel();
+    assert_eq!(*count.borrow(), 0);
+}

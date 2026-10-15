@@ -188,6 +188,19 @@ impl Keychain {
         }
     }
 
+    /// The `credentialStore` of the first store that holds a credential, OS
+    /// store first, or `None` when none answers with one: a first run with a
+    /// credential already in its store reads **Continue** (CMP-R100). A
+    /// store that doesn't answer holds none here.
+    pub fn holding(&self) -> Option<Option<StoreKind>> {
+        if matches!(self.os.read(), Ok(Some(_))) {
+            // The OS store has a `credentialStore` only beside a file (Linux).
+            return Some(self.file.as_ref().map(|_| StoreKind::SecretService));
+        }
+        let file = self.file.as_ref()?;
+        matches!(file.read(), Ok(Some(_))).then_some(Some(StoreKind::File))
+    }
+
     /// Stores a new link's credential (CMP-R61, CMP-R62) and returns the
     /// `credentialStore` to keep in local state. On Windows: Windows
     /// Credential Manager. On Linux: the credential file in Game Mode;
@@ -316,6 +329,30 @@ mod tests {
 
     fn locked() -> StoreError {
         StoreError::Unavailable("locked".into())
+    }
+
+    #[test]
+    fn a_stored_credential_is_found_in_either_store() {
+        // CMP-R100: a credential already in its store at first run; CMP-R62:
+        // the Secret Service or the credential file on Linux
+        let os = MemoryStore::new("your keyring");
+        let file = MemoryStore::new("its settings folder");
+        let linux = Keychain::new(Box::new(os.clone()), Some(Box::new(file.clone())));
+        assert_eq!(linux.holding(), None);
+        file.write(CREDENTIAL).unwrap();
+        assert_eq!(linux.holding(), Some(Some(StoreKind::File)));
+        os.write(CREDENTIAL).unwrap();
+        assert_eq!(linux.holding(), Some(Some(StoreKind::SecretService)));
+        // A keyring that doesn't answer holds none here.
+        file.delete().unwrap();
+        os.fail_reads(Some(locked()));
+        assert_eq!(linux.holding(), None);
+
+        let windows_store = MemoryStore::new("Windows Credential Manager");
+        let windows = Keychain::new(Box::new(windows_store.clone()), None);
+        assert_eq!(windows.holding(), None);
+        windows_store.write(CREDENTIAL).unwrap();
+        assert_eq!(windows.holding(), Some(None));
     }
 
     #[test]

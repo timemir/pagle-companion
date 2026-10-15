@@ -132,6 +132,13 @@ impl Link {
         self.stops.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Whether a store holds a credential, read anew: on a first run, the
+    /// window then reads **Continue** instead of **Link to Pagle**
+    /// (CMP-R100).
+    pub fn has_stored_credential(&self) -> bool {
+        self.keychain.holding().is_some()
+    }
+
     /// Whether the last read found the keyring not answering (CMP-R62).
     pub fn keyring_locked(&self) -> bool {
         self.keyring_locked.load(Ordering::SeqCst)
@@ -486,6 +493,28 @@ impl<N: Notifier> Account<'_, N> {
         Ok(())
     }
 
+    /// **Continue** on a first run with a credential already in its store
+    /// (local state was lost or reset, CMP-R100): keeps that link, with the
+    /// store that holds it and no BattleTag known yet ("Linked"), and starts
+    /// the post-link runs (CMP-R101). Returns whether a store still held a
+    /// credential; without one, nothing changes.
+    pub fn continue_link(&self) -> bool {
+        let Some(kind) = self.link.keychain.holding() else {
+            return false;
+        };
+        let saved = self.state.update(|s| {
+            s.battle_tag = Some(String::new());
+            s.credential_store = kind;
+        });
+        if let Err(e) = saved {
+            log::error!("couldn't write state.json: {e}");
+        }
+        log::info!("kept the link already in its store");
+        (self.link.hooks.start_post_link_runs)();
+        (self.link.hooks.changed)();
+        true
+    }
+
     /// **Unlink** after its confirmation (CMP-R63): cancels the queue,
     /// self-revokes once within the revoke timeout, and deletes the
     /// credential, the BattleTag and the data addon folders. Answers and
@@ -756,6 +785,28 @@ mod tests {
         assert_eq!(Calls::get(&h.calls.cancel_queue), 0);
         assert!(Calls::get(&h.calls.changed) >= 1);
         assert!(h.state_json().contains("\"battleTag\": \"Ada#1234\""));
+    }
+
+    #[tokio::test]
+    async fn continue_keeps_the_stored_link_and_starts_the_post_link_runs() {
+        // CMP-R100: with a credential already in its store at first run,
+        // Continue skips linking, step 3 runs the post-link runs (CMP-R101),
+        // and the status reads "Linked" until a BattleTag is known
+        let h = Harness::linux(State::default()).await;
+        assert!(!h.link.has_stored_credential());
+        assert!(!h.account().continue_link());
+        assert_eq!(Calls::get(&h.calls.post_link), 0);
+
+        h.file.write(OLD).unwrap();
+        assert!(h.link.has_stored_credential());
+        assert!(h.account().continue_link());
+        assert_eq!(Calls::get(&h.calls.post_link), 1);
+        assert!(Calls::get(&h.calls.changed) >= 1);
+        assert!(h.account().is_linked());
+        assert_eq!(h.state.read(|s| s.credential_store), Some(StoreKind::File));
+        let status = h.account().status();
+        assert!(status.linked);
+        assert_eq!(status.text, "Linked");
     }
 
     #[tokio::test]

@@ -43,17 +43,8 @@ pub fn refresh<H: Host>(app: &H, snapshot: &Snapshot) {
     emit(app);
 }
 
-/// Opens or closes the first-run window's hold on notifications (CMP-R100,
-/// #9): see [`CatchLogs::set_first_run_window`]. Closing it raises what is
-/// due.
-pub fn set_first_run_window<H: Host>(app: &H, open: bool) {
-    app.state::<CatchLogs>().set_first_run_window(open);
-    if !open && let Some(snapshot) = app.state::<Readings>().snapshot() {
-        refresh(app, &snapshot);
-    }
-}
-
-fn current<H: Host>(app: &H) -> View {
+/// The Catch logs list as it is now.
+pub fn current<H: Host>(app: &H) -> View {
     let installs: Vec<String> = app
         .state::<Scanner>()
         .installs()

@@ -67,3 +67,8 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
 }
 .run-line .actions { flex-wrap: wrap; margin: 6px 0 2px; }
 .run-line .confirm p { color: inherit; }
+/* First run (CMP-R100): the everyday parts hide while it shows; the
+   linking part shows in its step 2 only. */
+body.first-run .everyday { display: none !important; }
+body.first-run:not(.first-run-link) #linking { display: none !important; }
+.tick { display: inline-flex; align-items: center; gap: 6px; }

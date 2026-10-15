@@ -10,6 +10,7 @@ pub mod cli;
 pub mod companion;
 pub mod credential_store;
 pub mod device_flow;
+pub mod first_run;
 pub mod handover;
 pub mod headless;
 pub mod host;

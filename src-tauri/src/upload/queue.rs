@@ -107,8 +107,8 @@ impl Item {
 #[derive(Debug, Default)]
 pub struct Queue {
     items: VecDeque<Item>,
-    /// The `logId` of the run in progress.
-    running: Option<String>,
+    /// The run in progress.
+    running: Option<Run>,
     /// The download in progress.
     downloading: Option<DataFile>,
 }
@@ -157,7 +157,7 @@ impl Queue {
             .position(|item| item.run().is_some())
             .or(if self.items.is_empty() { None } else { Some(0) })?;
         let item = self.items.remove(at)?;
-        self.running = item.run().map(|run| run.log_id.clone());
+        self.running = item.run().cloned();
         self.downloading = match item {
             Item::Download(file) => Some(file),
             Item::Run(_) => None,
@@ -173,7 +173,19 @@ impl Queue {
 
     /// The `logId` of the run in progress.
     pub fn running(&self) -> Option<&str> {
-        self.running.as_deref()
+        self.running.as_ref().map(|run| run.log_id.as_str())
+    }
+
+    /// The post-link runs (CMP-R101) queued or in progress: the runs with
+    /// the post-link resend, whether a `PostLink` trigger queued them or was
+    /// merged into them (CMP-R46).
+    pub fn post_link_runs(&self) -> usize {
+        self.items
+            .iter()
+            .filter_map(Item::run)
+            .chain(&self.running)
+            .filter(|run| run.props.resend)
+            .count()
     }
 
     /// Drops the queued runs of `log_id` (CMP-R41). Returns whether its run
@@ -213,6 +225,29 @@ mod tests {
             Item::Run(run) => run,
             Item::Download(file) => panic!("a download of {file:?}"),
         }
+    }
+
+    #[test]
+    fn post_link_runs_count_until_each_has_ended() {
+        // CMP-R100: the window shows "Uploading…" until each post-link run
+        // (CMP-R101) has ended, merged into a queued run or not (CMP-R46)
+        let mut queue = Queue::default();
+        queue.push(A, Trigger::Change);
+        assert_eq!(queue.post_link_runs(), 0);
+        queue.push(A, Trigger::PostLink);
+        queue.push(B, Trigger::PostLink);
+        queue.push_download(DataFile::Following);
+        assert_eq!(queue.post_link_runs(), 2);
+
+        assert_eq!(run(queue.pop()).log_id, A);
+        assert_eq!(queue.post_link_runs(), 2);
+        queue.done();
+        assert_eq!(queue.post_link_runs(), 1);
+        queue.pop();
+        queue.done();
+        // Downloads aren't runs.
+        assert_eq!(queue.post_link_runs(), 0);
+        assert!(!queue.is_empty());
     }
 
     #[test]
