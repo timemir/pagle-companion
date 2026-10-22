@@ -270,8 +270,80 @@ button.link:disabled { text-decoration: none; }
   padding: 14px 16px;
 }
 .status-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.status-lines .actions { margin-top: 6px; gap: 4px 12px; }
-.status-lines .actions button.link { margin-left: -4px; }
+.status-lines .actions { margin-top: 6px; gap: 6px; }
+
+/* Linked: the card gets a footer band, the link on the left and its two
+   buttons on the right. */
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) .status-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "seal last last" "who who acts";
+  align-items: center;
+  column-gap: 14px;
+  padding: 0;
+  overflow: hidden;
+}
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) .status-lines { display: contents; }
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) .status-card::before {
+  content: "";
+  grid-row: 2;
+  grid-column: 1 / -1;
+  align-self: stretch;
+  background: var(--pc-paper-sunk);
+  border-top: 1px solid var(--pc-rule);
+}
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) .seal { grid-area: seal; margin: 14px 0 14px 16px; }
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) #last-uploaded { grid-area: last; padding: 14px 16px 14px 0; }
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) #link-status {
+  grid-area: who;
+  position: relative;
+  padding: 9px 0 9px 38px;
+  font-size: var(--pc-fs-sm);
+  color: var(--pc-ink-2);
+}
+/* A small link mark before "Linked as …". */
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) #link-status::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: calc(50% - 7px);
+  width: 14px;
+  height: 14px;
+  background: var(--pc-ink-3);
+  -webkit-mask: url(icons/link.svg) center / contain no-repeat;
+  mask: url(icons/link.svg) center / contain no-repeat;
+}
+#status:not([data-health="unlinked"]):not([data-health="unknown"]) .status-lines .actions {
+  grid-area: acts;
+  margin: 0;
+  padding: 6px 10px 6px 0;
+  justify-content: flex-end;
+}
+
+/* Small buttons with a glyph: Link again… and Unlink. */
+button.small {
+  min-height: 34px;
+  padding: 0 11px 0 9px;
+  gap: 6px;
+  font-size: var(--pc-fs-sm);
+  background: var(--pc-paper-raised);
+  box-shadow: 0 1px 0 rgba(90, 58, 24, 0.08);
+  --btn-glyph-colour: currentColor;
+}
+button.small::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  background: var(--btn-glyph-colour);
+  -webkit-mask: var(--btn-glyph) center / contain no-repeat;
+  mask: var(--btn-glyph) center / contain no-repeat;
+}
+button.small:hover { border-color: var(--pc-brass); background: var(--pc-paper); }
+#link-again { --btn-glyph: url(icons/link.svg); --btn-glyph-colour: var(--pc-water); }
+#unlink { --btn-glyph: url(icons/unlink.svg); }
+button.quiet-danger { color: var(--pc-fail); }
+button.quiet-danger:hover { border-color: var(--pc-fail-edge); background: var(--pc-fail-bg); }
 #link-status { color: var(--pc-ink-2); }
 #last-uploaded { color: var(--pc-ink-2); }
 /* Uploading as it should: the last upload leads. */
@@ -743,6 +815,18 @@ footer::after { background: linear-gradient(90deg, var(--pc-rule-strong), transp
 @media (max-width: 400px) {
   :root { --pc-gutter: 14px; }
   .status-card { gap: 12px; padding: 12px 14px; }
+  /* The footer's link and buttons stack. */
+  #status:not([data-health="unlinked"]):not([data-health="unknown"]) .status-card {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "seal last" "who who" "acts acts";
+    column-gap: 12px;
+  }
+  #status:not([data-health="unlinked"]):not([data-health="unknown"]) .status-card::before { grid-row: 2 / 4; }
+  #status:not([data-health="unlinked"]):not([data-health="unknown"]) .seal { margin: 12px 0 12px 14px; }
+  #status:not([data-health="unlinked"]):not([data-health="unknown"]) #last-uploaded { padding: 12px 14px 12px 0; }
+  #status:not([data-health="unlinked"]):not([data-health="unknown"]) #link-status { padding: 8px 14px 0 36px; }
+  #status:not([data-health="unlinked"]):not([data-health="unknown"]) #link-status::before { left: 14px; top: 10px; }
+  #status:not([data-health="unlinked"]):not([data-health="unknown"]) .status-lines .actions { justify-content: flex-start; padding: 6px 14px 10px; }
   .seal { width: 38px; height: 38px; }
   .seal::after { inset: 10px; }
   .qr { width: 112px; padding: 6px; }
