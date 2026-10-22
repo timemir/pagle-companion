@@ -292,6 +292,7 @@ button.link:disabled { text-decoration: none; }
 #status[data-health="unlinked"] .actions { margin-top: 10px; }
 #status[data-health="stopped"] .status-card { border-color: var(--pc-fail-edge); }
 #status[data-health="attention"] .status-card { border-color: var(--pc-act-edge); }
+#needs-you button.link { min-height: 0; padding: 0 2px; font-size: inherit; }
 #stop-message { font-size: var(--pc-fs-md); font-weight: 600; border-left-width: 4px; padding-left: 38px; }
 #stop-message::before { top: 12px; left: 13px; }
 
@@ -423,7 +424,7 @@ button.link:disabled { text-decoration: none; }
 
 /* ---------- Catch logs ---------- */
 .logs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.logs > .log { position: relative; padding: 10px 14px 12px; }
+.logs > .log { position: relative; padding: 10px 14px 12px; scroll-margin-top: 12px; }
 .log[data-tone="act"] { border-color: var(--pc-act-edge); border-left: 4px solid var(--pc-act-edge); padding-left: 11px; }
 .log[data-tone="fail"] { border-color: var(--pc-fail-edge); border-left: 4px solid var(--pc-fail-edge); padding-left: 11px; }
 .log[data-tone="off"] { background: transparent; border-style: dashed; box-shadow: none; }
