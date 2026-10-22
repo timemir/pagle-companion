@@ -35,7 +35,7 @@ main {
 p { margin: 0; }
 a { color: var(--pc-water); font-weight: 600; text-underline-offset: 2px; text-decoration-thickness: 1px; }
 a:hover { text-decoration-thickness: 2px; }
-:focus { outline: none; }
+:focus:not(:focus-visible) { outline: none; }
 :focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; border-radius: var(--pc-r-sm); }
 
 /* ---------- Masthead ---------- */
