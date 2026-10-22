@@ -11,10 +11,12 @@
 //! `Api::request` directly and carry no credential.
 //!
 //! The link also holds the **stops** (CMP-R50): a suspended stop or update
-//! required, set by a reply, during which [`Account::send`] sends nothing.
-//! Self-revoke, config reads and the device flow don't go through it, so they
-//! still go out. Both are held in memory: a new process starts outside them,
-//! and a link clears the suspended stop.
+//! required, set by a reply (or, for update required, by a config read),
+//! during which [`Account::send`] sends nothing. Self-revoke, config reads
+//! and the device flow don't go through it, so they still go out. Both are
+//! held in memory: a new process starts outside them, a link clears the
+//! suspended stop, and a config read leaves update required
+//! (`update_required`).
 //!
 //! What the queue (#28) and the data addons (B4) do on these events plugs in
 //! through [`Hooks`].
@@ -57,9 +59,8 @@ pub const CREDENTIAL_INVALID: &str = "credential_invalid";
 pub enum Stop {
     /// `suspended` (`403`): until the next start or link.
     Suspended { message: String },
-    /// `update_required` (`403`, DST-R61): update required (DST-R56). This
-    /// slice holds it until the next start; leaving it on a config read, and
-    /// DST-R57's notification, come with Track C (#18).
+    /// `update_required` (`403`, DST-R61): update required (DST-R56), until
+    /// a config read shows the version is no longer below the minimum.
     UpdateRequired { message: String },
 }
 
@@ -96,6 +97,9 @@ pub struct Hooks {
     pub delete_data_addon_folders: Hook,
     /// The link's status changed: the window and the tray show it again.
     pub changed: Hook,
+    /// Update required was just entered: an update check at once, and
+    /// linking stops (DST-R56, `update_required`).
+    pub entered_update_required: Hook,
 }
 
 impl Default for Hooks {
@@ -105,6 +109,7 @@ impl Default for Hooks {
             start_post_link_runs: Box::new(|| {}),
             delete_data_addon_folders: Box::new(|| {}),
             changed: Box::new(|| {}),
+            entered_update_required: Box::new(|| {}),
         }
     }
 }
@@ -253,7 +258,8 @@ impl<N: Notifier> Account<'_, N> {
 
     /// Enters a stop (CMP-R50): cancels the queue (its runs end, leaving
     /// `lastRun` as it was), raises the suspended stop's notification
-    /// (CMP-R111), and shows the stop message.
+    /// (CMP-R111), and shows the stop message. Entering update required while
+    /// it holds keeps the message shown, which may be DST-R57's text.
     pub fn enter_stop(&self, stop: Stop) {
         match &stop {
             Stop::Suspended { message } => {
@@ -264,12 +270,49 @@ impl<N: Notifier> Account<'_, N> {
                 });
             }
             Stop::UpdateRequired { message } => {
-                log::warn!("refused as update_required: update required");
-                self.link.stops().update_required = Some(message.clone());
+                let entered = {
+                    let mut stops = self.link.stops();
+                    let entered = stops.update_required.is_none();
+                    if entered {
+                        stops.update_required = Some(message.clone());
+                    }
+                    entered
+                };
+                if entered {
+                    log::warn!("update required");
+                    (self.link.hooks.entered_update_required)();
+                }
             }
         }
         (self.link.hooks.cancel_queue)();
         (self.link.hooks.changed)();
+    }
+
+    /// Shows `text` as update required's stop message, while it holds
+    /// (CMP UI, Status: DST-R57's picked text).
+    pub fn show_update_required_text(&self, text: &str) {
+        let changed = {
+            let mut stops = self.link.stops();
+            match &mut stops.update_required {
+                Some(message) if message != text => {
+                    *message = text.to_owned();
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            (self.link.hooks.changed)();
+        }
+    }
+
+    /// Leaves update required (DST-R56). Returns whether it held.
+    pub fn leave_update_required(&self) -> bool {
+        let left = self.link.stops().update_required.take().is_some();
+        if left {
+            (self.link.hooks.changed)();
+        }
+        left
     }
 
     /// The notification service the link raises its causes on.
@@ -622,6 +665,7 @@ mod tests {
         post_link: AtomicUsize,
         delete_folders: AtomicUsize,
         changed: AtomicUsize,
+        entered_update_required: AtomicUsize,
     }
 
     impl Calls {
@@ -669,7 +713,13 @@ mod tests {
             );
             let calls = Arc::new(Calls::default());
             let hooks = {
-                let (a, b, c, d) = (calls.clone(), calls.clone(), calls.clone(), calls.clone());
+                let (a, b, c, d, e) = (
+                    calls.clone(),
+                    calls.clone(),
+                    calls.clone(),
+                    calls.clone(),
+                    calls.clone(),
+                );
                 Hooks {
                     cancel_queue: Box::new(move || {
                         a.cancel_queue.fetch_add(1, Ordering::SeqCst);
@@ -682,6 +732,9 @@ mod tests {
                     }),
                     changed: Box::new(move || {
                         d.changed.fetch_add(1, Ordering::SeqCst);
+                    }),
+                    entered_update_required: Box::new(move || {
+                        e.entered_update_required.fetch_add(1, Ordering::SeqCst);
                     }),
                 }
             };
@@ -1461,7 +1514,8 @@ mod tests {
             Some("This version of Pagle Companion is too old. Update it to keep uploading.")
         );
         assert!(status.update_required);
-        // No notification of its own here: DST-R57's comes with Track C.
+        // No notification of its own here: DST-R57's is raised once a text
+        // is picked (`update_required`).
         assert_eq!(h.shown().len(), 1);
 
         h.account()
@@ -1472,6 +1526,78 @@ mod tests {
         assert_eq!(
             h.account().status().stop.as_deref(),
             Some("This version of Pagle Companion is too old. Update it to keep uploading.")
+        );
+    }
+
+    #[tokio::test]
+    async fn entering_update_required_tells_its_hook_once() {
+        // DST-R56: entering runs an update check at once and stops linking
+        // (`update_required`, through the hook); a second refusal while it
+        // holds enters nothing new and keeps the stop message shown (#18)
+        let h = Harness::windows(linked(None)).await;
+        h.account().enter_stop(update_required());
+        assert_eq!(Calls::get(&h.calls.entered_update_required), 1);
+
+        h.account().show_update_required_text("picked");
+        h.account().enter_stop(update_required());
+        assert_eq!(Calls::get(&h.calls.entered_update_required), 1);
+        assert_eq!(h.account().stop_message().as_deref(), Some("picked"));
+
+        // The suspended stop doesn't tell it.
+        let h = Harness::windows(linked(None)).await;
+        h.account().enter_stop(suspended());
+        assert_eq!(Calls::get(&h.calls.entered_update_required), 0);
+    }
+
+    #[tokio::test]
+    async fn a_picked_text_replaces_the_update_required_message() {
+        // CMP UI, Status: while update required, the `update_required`
+        // message until DST-R57 picks its notification text, then that text
+        let h = Harness::windows(linked(None)).await;
+        // Outside update required there is nothing to replace.
+        h.account().show_update_required_text("picked");
+        assert_eq!(h.account().stop_message(), None);
+
+        h.account().enter_stop(update_required());
+        let changed = Calls::get(&h.calls.changed);
+        h.account().show_update_required_text("picked");
+        assert_eq!(h.account().status().stop.as_deref(), Some("picked"));
+        assert_eq!(Calls::get(&h.calls.changed), changed + 1);
+        // The same text again changes nothing.
+        h.account().show_update_required_text("picked");
+        assert_eq!(Calls::get(&h.calls.changed), changed + 1);
+    }
+
+    #[tokio::test]
+    async fn leaving_update_required_lets_requests_go_out_again() {
+        // DST-R56: it leaves the state when a config read shows its version
+        // is no longer below the minimum; requests go out again, and the
+        // suspended stop, if it holds too, still holds
+        let h = Harness::windows(linked(None)).await;
+        h.os.write(OLD).unwrap();
+        assert!(!h.account().leave_update_required());
+
+        h.account().enter_stop(update_required());
+        let changed = Calls::get(&h.calls.changed);
+        assert!(h.account().leave_update_required());
+        assert!(!h.account().is_stopped());
+        assert!(!h.account().status().update_required);
+        assert_eq!(Calls::get(&h.calls.changed), changed + 1);
+        assert!(!h.account().leave_update_required());
+
+        // Entering again is a new entry, with the refusal's message.
+        h.account().enter_stop(update_required());
+        assert_eq!(Calls::get(&h.calls.entered_update_required), 2);
+        assert_eq!(
+            h.account().stop_message().as_deref(),
+            Some("This version of Pagle Companion is too old. Update it to keep uploading.")
+        );
+
+        h.account().enter_stop(suspended());
+        h.account().leave_update_required();
+        assert_eq!(
+            h.account().stop_message().as_deref(),
+            Some("This Player is suspended. Contact support@pagle.app.")
         );
     }
 }

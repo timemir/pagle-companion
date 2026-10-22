@@ -40,8 +40,9 @@ pub fn after_link<H: Host>(app: &H) {
     check(app);
 }
 
-/// One check of the timer (CMP-R81, CMP-R83).
-fn check<H: Host>(app: &H) {
+/// One check of the timer (CMP-R81, CMP-R83), also when a stop clears, for
+/// the downloads that are due (`update_required`).
+pub fn check<H: Host>(app: &H) {
     let (Some(companion), Some(uploads), Some(catch_logs)) = (
         app.try_state::<Companion>(),
         app.try_state::<Uploads>(),

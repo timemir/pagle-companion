@@ -10,9 +10,8 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-/// Why the Companion needs the Player (CMP-R111). The update-required
-/// notification is `companion/distribution.md`'s (DST-R57) and comes with
-/// Track C.
+/// Why the Companion needs the Player (CMP-R111), and the update-required
+/// notification, `companion/distribution.md`'s (DST-R57).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cause {
     /// A `logId` awaiting an answer (CMP-R40). `characters` is CMP-R40's list.
@@ -29,6 +28,10 @@ pub enum Cause {
     CredentialInvalid,
     /// The suspended stop (CMP-R50), with the refusal's message.
     Suspended { message: String },
+    /// Update required, with DST-R57's picked text. Never cleared, so it
+    /// shows at most once per process run, however often the state is left
+    /// and entered (DST-R57, DST-R96).
+    UpdateRequired { text: String },
 }
 
 /// What makes two raises the same cause: the kind, and the `logId` for causes
@@ -42,6 +45,7 @@ pub enum CauseKey {
     LogCap,
     CredentialInvalid,
     Suspended,
+    UpdateRequired,
 }
 
 impl Cause {
@@ -54,6 +58,7 @@ impl Cause {
             Cause::LogCap { .. } => CauseKey::LogCap,
             Cause::CredentialInvalid => CauseKey::CredentialInvalid,
             Cause::Suspended { .. } => CauseKey::Suspended,
+            Cause::UpdateRequired { .. } => CauseKey::UpdateRequired,
         }
     }
 
@@ -71,6 +76,7 @@ impl Cause {
                 "A new character needs verifying. Sign in again to verify it.".into()
             }
             Cause::LogCap { message } | Cause::Suspended { message } => message.clone(),
+            Cause::UpdateRequired { text } => text.clone(),
             Cause::CredentialInvalid => "This Companion is no longer linked. Link it again.".into(),
         }
     }
@@ -331,5 +337,22 @@ mod tests {
         for (cause, text) in cases {
             assert_eq!(cause.text(), text);
         }
+    }
+
+    #[test]
+    fn the_update_required_notification_shows_once_per_run() {
+        // DST-R57: shown once per process run with its picked text; nothing
+        // clears it, so a later pick or a second entry doesn't notify again
+        // (DST-R96)
+        let recorder = Recorder::default();
+        let notifications = Notifications::new(recorder.clone());
+        let download = Cause::UpdateRequired {
+            text: "Download the latest version.".into(),
+        };
+        assert!(notifications.raise(&download));
+        assert!(!notifications.raise(&Cause::UpdateRequired {
+            text: "Choose Restart to update.".into(),
+        }));
+        assert_eq!(recorder.shown(), ["Download the latest version."]);
     }
 }
