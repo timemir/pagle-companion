@@ -36,8 +36,21 @@ pub enum LinkingView {
         verification_uri: String,
         qr_svg: Option<String>,
     },
-    /// An outcome text of CMP-R60 or CMP-R61.
-    Ended { text: String },
+    /// An outcome text of CMP-R60 or CMP-R61, with its kind.
+    Ended { text: String, kind: OutcomeKind },
+}
+
+/// How the window draws a linking outcome: its notice's tone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutcomeKind {
+    /// Nothing went wrong: the Player cancelled on the approval page.
+    Info,
+    /// Linking again may work: the code expired, linking failed, Pagle
+    /// can't be reached, too many link attempts, or the link wasn't saved.
+    Act,
+    /// Update required (CMP-R50): no link until the Companion is updated.
+    Stop,
 }
 
 /// The device flow under way, if any. Each start is a new attempt; Cancel
@@ -83,8 +96,9 @@ impl Linking {
     }
 
     /// Ends the attempt under way, if one is starting or polling, showing
-    /// `text`: polling stops (CMP-R60). Returns whether one was under way.
-    pub fn end_with(&self, text: String) -> bool {
+    /// `text` as `kind`: polling stops (CMP-R60). Returns whether one was
+    /// under way.
+    pub fn end_with(&self, text: String, kind: OutcomeKind) -> bool {
         let mut flow = self.lock();
         if !matches!(
             flow.view,
@@ -94,7 +108,7 @@ impl Linking {
         }
         self.attempt.send_modify(|n| *n += 1);
         *flow = Flow {
-            view: LinkingView::Ended { text },
+            view: ended_view(text, kind),
             page: None,
         };
         true
@@ -240,7 +254,7 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
         Err(failure) => {
             log::info!("linking failed: {failure:?}");
             enter_update_required(&app, &failure);
-            if linking.show(attempt, ended_view(failure.text()), None) {
+            if linking.show(attempt, failure_view(&failure), None) {
                 emit_linking(&app);
             }
             return;
@@ -272,12 +286,13 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
         End::Approved(_) if !linking.is_current(attempt) => return,
         End::Approved(approval) => match companion.account().store_link(approval).await {
             Ok(()) => LinkingView::Idle,
-            Err(text) => ended_view(text),
+            // CMP-R61: the link wasn't saved; linking again may work.
+            Err(text) => ended_view(text, OutcomeKind::Act),
         },
         End::Failed(failure) => {
             log::info!("linking ended: {failure:?}");
             enter_update_required(&app, &failure);
-            ended_view(failure.text())
+            failure_view(&failure)
         }
     };
     let linked = view == LinkingView::Idle;
@@ -304,7 +319,7 @@ pub fn stop_for_update_required<H: Host>(app: &H) {
         .account()
         .stop_message()
         .unwrap_or_else(|| device_flow::UPDATE_REQUIRED_TEXT.into());
-    if linking.end_with(text) {
+    if linking.end_with(text, OutcomeKind::Stop) {
         log::info!("linking stopped: update required");
         emit_linking(app);
     }
@@ -322,8 +337,20 @@ fn enter_update_required<H: Host>(app: &H, failure: &Failure) {
     }
 }
 
-fn ended_view(text: String) -> LinkingView {
-    LinkingView::Ended { text }
+fn ended_view(text: String, kind: OutcomeKind) -> LinkingView {
+    LinkingView::Ended { text, kind }
+}
+
+/// A failed device flow's outcome (CMP-R60): its text, and its kind.
+fn failure_view(failure: &Failure) -> LinkingView {
+    let kind = match failure {
+        Failure::Denied => OutcomeKind::Info,
+        Failure::Unreachable | Failure::TooManyAttempts | Failure::Expired | Failure::Failed => {
+            OutcomeKind::Act
+        }
+        Failure::UpdateRequired(_) => OutcomeKind::Stop,
+    };
+    ended_view(failure.text(), kind)
 }
 
 /// **Cancel** in the Linking part: stops polling (CMP-R60).
@@ -385,22 +412,23 @@ mod tests {
         // stops, and the window shows the status (CMP-R60's update_required
         // case)
         let linking = Linking::default();
-        assert!(!linking.end_with("too old".into()));
+        assert!(!linking.end_with("too old".into(), OutcomeKind::Stop));
         assert_eq!(linking.view(), LinkingView::Idle);
 
         let (attempt, ended) = linking.begin();
         assert!(linking.show(attempt, waiting(), None));
-        assert!(linking.end_with("too old".into()));
+        assert!(linking.end_with("too old".into(), OutcomeKind::Stop));
         assert!(ended.has_changed().unwrap());
         assert!(!linking.is_current(attempt));
         assert_eq!(
             linking.view(),
             LinkingView::Ended {
-                text: "too old".into()
+                text: "too old".into(),
+                kind: OutcomeKind::Stop
             }
         );
         // An attempt that has ended already keeps its text.
-        assert!(!linking.end_with("other".into()));
+        assert!(!linking.end_with("other".into(), OutcomeKind::Act));
     }
 
     #[test]
@@ -455,9 +483,51 @@ mod tests {
             })
         );
         assert_eq!(
-            serde_json::to_value(ended_view("Linking was cancelled.".into())).unwrap(),
-            serde_json::json!({ "phase": "ended", "text": "Linking was cancelled." })
+            serde_json::to_value(failure_view(&Failure::Denied)).unwrap(),
+            serde_json::json!({
+                "phase": "ended",
+                "text": "Linking was cancelled.",
+                "kind": "info"
+            })
         );
+    }
+
+    #[test]
+    fn each_outcome_has_its_kind() {
+        // CMP UI, Linking: the Player's cancel on the approval page informs,
+        // an outcome that linking again may mend asks to act, and update
+        // required stops (CMP-R50)
+        let kind = |view: LinkingView| match view {
+            LinkingView::Ended { kind, .. } => kind,
+            other => panic!("not an outcome: {other:?}"),
+        };
+        assert_eq!(kind(failure_view(&Failure::Denied)), OutcomeKind::Info);
+        for failure in [
+            Failure::Expired,
+            Failure::Failed,
+            Failure::Unreachable,
+            Failure::TooManyAttempts,
+        ] {
+            assert_eq!(
+                kind(failure_view(&failure)),
+                OutcomeKind::Act,
+                "{failure:?}"
+            );
+        }
+        assert_eq!(
+            failure_view(&Failure::UpdateRequired("Update Pagle Companion.".into())),
+            LinkingView::Ended {
+                text: "Update Pagle Companion.".into(),
+                kind: OutcomeKind::Stop
+            }
+        );
+        for (kind, json) in [
+            (OutcomeKind::Info, "info"),
+            (OutcomeKind::Act, "act"),
+            (OutcomeKind::Stop, "stop"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json);
+        }
     }
 
     #[test]

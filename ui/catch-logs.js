@@ -5,7 +5,8 @@
 // goes in the row's `.run-line`: "Uploaded 5 minutes ago" or "Up to date"
 // with CMP-R53's lines under it, a divergence with Replace and its question
 // (CMP-R52), deleted (CMP-R54), log cap, failed and the rest. Every text
-// comes from the Companion.
+// comes from the Companion. Rows that need the Player come first, Status
+// counts them with Show, and an empty list says "No Catch logs found yet.".
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -13,6 +14,8 @@
   const section = document.getElementById("catch-logs-section");
   const list = document.getElementById("catch-logs");
   const error = document.getElementById("catch-logs-error");
+  const none = document.getElementById("catch-logs-none");
+  const needsYou = document.getElementById("needs-you");
 
   // The state lines that are the last run's result (CMP UI, Catch logs).
   const RUN_KINDS = new Set([
@@ -26,6 +29,31 @@
     "left-off": ["My Anglers", "open_my_anglers"],
     "held-characters": ["Sign in", "open_sign_in"],
   };
+
+  // Each state's tone (style.css, Catch logs): "act" asks something of the
+  // Player, "fail" didn't upload, "info" needs nothing, "ok" is calm and
+  // "off" is greyed.
+  const TONES = {
+    awaiting: "act", "several-folders": "act", divergence: "act",
+    deleted: "act", "log-cap": "act",
+    failed: "fail", "too-large": "fail", problem: "fail",
+    stale: "info", "dev-log": "info", "waiting-for-pagle": "info",
+    uploaded: "ok", "up-to-date": "ok", "not-found": "off",
+  };
+
+  function tone(row) {
+    const kind = row.line && row.line.kind;
+    const notes = (row.line && row.line.notes) || [];
+    if (TONES[kind] === "ok" && notes.some((n) => n.kind === "held-characters")) return "act";
+    return TONES[kind] ?? "none";
+  }
+
+  // The list's order: rows that need the Player, then rows that didn't
+  // upload, then the rest, each in the Companion's order.
+  function rank(row) {
+    const t = tone(row);
+    return t === "act" ? 0 : t === "fail" ? 1 : 2;
+  }
 
   let view = null;
   let readOnly = false;
@@ -107,7 +135,7 @@
         ask.append(element("p", "", line.question));
         const actions = element("p", "actions");
         actions.append(
-          button("Replace", () => replace(row.logId)),
+          button("Replace", () => replace(row.logId), "danger"),
           button("Cancel", () => {
             replacing.delete(row.logId);
             render();
@@ -150,7 +178,7 @@
     if (line.kind === "awaiting") {
       const actions = element("p", "actions");
       actions.append(
-        button("Upload", () => answer(row.logId, true)),
+        button("Upload", () => answer(row.logId, true), "primary"),
         button("Don't upload", () => answer(row.logId, false)),
       );
       block.append(actions);
@@ -177,6 +205,10 @@
 
   function rowItem(row) {
     const item = element("li", "log");
+    // Focusable for Status's Show.
+    item.tabIndex = -1;
+    item.dataset.tone = changing.has(row.logId) ? "act" : tone(row);
+    item.dataset.upload = row.upload ? "on" : "off";
     const head = element("div", "log-head");
     head.append(element("span", "characters", row.characters), uploadSwitch(row));
     item.append(head);
@@ -214,19 +246,43 @@
     item.append(runLine(row));
 
     if (!row.upload && switchedOff.has(row.logId)) {
-      const note = element("p", "notice", `${view.switchedOff} `);
+      const note = element("p", "notice info", `${view.switchedOff} `);
       note.append(pageLink("My Anglers", "open_my_anglers"));
       item.append(note);
     }
     return item;
   }
 
+  // The first row that needs the Player, which Status's Show goes to.
+  let firstNeed = null;
+
   function render() {
     list.replaceChildren();
-    const logs = view ? view.logs : [];
-    section.hidden = logs.length === 0;
-    for (const row of logs) list.append(rowItem(row));
+    const logs = view ? [...view.logs].sort((a, b) => rank(a) - rank(b)) : [];
+    // Empty, the section says so rather than going away.
+    section.hidden = !view;
+    none.hidden = logs.length > 0;
+    firstNeed = null;
+    let needs = 0;
+    for (const row of logs) {
+      const item = rowItem(row);
+      if (tone(row) === "act") {
+        needs += 1;
+        firstNeed ??= item;
+      }
+      list.append(item);
+    }
+    // Status says how many rows need the Player.
+    needsYou.hidden = needs === 0;
+    document.getElementById("needs-you-text").textContent =
+      needs === 1 ? "1 Catch log needs you." : `${needs} Catch logs need you.`;
   }
+
+  document.getElementById("needs-you-show").addEventListener("click", () => {
+    if (!firstNeed) return;
+    firstNeed.scrollIntoView({ block: "start" });
+    firstNeed.focus({ preventScroll: true });
+  });
 
   function setView(next) {
     view = next;

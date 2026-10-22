@@ -1,0 +1,168 @@
+/* Pagle Companion tokens. The Fish Journal's palette, made quiet for a
+   utility: parchment and sepia ink, a leather-and-gilt primary, wax red kept
+   for stops and destructive answers, water blue for links, switches and
+   focus. Light follows the Journal's pages; dark is ink-brown paper. Every
+   text pair here is 4.5:1 or better (README, Contrast). */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  /* Paper */
+  --pc-paper: #f5e9cd;           /* window ground */
+  --pc-paper-raised: #fbf4e3;    /* cards, rows */
+  --pc-paper-sunk: #efe0bb;      /* wells, pressed buttons */
+  --pc-grain: url(assets/grain-light.png);
+  --pc-rule: #dcc69a;            /* hairlines inside cards */
+  --pc-rule-strong: #c4a874;     /* card and control borders, section rules */
+  --pc-shadow: 0 1px 0 rgba(90, 58, 24, 0.10), 0 1px 3px rgba(90, 58, 24, 0.08);
+  /* Ink */
+  --pc-ink: #2e1c0c;             /* body text, 13.5:1 */
+  --pc-ink-2: #4a321c;           /* secondary text, 9.9:1 */
+  --pc-ink-3: #5a4026;           /* meta text: paths, versions, notes, 7.9:1 */
+  --pc-kicker: #6a3c14;          /* section headings, 7.7:1 */
+  --pc-heading: #3e220c;
+  /* Brand */
+  --pc-gilt: #e8c96a;
+  --pc-gilt-text: #f3d98a;       /* gilt lettering on leather */
+  --pc-brass: #9a7420;
+  --pc-brass-text: #2a1a04;
+  --pc-leather: #4a2c14;
+  --pc-leather-dark: #3a2010;
+  --pc-wax: #a32d1a;
+  --pc-wax-dark: #7a1810;
+  --pc-on-wax: #fff3dc;          /* 6.5:1 on wax */
+  --pc-water: #2f5f9c;           /* links, 5.4:1 */
+  --pc-focus: #3468a8;
+  --pc-switch-on: #3468a8;
+  --pc-switch-off: #b9a37a;
+  --pc-knob: #fffaf0;
+  /* Tones: a glyph, an edge and a tint. Text on every tint is --pc-ink. */
+  --pc-ok: #2e6b2a;
+  --pc-act: #6b4a00;             /* attention glyph and edge text */
+  --pc-act-edge: #c9962a;
+  --pc-act-bg: #f6e4b0;
+  --pc-fail: #8a2414;
+  --pc-fail-edge: #ad321e;
+  --pc-fail-bg: #f6dccb;
+  --pc-info: #2f5f9c;
+  --pc-info-edge: #6f95c4;
+  --pc-info-bg: #e4eaee;
+  --pc-off: #8a7458;
+  /* QR stays dark on white in both themes, so phones can scan it. */
+  --pc-qr-paper: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --pc-paper: #1f160d;
+    --pc-paper-raised: #2a1e12;
+    --pc-paper-sunk: #17100a;
+    --pc-grain: url(assets/grain-dark.png);
+    --pc-rule: #3f2f1b;
+    --pc-rule-strong: #5e4729;
+    --pc-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+    --pc-ink: #f0e3c6;
+    --pc-ink-2: #e2cfa8;
+    --pc-ink-3: #cbb38a;
+    --pc-kicker: #d9b46a;
+    --pc-heading: #f6e7c4;
+    --pc-gilt: #e8c96a;
+    --pc-gilt-text: #2a1a04;
+    --pc-brass: #c9a24a;
+    --pc-brass-text: #2a1a04;
+    --pc-leather: #e3c370;
+    --pc-leather-dark: #b8953e;
+    --pc-wax: #b8402a;
+    --pc-wax-dark: #8a2a18;
+    --pc-on-wax: #fff1d6;
+    --pc-water: #8fb6e6;
+    --pc-focus: #8fb6e6;
+    --pc-switch-on: #5d8fcc;
+    --pc-switch-off: #5e4729;
+    --pc-knob: #f6ead0;
+    --pc-ok: #8fca7f;
+    --pc-act: #f0c66a;
+    --pc-act-edge: #c9962a;
+    --pc-act-bg: #3a2c10;
+    --pc-fail: #f0937a;
+    --pc-fail-edge: #d0563c;
+    --pc-fail-bg: #3e1a12;
+    --pc-info: #8fb6e6;
+    --pc-info-edge: #4f78a8;
+    --pc-info-bg: #1c2633;
+    --pc-off: #9a8466;
+  }
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --pc-paper: #1f160d;
+  --pc-paper-raised: #2a1e12;
+  --pc-paper-sunk: #17100a;
+  --pc-grain: url(assets/grain-dark.png);
+  --pc-rule: #3f2f1b;
+  --pc-rule-strong: #5e4729;
+  --pc-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+  --pc-ink: #f0e3c6;
+  --pc-ink-2: #e2cfa8;
+  --pc-ink-3: #cbb38a;
+  --pc-kicker: #d9b46a;
+  --pc-heading: #f6e7c4;
+  --pc-gilt: #e8c96a;
+  --pc-gilt-text: #2a1a04;
+  --pc-brass: #c9a24a;
+  --pc-brass-text: #2a1a04;
+  --pc-leather: #e3c370;
+  --pc-leather-dark: #b8953e;
+  --pc-wax: #b8402a;
+  --pc-wax-dark: #8a2a18;
+  --pc-on-wax: #fff1d6;
+  --pc-water: #8fb6e6;
+  --pc-focus: #8fb6e6;
+  --pc-switch-on: #5d8fcc;
+  --pc-switch-off: #5e4729;
+  --pc-knob: #f6ead0;
+  --pc-ok: #8fca7f;
+  --pc-act: #f0c66a;
+  --pc-act-edge: #c9962a;
+  --pc-act-bg: #3a2c10;
+  --pc-fail: #f0937a;
+  --pc-fail-edge: #d0563c;
+  --pc-fail-bg: #3e1a12;
+  --pc-info: #8fb6e6;
+  --pc-info-edge: #4f78a8;
+  --pc-info-bg: #1c2633;
+  --pc-off: #9a8466;
+}
+
+:root {
+  /* Type */
+  --pc-font-display: "Pagle Marcellus", "Marcellus", Georgia, serif;
+  --pc-font-body: "Pagle Source Serif", "Source Serif 4", Georgia, "Times New Roman", serif;
+  --pc-font-accent: "Pagle Fell", "IM Fell English", Georgia, serif;
+  --pc-fs-xs: 13px;     /* version, step labels */
+  --pc-fs-sm: 14px;     /* paths, notes, meta */
+  --pc-fs-base: 15px;   /* body, buttons */
+  --pc-fs-md: 16px;     /* characters, row titles */
+  --pc-fs-lg: 18px;     /* the status line */
+  --pc-fs-xl: 22px;     /* first-run step titles */
+  --pc-fs-code: 32px;   /* the user code */
+  --pc-lh: 1.45;
+  /* Space: a 4px grid */
+  --pc-s1: 4px;
+  --pc-s2: 8px;
+  --pc-s3: 12px;
+  --pc-s4: 16px;
+  --pc-s5: 20px;
+  --pc-s6: 24px;
+  --pc-s8: 32px;
+  --pc-gutter: 18px;    /* 14px at 400px wide and under */
+  /* Shape */
+  --pc-r-sm: 4px;
+  --pc-r: 6px;
+  --pc-r-lg: 9px;
+  /* Targets: finger-sized for the Steam Deck's touch screen */
+  --pc-target: 36px;
+  --pc-switch-w: 40px;
+  --pc-switch-h: 24px;
+}

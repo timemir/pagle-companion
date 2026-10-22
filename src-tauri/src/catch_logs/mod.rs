@@ -48,10 +48,9 @@ pub fn sign_in_url(base_url: &str) -> String {
 /// answered **Upload**, with its folder settled by CMP-R42 (CMP-R45).
 pub type Confirmed = BTreeMap<String, String>;
 
-/// CMP-R40's question.
-pub fn question(characters: &str, folder: &str) -> String {
-    format!("Found a Catch log: {characters}, account folder {folder}. Upload it?")
-}
+/// CMP-R40's question as the awaiting row's state line says it (CMP UI,
+/// Catch logs): the row already shows the characters and account folder.
+pub const UPLOAD_IT: &str = "Upload it?";
 
 /// CMP-R42's question, `folders` being the folder labels.
 pub fn pick_question(folders: &[String]) -> String {
@@ -321,9 +320,9 @@ pub struct Choice {
     rename_all_fields = "camelCase"
 )]
 pub enum Line {
-    /// CMP-R40's question, with **Upload** and **Don't upload**.
+    /// CMP-R40's question, "Upload it?", with **Upload** and **Don't upload**.
     Awaiting {
-        text: String,
+        text: &'static str,
     },
     /// CMP-R42's question, with one button per choice; and, while awaiting,
     /// **Don't upload**, which needs no pick (CMP-R40).
@@ -381,6 +380,32 @@ pub enum Line {
     Failed {
         text: &'static str,
     },
+}
+
+impl Line {
+    /// Whether the line asks something of the Player (CMP UI, Catch logs):
+    /// CMP-R40's and CMP-R42's questions, a divergence, deleted, log cap, and
+    /// held characters under **uploaded** or **up to date**. The window's
+    /// `act` tone (`ui/catch-logs.js`) is the same set; keep them alike.
+    pub fn needs_player(&self) -> bool {
+        match self {
+            Line::Awaiting { .. }
+            | Line::SeveralFolders { .. }
+            | Line::Divergence { .. }
+            | Line::Deleted { .. }
+            | Line::LogCap { .. } => true,
+            Line::Uploaded { notes, .. } | Line::UpToDate { notes, .. } => notes
+                .iter()
+                .any(|note| matches!(note, Note::HeldCharacters { .. })),
+            Line::NotFound { .. }
+            | Line::Problem { .. }
+            | Line::Stale { .. }
+            | Line::DevLog { .. }
+            | Line::WaitingForPagle { .. }
+            | Line::TooLarge { .. }
+            | Line::Failed { .. } => false,
+        }
+    }
 }
 
 /// One of CMP-R53's lines under **uploaded** and **up to date**.
@@ -564,6 +589,16 @@ pub struct View {
     pub switched_off: &'static str,
 }
 
+impl View {
+    /// How many rows ask something of the Player ([`Line::needs_player`]).
+    pub fn needing_player(&self) -> usize {
+        self.logs
+            .iter()
+            .filter(|row| row.line.as_ref().is_some_and(Line::needs_player))
+            .count()
+    }
+}
+
 /// The Catch logs list (CMP-R41): every `logId` local state holds, after
 /// [`remember`]. `snapshot` is `None` until the first reads have ended;
 /// `now` is Unix seconds, for relative times.
@@ -621,9 +656,7 @@ fn row(log_id: &str, log: &LogState, snapshot: &Snapshot, installs: &[String], n
             dont_upload: log.answer.is_none(),
         })
     } else if awaiting(log, &decision) {
-        Some(Line::Awaiting {
-            text: question(&log.characters, folder.as_deref().unwrap_or_default()),
-        })
+        Some(Line::Awaiting { text: UPLOAD_IT })
     } else if decision.not_found {
         Some(Line::NotFound { text: NOT_FOUND })
     } else {
@@ -1005,12 +1038,10 @@ mod tests {
 
     #[test]
     fn the_texts_are_cmp_r40s_r41s_and_r42s() {
-        // CMP-R40: the question; CMP-R41: "Not found on this computer" and
-        // the text after switching Upload off; CMP-R42: the pick question
-        assert_eq!(
-            question("Ada Brook, Kukli Vail", "ADA#1"),
-            "Found a Catch log: Ada Brook, Kukli Vail, account folder ADA#1. Upload it?"
-        );
+        // CMP-R40: the question, as the row's state line says it (CMP UI);
+        // CMP-R41: "Not found on this computer" and the text after switching
+        // Upload off; CMP-R42: the pick question
+        assert_eq!(UPLOAD_IT, "Upload it?");
         assert_eq!(
             pick_question(&["ADA#1".into(), "ADA#2".into()]),
             "The same Catch log is in 2 account folders: ADA#1, ADA#2. It was probably \
@@ -1083,12 +1114,7 @@ mod tests {
         let row = row_of(&mut state, &snapshot, LOG_A);
         assert_eq!(row.folder.as_deref(), Some("ADA#1"));
         assert!(!row.upload);
-        assert_eq!(
-            row.line,
-            Some(Line::Awaiting {
-                text: "Found a Catch log: Ada Brook, account folder ADA#1. Upload it?".into()
-            })
-        );
+        assert_eq!(row.line, Some(Line::Awaiting { text: "Upload it?" }));
         assert_eq!(
             present(&state, &snapshot),
             [Cause::AwaitingAnswer {
@@ -1362,6 +1388,91 @@ mod tests {
             serde_json::to_value(Line::NotFound { text: NOT_FOUND }).unwrap(),
             serde_json::json!({ "kind": "not-found", "text": NOT_FOUND })
         );
+    }
+
+    #[test]
+    fn the_lines_that_need_the_player_are_the_windows_act_ones() {
+        // CMP UI, Catch logs: awaiting, several folders none picked,
+        // divergence, deleted, log cap and held characters ask something of
+        // the Player (ui/catch-logs.js, the "act" tone); nothing else does
+        let held = vec![Note::HeldCharacters {
+            text: HELD_CHARACTERS,
+        }];
+        let pending = vec![
+            Note::Pending { text: "t" },
+            Note::LeftOff { text: LEFT_OFF },
+        ];
+        let needs = [
+            Line::Awaiting { text: UPLOAD_IT },
+            Line::SeveralFolders {
+                text: "t".into(),
+                dont_upload: false,
+            },
+            Line::Divergence {
+                text: DIVERGENCE,
+                question: REPLACE_QUESTION,
+            },
+            Line::Deleted { text: DELETED },
+            Line::LogCap {
+                text: LOG_CAP.into(),
+            },
+            Line::Uploaded {
+                text: "t".into(),
+                notes: held.clone(),
+            },
+            Line::UpToDate {
+                text: UP_TO_DATE,
+                notes: held,
+            },
+        ];
+        let doesnt = [
+            Line::NotFound { text: NOT_FOUND },
+            Line::Problem { text: CANT_UPLOAD },
+            Line::Uploaded {
+                text: "t".into(),
+                notes: pending.clone(),
+            },
+            Line::UpToDate {
+                text: UP_TO_DATE,
+                notes: pending,
+            },
+            Line::Stale { text: STALE },
+            Line::DevLog { text: DEV_LOG },
+            Line::WaitingForPagle {
+                text: WAITING_FOR_PAGLE,
+            },
+            Line::TooLarge { text: TOO_LARGE },
+            Line::Failed { text: FAILED },
+        ];
+        for line in &needs {
+            assert!(line.needs_player(), "{line:?}");
+        }
+        for line in &doesnt {
+            assert!(!line.needs_player(), "{line:?}");
+        }
+
+        // Rows still unread show no line, and need nothing.
+        let row = |line| Row {
+            log_id: LOG_A.into(),
+            characters: String::new(),
+            folder: None,
+            upload: true,
+            choices: Vec::new(),
+            pick_text: None,
+            change_folder: false,
+            line,
+        };
+        let view = View {
+            logs: vec![
+                row(None),
+                row(Some(Line::Deleted { text: DELETED })),
+                row(Some(Line::Stale { text: STALE })),
+                row(Some(Line::Awaiting { text: UPLOAD_IT })),
+            ],
+            read: true,
+            switched_off: SWITCHED_OFF,
+        };
+        assert_eq!(view.needing_player(), 2);
     }
 
     #[test]

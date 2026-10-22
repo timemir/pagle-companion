@@ -25,6 +25,15 @@
     if (linkStatus.offerLink) $("unlink-confirm").hidden = true;
     $("stop-message").hidden = !linkStatus.stop;
     $("stop-message").textContent = linkStatus.stop ?? "";
+    // The seal and the leading line (style.css, Status): stopped, keyring
+    // locked, not linked, or uploading as it should.
+    $("status").dataset.health = linkStatus.stop
+      ? "stopped"
+      : linkStatus.keyringLocked
+        ? "attention"
+        : linkStatus.offerLink
+          ? "unlinked"
+          : "ok";
     for (const id of ["link-start", "link-again", "unlink", "unlink-yes"]) {
       $(id).disabled = readOnly || linkingUnderWay();
     }
@@ -46,12 +55,20 @@
       // The QR code is an SVG element the Companion drew itself.
       $("qr").innerHTML = linking.qrSvg ?? "";
     }
-    if (linking.phase === "ended") $("linking-outcome").textContent = linking.text;
+    if (linking.phase === "ended") {
+      // The notice's tone (style.css, Notices) is the outcome's kind: info,
+      // act or stop.
+      $("linking-outcome").className = `notice ${linking.kind}`;
+      $("linking-outcome").textContent = linking.text;
+    }
     renderStatus();
   }
 
   function showError(error) {
-    linking = { phase: "ended", text: String(error) };
+    // A refused command: update required stops, a read-only window
+    // informs, anything else asks to act.
+    const kind = linkStatus?.updateRequired ? "stop" : readOnly ? "info" : "act";
+    linking = { phase: "ended", text: String(error), kind };
     renderLinking();
   }
 

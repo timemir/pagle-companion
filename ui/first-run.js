@@ -56,6 +56,9 @@
 
   function rowItem(row) {
     const item = element("li", "log");
+    const kind = row.line && row.line.kind;
+    item.dataset.tone =
+      kind === "several-folders" ? "act" : kind === "problem" ? "fail" : kind === "not-found" ? "off" : "none";
     const label = element("label", "tick");
     const box = document.createElement("input");
     box.type = "checkbox";
@@ -109,6 +112,7 @@
     $("first-run").hidden = !open;
     if (!open) return;
     const step = view.step;
+    $("first-run").dataset.step = step;
     document.body.classList.toggle("first-run-link", step === "link");
     $("first-run-heading").textContent = HEADINGS[step];
     $("fr-scan").hidden = step !== "scan";

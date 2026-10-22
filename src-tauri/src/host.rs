@@ -19,6 +19,7 @@ use std::sync::{Arc, RwLock};
 use serde::Serialize;
 use tauri::AppHandle;
 
+use crate::catch_logs;
 use crate::link::LinkStatus;
 use crate::tray;
 
@@ -50,6 +51,10 @@ pub trait Host: Clone + Send + Sync + 'static {
     /// Shows the tray's status line again. Without a tray it does nothing.
     fn show_tray_status(&self);
 
+    /// Shows in the tray icon whether a Catch log in `view` needs the
+    /// Player. Without a tray it does nothing.
+    fn show_catch_logs(&self, view: &catch_logs::View);
+
     /// Shows **Restart to update** in the tray while an update waits
     /// (DST-R54). Without a tray it does nothing.
     fn show_waiting_update(&self);
@@ -76,6 +81,10 @@ impl Host for AppHandle {
 
     fn show_tray_status(&self) {
         tray::show_tray_status(self);
+    }
+
+    fn show_catch_logs(&self, view: &catch_logs::View) {
+        tray::show_catch_logs(self, view);
     }
 
     fn show_waiting_update(&self) {
@@ -112,6 +121,8 @@ impl Host for Parts {
     fn show_link(&self, _status: &LinkStatus) {}
 
     fn show_tray_status(&self) {}
+
+    fn show_catch_logs(&self, _view: &catch_logs::View) {}
 
     fn show_waiting_update(&self) {}
 }
