@@ -14,20 +14,22 @@
 //! Otherwise it watches until `SIGTERM`, `SIGHUP` or `SIGINT`, then releases
 //! the lock and exits 0.
 //!
-//! Update checks run here as in tray mode (DST-R51, `updater`, started with
-//! the other parts): on Linux the AppImage is replaced as soon as an update
-//! verifies (DST-R54). Not here yet: config reads (DST-R63) and DST-R58's
-//! exit once the new file is in place while update required; "Read the
-//! Companion config and enforce update required" adds them through the
-//! updater's `after_check` hook.
+//! Update checks and config reads run here as in tray mode (DST-R51,
+//! `updater`, `update_required`, started with the other parts): on Linux the
+//! AppImage is replaced as soon as an update verifies (DST-R54). While update
+//! required, once the new file is in place, it releases the lock and exits 0,
+//! so that its unit (`Restart=always`) starts the new version (DST-R58). No
+//! notification shows.
 
 use std::error::Error;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use crate::companion::{self, Companion};
 use crate::host::{Host, Parts};
 use crate::linking;
 use crate::notify::Silent;
 use crate::state_dir::StateDir;
+use crate::update_required::window::Required;
 
 /// The exit status of `--headless` where headless mode doesn't exist, on
 /// Windows (CMP Contracts, Command line).
@@ -42,6 +44,9 @@ pub const LOCK_HELD: i32 = 3;
 pub enum Outcome {
     /// Stopped by a signal, the lock released.
     Stopped,
+    /// Update required, with the new AppImage in place: the unit starts it
+    /// (DST-R58).
+    Updated,
     /// Another process holds the watcher lock (CMP-R2).
     LockHeld,
     /// The state directory or a part couldn't be set up. The unit restarts
@@ -52,7 +57,7 @@ pub enum Outcome {
 impl Outcome {
     pub fn exit_status(self) -> i32 {
         match self {
-            Outcome::Stopped => 0,
+            Outcome::Stopped | Outcome::Updated => 0,
             Outcome::LockHeld => LOCK_HELD,
             Outcome::CouldntStart => 1,
         }
@@ -65,12 +70,34 @@ pub enum Start {
     LockHeld,
 }
 
+/// Why a watching headless process ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// One of the stopping signals.
+    Signal(i32),
+    /// DST-R58's exit for the new version.
+    Updated,
+}
+
 /// A headless process that holds the watcher lock and watches.
 pub struct Watching {
     parts: Parts,
+    endings: Sender<Ending>,
+    ended: Receiver<Ending>,
 }
 
 impl Watching {
+    /// Where the signal thread says a signal came.
+    pub fn endings(&self) -> Sender<Ending> {
+        self.endings.clone()
+    }
+
+    /// Waits until the process should end.
+    pub fn wait(&self) -> Ending {
+        // `self` keeps a sender, so this never disconnects.
+        self.ended.recv().unwrap_or(Ending::Updated)
+    }
+
     /// Releases the watcher lock, so the tray-mode process that stopped this
     /// one can take it (CMP-R92). What is still running ends with the
     /// process; local state and the in-game files are only ever replaced
@@ -97,13 +124,22 @@ pub fn start(state_dir: StateDir, version: &str) -> Result<Start, Box<dyn Error>
         state,
         Box::new(Silent),
     )?;
+    let (endings, ended) = mpsc::channel();
+    let updated = endings.clone();
+    parts.state::<Required>().exit_with(move || {
+        let _ = updated.send(Ending::Updated);
+    });
     parts.state::<Companion>().hold_watcher(lock);
     log::info!("took the watcher lock");
     linking::start(&parts);
     companion::start_watching(&parts);
     // CMP-R62: a failed delete from a store the credential moved out of.
     parts.state::<Companion>().finish_credential_moves();
-    Ok(Start::Watching(Watching { parts }))
+    Ok(Start::Watching(Watching {
+        parts,
+        endings,
+        ended,
+    }))
 }
 
 /// Runs headless mode until a signal stops it, and returns the exit status.
@@ -136,10 +172,22 @@ pub fn run() -> i32 {
     let outcome = match start(state_dir, version) {
         Ok(Start::LockHeld) => Outcome::LockHeld,
         Ok(Start::Watching(watching)) => {
-            let signal = signals.wait();
-            log::info!("stopping on {}", signals::name(signal));
+            let endings = watching.endings();
+            std::thread::spawn(move || {
+                let _ = endings.send(Ending::Signal(signals.wait()));
+            });
+            let outcome = match watching.wait() {
+                Ending::Signal(signal) => {
+                    log::info!("stopping on {}", signals::name(signal));
+                    Outcome::Stopped
+                }
+                Ending::Updated => {
+                    log::info!("update required and the new version is in place: exiting");
+                    Outcome::Updated
+                }
+            };
             watching.stop();
-            Outcome::Stopped
+            outcome
         }
         Err(e) => {
             log::error!("couldn't start headless mode: {e}");
@@ -224,6 +272,13 @@ mod tests {
         assert_ne!(Outcome::CouldntStart.exit_status(), 0);
         assert_ne!(Outcome::CouldntStart.exit_status(), LOCK_HELD);
         assert_eq!(NOT_ON_THIS_PLATFORM, 2);
+    }
+
+    #[test]
+    fn the_exit_for_a_new_version_is_status_0() {
+        // DST-R58: exits with status 0 so that its unit (Restart=always)
+        // starts the new version, which status 3 wouldn't
+        assert_eq!(Outcome::Updated.exit_status(), 0);
     }
 
     #[test]

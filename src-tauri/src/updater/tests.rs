@@ -595,15 +595,21 @@ fn a_read_only_appimage_folder_checks_but_never_downloads() {
 }
 
 #[test]
-fn the_hook_hears_every_check() {
-    // DST-R51, DST-R57: every check is followed by the hook ("Read the
-    // Companion config…" reads config there), with its outcome
+fn the_hooks_hear_every_check_and_every_tick() {
+    // DST-R51, DST-R57: every check is followed by the hook (the config read
+    // is there, `update_required`), with its outcome; DST-R56: every tick
+    // too, for the required-state config reads
     let world = World::new();
     let heard = Arc::new(Mutex::new(Vec::new()));
+    let ticks = Arc::new(Mutex::new(Vec::new()));
     let hooks = Hooks {
         after_check: {
             let heard = heard.clone();
             Box::new(move |checked| heard.lock().unwrap().push(checked.clone()))
+        },
+        ticked: {
+            let ticks = ticks.clone();
+            Box::new(move |now| ticks.lock().unwrap().push(now))
         },
     };
     let updater = world.updater_with("1.0.0", world.installer_keeper(), hooks);
@@ -615,6 +621,10 @@ fn the_hook_hears_every_check() {
     assert_eq!(
         *heard.lock().unwrap(),
         [Checked::Failed, Checked::Waiting(v("1.2.0"))]
+    );
+    assert_eq!(
+        *ticks.lock().unwrap(),
+        [t0(), t0() + MINUTE, t0() + 6 * HOUR]
     );
 }
 

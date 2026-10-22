@@ -12,13 +12,30 @@ pub const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 pub const UPDATE_TICK: Duration = Duration::from_secs(60);
 
 /// The time of the last check, failed or not: a failed check is retried at
-/// the next interval, not at the next tick (DST-R51).
-#[derive(Debug, Default)]
+/// the next interval, not at the next tick (DST-R51). The required-state
+/// config reads keep their own, with their own interval (DST-R56).
+#[derive(Debug)]
 pub struct Schedule {
+    interval: Duration,
     last: Option<SystemTime>,
 }
 
+impl Default for Schedule {
+    /// The update checks' schedule.
+    fn default() -> Self {
+        Self::every(UPDATE_INTERVAL)
+    }
+}
+
 impl Schedule {
+    /// Due at the first call, then once `interval` has passed since the last.
+    pub fn every(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
     /// Whether a check is due at `now`; if it is, `now` becomes the last
     /// check. The first call is always due (the check at start).
     ///
@@ -29,7 +46,7 @@ impl Schedule {
         let due = match self.last {
             None => true,
             Some(last) => match now.duration_since(last) {
-                Ok(elapsed) => elapsed >= UPDATE_INTERVAL,
+                Ok(elapsed) => elapsed >= self.interval,
                 Err(_) => {
                     self.last = Some(now);
                     false
@@ -46,6 +63,11 @@ impl Schedule {
     /// check at once when update required is entered).
     pub fn force(&mut self) {
         self.last = None;
+    }
+
+    /// Starts the interval again from `now`, as though it was due then.
+    pub fn restart(&mut self, now: SystemTime) {
+        self.last = Some(now);
     }
 }
 
@@ -113,6 +135,18 @@ mod tests {
         assert!(!schedule.take_due(t0() - 24 * HOUR));
         assert!(!schedule.take_due(t0() - 19 * HOUR));
         assert!(schedule.take_due(t0() - 18 * HOUR));
+    }
+
+    #[test]
+    fn another_interval_and_a_restart() {
+        // DST-R56: the required-state config reads every 15 minutes, one
+        // interval after any read
+        let mut schedule = Schedule::every(15 * MINUTE);
+        assert!(schedule.take_due(t0()));
+        assert!(!schedule.take_due(t0() + 14 * MINUTE));
+        schedule.restart(t0() + 14 * MINUTE);
+        assert!(!schedule.take_due(t0() + 15 * MINUTE));
+        assert!(schedule.take_due(t0() + 29 * MINUTE));
     }
 
     #[test]

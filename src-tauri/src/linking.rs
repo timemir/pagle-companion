@@ -82,6 +82,24 @@ impl Linking {
         self.set_flow(LinkingView::Idle, None);
     }
 
+    /// Ends the attempt under way, if one is starting or polling, showing
+    /// `text`: polling stops (CMP-R60). Returns whether one was under way.
+    pub fn end_with(&self, text: String) -> bool {
+        let mut flow = self.lock();
+        if !matches!(
+            flow.view,
+            LinkingView::Starting | LinkingView::Waiting { .. }
+        ) {
+            return false;
+        }
+        self.attempt.send_modify(|n| *n += 1);
+        *flow = Flow {
+            view: LinkingView::Ended { text },
+            page: None,
+        };
+        true
+    }
+
     pub fn is_current(&self, attempt: u64) -> bool {
         *self.attempt.borrow() == attempt
     }
@@ -273,6 +291,25 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
     }
 }
 
+/// Update required was entered (DST-R56 allows no device flow): device-flow
+/// polling under way stops, and the Linking part shows the stop message, as
+/// CMP-R60's `update_required` case does (#18).
+pub fn stop_for_update_required<H: Host>(app: &H) {
+    let (Some(companion), Some(linking)) =
+        (app.try_state::<Companion>(), app.try_state::<Linking>())
+    else {
+        return;
+    };
+    let text = companion
+        .account()
+        .stop_message()
+        .unwrap_or_else(|| device_flow::UPDATE_REQUIRED_TEXT.into());
+    if linking.end_with(text) {
+        log::info!("linking stopped: update required");
+        emit_linking(app);
+    }
+}
+
 /// `update_required` on the device flow stops linking and enters update
 /// required (CMP-R60, CMP-R50).
 fn enter_update_required<H: Host>(app: &H, failure: &Failure) {
@@ -340,6 +377,30 @@ mod tests {
         assert!(!linking.is_current(attempt));
         assert!(!linking.show(attempt, waiting(), None));
         assert_eq!(linking.view(), LinkingView::Idle);
+    }
+
+    #[test]
+    fn update_required_ends_an_attempt_under_way_with_its_text() {
+        // #18: device-flow polling under way when update required is entered
+        // stops, and the window shows the status (CMP-R60's update_required
+        // case)
+        let linking = Linking::default();
+        assert!(!linking.end_with("too old".into()));
+        assert_eq!(linking.view(), LinkingView::Idle);
+
+        let (attempt, ended) = linking.begin();
+        assert!(linking.show(attempt, waiting(), None));
+        assert!(linking.end_with("too old".into()));
+        assert!(ended.has_changed().unwrap());
+        assert!(!linking.is_current(attempt));
+        assert_eq!(
+            linking.view(),
+            LinkingView::Ended {
+                text: "too old".into()
+            }
+        );
+        // An attempt that has ended already keeps its text.
+        assert!(!linking.end_with("other".into()));
     }
 
     #[test]

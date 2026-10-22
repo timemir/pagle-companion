@@ -34,6 +34,7 @@ pub mod systemctl;
 #[cfg(test)]
 mod tauri_conf;
 pub mod tray;
+pub mod update_required;
 pub mod updater;
 pub mod upload;
 pub mod upload_doc;

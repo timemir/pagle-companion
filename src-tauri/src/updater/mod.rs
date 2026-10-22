@@ -14,7 +14,9 @@
 //! Its seams:
 //! - [`Hooks::after_check`] hears the outcome of every check, [`Checked`]:
 //!   the config read that follows each check (DST-R51, DST-R63), DST-R57's
-//!   notification and DST-R58's headless exit hang off it;
+//!   notification and DST-R58's headless exit hang off it
+//!   (`update_required`); [`Hooks::ticked`] hears every update tick, for the
+//!   required-state config reads (DST-R56);
 //! - [`Updater::check_soon`] checks at the next tick, whenever the last check
 //!   was (DST-R56's check at once);
 //! - [`Updater::install`] and [`Updater::install_at_start`] install the
@@ -92,12 +94,15 @@ pub enum Installed {
 /// What the rest of the Companion does after each check.
 pub struct Hooks {
     pub after_check: Box<dyn Fn(&Checked) + Send + Sync>,
+    /// Every update tick, after its check if one was due.
+    pub ticked: Box<dyn Fn(SystemTime) + Send + Sync>,
 }
 
 impl Default for Hooks {
     fn default() -> Self {
         Self {
             after_check: Box::new(|_| {}),
+            ticked: Box::new(|_| {}),
         }
     }
 }
@@ -324,15 +329,16 @@ impl Updater {
     }
 
     /// One update tick at wall-clock time `now`: checks if a check is due
-    /// (DST-R51), then tells [`Hooks::after_check`]. Blocks while checking
-    /// and downloading.
+    /// (DST-R51), then tells [`Hooks::after_check`], then [`Hooks::ticked`].
+    /// Blocks while checking and downloading.
     pub fn tick(&self, now: SystemTime) -> Option<Checked> {
-        if !self.schedule_slot().take_due(now) {
-            return None;
+        let due = self.schedule_slot().take_due(now);
+        let checked = due.then(|| tauri::async_runtime::block_on(self.check()));
+        if let Some(checked) = &checked {
+            (self.hooks.after_check)(checked);
         }
-        let checked = tauri::async_runtime::block_on(self.check());
-        (self.hooks.after_check)(&checked);
-        Some(checked)
+        (self.hooks.ticked)(now);
+        checked
     }
 
     /// One update check (DST-R51 to DST-R54).
