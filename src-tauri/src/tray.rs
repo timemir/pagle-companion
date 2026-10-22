@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -343,6 +344,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         upload_now,
         linked: AtomicBool::new(false),
         stop: Mutex::new(None),
+        keyring_locked: AtomicBool::new(false),
+        catch_logs_need_player: AtomicBool::new(false),
+        icon: Mutex::new(None),
         menu: menu.clone(),
         restart_to_update: restart_item,
         update_shown: Mutex::new(false),
@@ -362,11 +366,82 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "quit" => self::quit(app),
             _ => {}
         });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
+    let size = tray_icon_size(scale_factor(app));
+    match Image::from_bytes(tray_icon_png(Glyph::Normal, size)) {
+        Ok(icon) => {
+            tray = tray.icon(icon);
+            if let Some(items) = app.try_state::<TrayItems>() {
+                *items.icon.lock().unwrap_or_else(|e| e.into_inner()) = Some((Glyph::Normal, size));
+            }
+        }
+        Err(e) => {
+            log::error!("couldn't read the tray icon: {e}");
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+        }
     }
     tray.build(app)?;
     Ok(())
+}
+
+/// The tray glyph's states (CMP UI, tray menu; the design kit's tray set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Glyph {
+    Normal,
+    /// The keyring is locked (CMP-R62), or a Catch log needs the Player.
+    Attention,
+    /// During a stop (CMP-R50).
+    Stopped,
+}
+
+/// The tray glyph for what the window shows: a stop before a locked keyring
+/// (the Status part's seal, `ui/linking.js`) before a Catch log that needs
+/// the Player ([`catch_logs::Line::needs_player`]).
+pub fn tray_glyph(stopped: bool, keyring_locked: bool, catch_logs_need_player: bool) -> Glyph {
+    if stopped {
+        Glyph::Stopped
+    } else if keyring_locked || catch_logs_need_player {
+        Glyph::Attention
+    } else {
+        Glyph::Normal
+    }
+}
+
+/// The tray glyph's size in pixels for a display scale factor: each size is
+/// fitted to its own pixel grid, so the nearest is used rather than scaled.
+pub fn tray_icon_size(scale: f64) -> u32 {
+    if scale >= 1.75 {
+        32
+    } else if scale >= 1.25 {
+        24
+    } else {
+        16
+    }
+}
+
+/// The tray glyph's PNG, from `icons/tray/`. A size other than 24 or 32 is
+/// 16.
+pub fn tray_icon_png(glyph: Glyph, size: u32) -> &'static [u8] {
+    match (glyph, size) {
+        (Glyph::Normal, 32) => include_bytes!("../icons/tray/tray-32.png"),
+        (Glyph::Normal, 24) => include_bytes!("../icons/tray/tray-24.png"),
+        (Glyph::Normal, _) => include_bytes!("../icons/tray/tray-16.png"),
+        (Glyph::Attention, 32) => include_bytes!("../icons/tray/tray-32-attention.png"),
+        (Glyph::Attention, 24) => include_bytes!("../icons/tray/tray-24-attention.png"),
+        (Glyph::Attention, _) => include_bytes!("../icons/tray/tray-16-attention.png"),
+        (Glyph::Stopped, 32) => include_bytes!("../icons/tray/tray-32-stopped.png"),
+        (Glyph::Stopped, 24) => include_bytes!("../icons/tray/tray-24-stopped.png"),
+        (Glyph::Stopped, _) => include_bytes!("../icons/tray/tray-16-stopped.png"),
+    }
+}
+
+/// The primary monitor's scale factor, 1 when there's none to ask.
+fn scale_factor(app: &AppHandle) -> f64 {
+    match app.primary_monitor() {
+        Ok(Some(monitor)) => monitor.scale_factor(),
+        _ => 1.0,
+    }
 }
 
 /// The tray menu's items that change.
@@ -377,6 +452,12 @@ struct TrayItems {
     linked: AtomicBool,
     /// The stop message as last shown.
     stop: Mutex<Option<String>>,
+    /// The keyring as last shown (CMP-R62).
+    keyring_locked: AtomicBool,
+    /// Whether a Catch log needed the Player in the list as last shown.
+    catch_logs_need_player: AtomicBool,
+    /// The icon's glyph and size, so it's set only when either changes.
+    icon: Mutex<Option<(Glyph, u32)>>,
     menu: Menu<tauri::Wry>,
     restart_to_update: MenuItem<tauri::Wry>,
     /// Whether **Restart to update** is in the menu.
@@ -489,6 +570,9 @@ pub fn show_link(app: &AppHandle, status: &LinkStatus) {
         return;
     };
     items.linked.store(status.linked, Ordering::SeqCst);
+    items
+        .keyring_locked
+        .store(status.keyring_locked, Ordering::SeqCst);
     *items.stop.lock().unwrap_or_else(|e| e.into_inner()) = status.stop.clone();
     let _ = items
         .upload_now
@@ -512,6 +596,48 @@ pub fn show_tray_status(app: &AppHandle) {
         upload::window::now(),
     );
     let _ = items.status.set_text(line);
+    show_tray_icon(app, &items, stop.is_some());
+}
+
+/// Shows in the tray icon whether a Catch log in `view` needs the Player.
+pub fn show_catch_logs(app: &AppHandle, view: &catch_logs::View) {
+    let Some(items) = app.try_state::<TrayItems>() else {
+        return;
+    };
+    items
+        .catch_logs_need_player
+        .store(view.needing_player() > 0, Ordering::SeqCst);
+    let stopped = items
+        .stop
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
+    show_tray_icon(app, &items, stopped);
+}
+
+/// Sets the tray icon's glyph for the link and the list as last shown, at
+/// the size for the primary monitor's scale factor; only when either
+/// changes, so it doesn't flicker.
+fn show_tray_icon(app: &AppHandle, items: &TrayItems, stopped: bool) {
+    let glyph = tray_glyph(
+        stopped,
+        items.keyring_locked.load(Ordering::SeqCst),
+        items.catch_logs_need_player.load(Ordering::SeqCst),
+    );
+    let size = tray_icon_size(scale_factor(app));
+    let mut shown = items.icon.lock().unwrap_or_else(|e| e.into_inner());
+    if *shown == Some((glyph, size)) {
+        return;
+    }
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+    let set =
+        Image::from_bytes(tray_icon_png(glyph, size)).and_then(|icon| tray.set_icon(Some(icon)));
+    match set {
+        Ok(()) => *shown = Some((glyph, size)),
+        Err(e) => log::error!("couldn't change the tray icon: {e}"),
+    }
 }
 
 /// Opens the window, creating it on first use, with the webview's data in the
@@ -688,6 +814,55 @@ mod tests {
             ]
         );
         assert_eq!(RESTART_TO_UPDATE, "Restart to update");
+    }
+
+    #[test]
+    fn the_tray_glyph_shows_a_stop_then_what_needs_the_player() {
+        // CMP-R50: stopped during any stop; attention while the keyring is
+        // locked (CMP-R62) or a Catch log needs the Player; else normal
+        assert_eq!(tray_glyph(false, false, false), Glyph::Normal);
+        assert_eq!(tray_glyph(false, true, false), Glyph::Attention);
+        assert_eq!(tray_glyph(false, false, true), Glyph::Attention);
+        assert_eq!(tray_glyph(false, true, true), Glyph::Attention);
+        assert_eq!(tray_glyph(true, false, false), Glyph::Stopped);
+        assert_eq!(tray_glyph(true, true, true), Glyph::Stopped);
+    }
+
+    #[test]
+    fn the_tray_glyph_size_follows_the_scale_factor() {
+        // 16 px below 125 %, 24 px below 175 %, then 32 px
+        assert_eq!(tray_icon_size(1.0), 16);
+        assert_eq!(tray_icon_size(1.24), 16);
+        assert_eq!(tray_icon_size(1.25), 24);
+        assert_eq!(tray_icon_size(1.5), 24);
+        assert_eq!(tray_icon_size(1.75), 32);
+        assert_eq!(tray_icon_size(2.0), 32);
+        assert_eq!(tray_icon_size(3.0), 32);
+        assert_eq!(tray_icon_size(0.0), 16);
+    }
+
+    #[test]
+    fn each_tray_glyph_is_a_png_of_its_size() {
+        // The IHDR's width and height, big-endian at bytes 16 and 20.
+        let dimension =
+            |png: &[u8], at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+        for glyph in [Glyph::Normal, Glyph::Attention, Glyph::Stopped] {
+            for size in [16, 24, 32] {
+                let png = tray_icon_png(glyph, size);
+                assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "{glyph:?} {size}");
+                assert_eq!(dimension(png, 16), size, "{glyph:?} {size}");
+                assert_eq!(dimension(png, 20), size, "{glyph:?} {size}");
+            }
+        }
+        // Each state has its own glyph.
+        assert_ne!(
+            tray_icon_png(Glyph::Normal, 16),
+            tray_icon_png(Glyph::Attention, 16)
+        );
+        assert_ne!(
+            tray_icon_png(Glyph::Attention, 16),
+            tray_icon_png(Glyph::Stopped, 16)
+        );
     }
 
     #[test]

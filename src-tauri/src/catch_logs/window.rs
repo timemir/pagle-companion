@@ -57,9 +57,11 @@ pub fn current<H: Host>(app: &H) -> View {
         .read(|s| super::view(s, snapshot.as_ref(), &installs, upload::window::now()))
 }
 
-/// Shows the list again.
+/// Shows the list again, in the window and in the tray icon.
 pub fn emit<H: Host>(app: &H) {
-    app.emit(EVENT, current(app));
+    let view = current(app);
+    app.show_catch_logs(&view);
+    app.emit(EVENT, view);
 }
 
 fn watcher<H: Host>(app: &H) -> Result<(), String> {
