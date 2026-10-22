@@ -120,7 +120,7 @@ impl Companion {
 /// starts from nothing (CMP Data).
 pub fn load_state(state_dir: &StateDir) -> State {
     match state::load(&state_dir.state_file()) {
-        Ok(Loaded::State(state)) => state,
+        Ok(Loaded::State(state)) => *state,
         Ok(Loaded::Missing) => State::default(),
         Ok(Loaded::Broken) => {
             log::warn!("state.json couldn't be read; renamed it state.json.broken");

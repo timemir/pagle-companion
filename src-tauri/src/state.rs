@@ -154,20 +154,30 @@ pub struct CatchLogState {
     pub left_off: Option<serde_json::Value>,
 }
 
-/// The last successful in-game downloads (CMP-R81). Unlink clears it (CMP-R63).
+/// The last successful in-game downloads (CMP-R81): their times, and the
+/// `ETag`s of the Anglers and Content downloads, which send `If-None-Match`.
+/// Unlink clears it (CMP-R63).
+///
+/// `contentAt` and `contentEtag` came with the Content download (HEV-R50);
+/// CMP Data's example predates them. A version 1 file without them reads as
+/// never having downloaded Content.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InGame {
     pub following_at: Option<i64>,
     pub anglers_at: Option<i64>,
     pub anglers_etag: Option<String>,
+    #[serde(default)]
+    pub content_at: Option<i64>,
+    #[serde(default)]
+    pub content_etag: Option<String>,
 }
 
 /// What reading `state.json` found.
 #[derive(Debug)]
 pub enum Loaded {
-    /// A file this Companion reads.
-    State(State),
+    /// A file this Companion reads (boxed: it is far larger than the rest).
+    State(Box<State>),
     /// No file: a first run (CMP-R100).
     Missing,
     /// A file that can't be parsed, or whose `v` is higher than this Companion
@@ -184,7 +194,7 @@ pub fn load(path: &Path) -> io::Result<Loaded> {
         Err(e) => return Err(e),
     };
     match parse(&bytes) {
-        Some(state) => Ok(Loaded::State(state)),
+        Some(state) => Ok(Loaded::State(Box::new(state))),
         None => {
             fs::rename(path, broken_path(path))?;
             Ok(Loaded::Broken)
@@ -384,7 +394,8 @@ mod tests {
                    "format": 1, "companionVersion": "1.0.0", "code": null, "message": null,
                    "catchLog": { "verification": "pending", "pendingReason": "forever-api", "heldCharacters": 0, "leftOff": null } },
       "lastUploadedAt": 1791735100 } },
-  "inGame": { "followingAt": 1791735000, "anglersAt": 1791735000, "anglersEtag": "\"9f86d081…\"" } }"#;
+  "inGame": { "followingAt": 1791735000, "anglersAt": 1791735000, "anglersEtag": "\"9f86d081…\"",
+              "contentAt": 1791735000, "contentEtag": "\"2c26b46b…\"" } }"#;
 
     #[test]
     fn the_example_round_trips() {
@@ -407,6 +418,33 @@ mod tests {
         let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let example: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
         assert_eq!(written, example);
+    }
+
+    #[test]
+    fn a_version_1_file_from_before_the_content_download_loads() {
+        // CMP Data: inGame without contentAt and contentEtag (the spec's
+        // example) reads as Content never downloaded, so it is due at start
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.json");
+        let before = EXAMPLE.replace(
+            ",\n              \"contentAt\": 1791735000, \"contentEtag\": \"\\\"2c26b46b…\\\"\"",
+            "",
+        );
+        assert!(!before.contains("content"));
+        fs::write(&path, before).unwrap();
+        let Loaded::State(state) = load(&path).unwrap() else {
+            panic!("the file didn't load");
+        };
+        assert_eq!(
+            state.in_game,
+            InGame {
+                following_at: Some(1_791_735_000),
+                anglers_at: Some(1_791_735_000),
+                anglers_etag: Some("\"9f86d081…\"".into()),
+                content_at: None,
+                content_etag: None,
+            }
+        );
     }
 
     #[test]
@@ -492,7 +530,7 @@ mod tests {
         let Loaded::State(read) = load(&path).unwrap() else {
             panic!("the saved file didn't load");
         };
-        assert_eq!(read, state);
+        assert_eq!(*read, state);
         let names: Vec<_> = fs::read_dir(tmp.path())
             .unwrap()
             .map(|e| e.unwrap().file_name())

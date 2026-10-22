@@ -297,7 +297,7 @@ mod tests {
         };
         assert!(!saved.first_run_done);
         assert_eq!(
-            saved,
+            *saved,
             State {
                 kept_app_image_paths: vec!["/home/u/Downloads/p.AppImage".into()],
                 ..State::default()

@@ -61,7 +61,7 @@ pub enum Step {
     DaemonReload,
     /// Step 3: deletes the autostart entry (CMP-R3).
     DeleteAutostart,
-    /// Step 4: deletes both data addon folders in every install the scan
+    /// Step 4: deletes the three data addon folders in every install the scan
     /// found or local state names (CMP-R85).
     DeleteDataAddonFolders,
     /// Step 5: deletes the state directory, with local state, the local log

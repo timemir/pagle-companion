@@ -6,7 +6,7 @@
 //! refusal of UPL Refusals with [`refusal`]), set the `catchLog` its
 //! successes carry, and read every page it received.
 //!
-//! [`FakeInGame`] stubs the two in-game downloads the same way.
+//! [`FakeInGame`] stubs the three in-game downloads the same way.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
@@ -20,6 +20,7 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use crate::in_game::backend_bodies::{ANGLERS_EXAMPLE, FOLLOWING_EXAMPLE};
+use crate::in_game::content_vector;
 use crate::in_game::folders::{DataFile, etag_of};
 use crate::upload::download::endpoint;
 
@@ -337,11 +338,12 @@ struct InGameInner {
     gzipped: Vec<bool>,
 }
 
-/// A stub of the in-game downloads (IGV Contracts, Endpoints): it answers
-/// each with the body a test set (the Contracts examples at first) as
+/// A stub of the in-game downloads (IGV Contracts, Endpoints; HEV Contracts,
+/// Endpoints): it answers each with the body a test set (the Contracts
+/// examples, and the test vector's `good` file for Content, at first) as
 /// IGV-R34 says, `text/x-lua` and gzip-encoded when `Accept-Encoding` allows
-/// gzip; the Anglers body with its `ETag` (IGV-R32), and a `304` when
-/// `If-None-Match` matches it. Tests can make it answer something else for
+/// gzip; the Anglers and Content bodies with their `ETag` (IGV-R32,
+/// HEV-R37), and a `304` when `If-None-Match` matches it. Tests can make it answer something else for
 /// the next requests of an endpoint and read every request it received.
 #[derive(Clone, Default)]
 pub struct FakeInGame(Arc<Mutex<InGameInner>>);
@@ -371,7 +373,7 @@ impl FakeInGame {
         let inner = self.lock();
         match inner.bodies.get(&file) {
             Some(body) => body.clone(),
-            None => default_body(file).to_vec(),
+            None => default_body(file),
         }
     }
 
@@ -400,10 +402,11 @@ impl FakeInGame {
     }
 }
 
-fn default_body(file: DataFile) -> &'static [u8] {
+fn default_body(file: DataFile) -> Vec<u8> {
     match file {
-        DataFile::Following => FOLLOWING_EXAMPLE.as_bytes(),
-        DataFile::Anglers => ANGLERS_EXAMPLE.as_bytes(),
+        DataFile::Following => FOLLOWING_EXAMPLE.into(),
+        DataFile::Anglers => ANGLERS_EXAMPLE.into(),
+        DataFile::Content => content_vector::content_file("good").into_bytes(),
     }
 }
 
@@ -444,7 +447,7 @@ impl Respond for InGameEndpoint {
             .insert_header("Content-Type", "text/x-lua; charset=utf-8")
             .insert_header("Cache-Control", "private, no-cache")
             .insert_header("Vary", "Accept-Encoding");
-        if file == DataFile::Anglers {
+        if file != DataFile::Following {
             if seen.if_none_match.as_deref() == Some(etag.as_str()) {
                 return ResponseTemplate::new(304)
                     .insert_header("ETag", etag.as_str())

@@ -1,5 +1,5 @@
-//! The in-game download timer (CMP-R80, CMP-R81; IGV-R50, IGV-R51): when the
-//! Following and Anglers downloads are due.
+//! The in-game download timer (CMP-R80, CMP-R81; IGV-R50, IGV-R51; HEV
+//! Tunables): when the Following, Anglers and Content downloads are due.
 //!
 //! The [`Schedule`] is what the timer keeps in memory between its checks:
 //! whether each download is owed (at start, right after linking, after one
@@ -30,6 +30,13 @@ pub const FOLLOWING_INTERVAL: i64 = 60 * 60;
 /// download is due once its last success (`200` or `304`) is this old.
 pub const ANGLERS_REFETCH_AGE: i64 = 12 * 60 * 60;
 
+/// The content poll interval (CMP Tunables, HEV Tunables), in seconds: the
+/// Content download is due this long after its last success (`200` or
+/// `304`). The backend builds a new file every content interval (HEV-R30), so
+/// a running Companion's `Content.lua` is never near the addon's not-running
+/// age (PUSH-R15) or its `expires` (HEV-R33).
+pub const CONTENT_POLL_INTERVAL: i64 = 60 * 60;
+
 /// One download's part of the schedule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Slot {
@@ -41,7 +48,7 @@ struct Slot {
 }
 
 impl Default for Slot {
-    /// A new process owes both downloads: "at start" (CMP-R81).
+    /// A new process owes every download: "at start" (CMP-R81).
     fn default() -> Self {
         Self {
             owed: true,
@@ -50,12 +57,13 @@ impl Default for Slot {
     }
 }
 
-/// When the two downloads are due (CMP-R81). A new one owes both, as at
-/// start.
+/// When the three downloads are due (CMP-R81). A new one owes them all, as
+/// at start.
 #[derive(Debug, Default)]
 pub struct Schedule {
     following: Slot,
     anglers: Slot,
+    content: Slot,
 }
 
 impl Schedule {
@@ -63,6 +71,7 @@ impl Schedule {
         match file {
             DataFile::Following => &mut self.following,
             DataFile::Anglers => &mut self.anglers,
+            DataFile::Content => &mut self.content,
         }
     }
 
@@ -70,24 +79,27 @@ impl Schedule {
         match file {
             DataFile::Following => self.following,
             DataFile::Anglers => self.anglers,
+            DataFile::Content => self.content,
         }
     }
 
-    /// Right after linking (CMP-R101): both downloads are owed again, and
+    /// Right after linking (CMP-R101): every download is owed again, and
     /// what held them off belonged to the old link.
     pub fn owe_all(&mut self) {
         *self = Self::default();
     }
 
-    /// The downloads due at `now` (CMP-R80, CMP-R81), Following first:
+    /// The downloads due at `now` (CMP-R80, CMP-R81), Following, Anglers,
+    /// then Content:
     /// - none while no install qualifies;
     /// - none held off until after `now`;
     /// - an owed one;
     /// - one a qualifying install lacks the data file of;
     /// - Following once its last success is the following interval old,
-    ///   Anglers once its last success is the Anglers re-fetch age old, or
-    ///   either without one (or with one in the future, as after the clock
-    ///   was set back).
+    ///   Anglers once its last success is the Anglers re-fetch age old,
+    ///   Content once its last success is the content poll interval old, or
+    ///   any without one (or with one in the future, as after the clock was
+    ///   set back).
     pub fn due(&self, now: i64, in_game: &InGame, qualifying: &Qualifying) -> Vec<DataFile> {
         if !qualifying.any() {
             return Vec::new();
@@ -119,7 +131,8 @@ impl Schedule {
     }
 
     /// A download that wasn't successful and isn't tried again before
-    /// `until` (CMP-R50's `429`, CMP-R81's bad or unwritable body).
+    /// `until` (CMP-R50's `429`, HEV-R37's `503 content_unavailable`,
+    /// CMP-R81's bad or unwritable body).
     pub fn hold(&mut self, file: DataFile, until: i64) {
         *self.slot(file) = Slot {
             owed: true,
@@ -133,6 +146,7 @@ fn aged(file: DataFile, in_game: &InGame, now: i64) -> bool {
     let (last, interval) = match file {
         DataFile::Following => (in_game.following_at, FOLLOWING_INTERVAL),
         DataFile::Anglers => (in_game.anglers_at, ANGLERS_REFETCH_AGE),
+        DataFile::Content => (in_game.content_at, CONTENT_POLL_INTERVAL),
     };
     last.is_none_or(|at| at > now || now - at >= interval)
 }
@@ -155,33 +169,82 @@ mod tests {
         match file {
             DataFile::Following => qualifying.lacking_following = qualifying.installs.clone(),
             DataFile::Anglers => qualifying.lacking_anglers = qualifying.installs.clone(),
+            DataFile::Content => qualifying.lacking_content = qualifying.installs.clone(),
         }
         qualifying
     }
 
+    /// Following and Anglers last done at the times given, Content a minute
+    /// ago.
     fn done_at(following: i64, anglers: i64) -> InGame {
         InGame {
             following_at: Some(following),
             anglers_at: Some(anglers),
             anglers_etag: Some("\"ab\"".into()),
+            content_at: Some(NOW - 60),
+            content_etag: Some("\"cd\"".into()),
         }
     }
 
-    /// A schedule whose start downloads both succeeded.
+    /// Following and Anglers a minute ago, Content at `content`.
+    fn content_done_at(content: i64) -> InGame {
+        InGame {
+            content_at: Some(content),
+            ..done_at(NOW - 60, NOW - 60)
+        }
+    }
+
+    /// A schedule whose start downloads all succeeded.
     fn settled() -> Schedule {
         let mut schedule = Schedule::default();
-        schedule.succeeded(DataFile::Following);
-        schedule.succeeded(DataFile::Anglers);
+        for file in DataFile::ALL {
+            schedule.succeeded(file);
+        }
         schedule
     }
 
     #[test]
-    fn both_downloads_are_due_at_start_whatever_their_last_success() {
-        // CMP-R81: the Following and the Anglers download at start
+    fn every_download_is_due_at_start_whatever_its_last_success() {
+        // CMP-R81: the Following, Anglers and Content downloads at start
         let schedule = Schedule::default();
         assert_eq!(
             schedule.due(NOW, &done_at(NOW - 60, NOW - 60), &one_install()),
+            DataFile::ALL
+        );
+    }
+
+    #[test]
+    fn content_is_due_every_content_poll_interval() {
+        // CMP-R81, HEV Tunables: the Content download every content poll
+        // interval (1 h) after its last success, 200 or 304 alike
+        let schedule = settled();
+        let at = NOW - CONTENT_POLL_INTERVAL;
+        assert_eq!(
+            schedule.due(NOW - 1, &content_done_at(at), &one_install()),
+            []
+        );
+        assert_eq!(
+            schedule.due(NOW, &content_done_at(at), &one_install()),
+            [DataFile::Content]
+        );
+        assert_eq!(CONTENT_POLL_INTERVAL, 3_600);
+    }
+
+    #[test]
+    fn content_is_held_off_until_retry_after_and_then_due() {
+        // HEV-R37: 503 content_unavailable with Retry-After holds the Content
+        // download off as a 429 does (CMP-R50), whatever else would make it
+        // due
+        let mut schedule = settled();
+        schedule.hold(DataFile::Content, NOW + 60);
+        let qualifying = lacking(DataFile::Content);
+        assert_eq!(
+            schedule.due(NOW + 59, &InGame::default(), &qualifying),
             [DataFile::Following, DataFile::Anglers]
+        );
+        assert_eq!(
+            schedule.due(NOW + 60, &content_done_at(NOW + 59), &qualifying),
+            [DataFile::Content]
         );
     }
 
@@ -237,7 +300,7 @@ mod tests {
         let schedule = settled();
         assert_eq!(
             schedule.due(NOW, &InGame::default(), &one_install()),
-            [DataFile::Following, DataFile::Anglers]
+            DataFile::ALL
         );
     }
 
@@ -255,6 +318,10 @@ mod tests {
             schedule.due(NOW, &recent, &lacking(DataFile::Following)),
             [DataFile::Following]
         );
+        assert_eq!(
+            schedule.due(NOW, &recent, &lacking(DataFile::Content)),
+            [DataFile::Content]
+        );
     }
 
     #[test]
@@ -266,6 +333,12 @@ mod tests {
         assert_eq!(
             schedule.due(NOW, &done_at(NOW - 60, NOW - 60), &one_install()),
             [DataFile::Following]
+        );
+        let mut schedule = settled();
+        schedule.failed(DataFile::Content);
+        assert_eq!(
+            schedule.due(NOW, &done_at(NOW - 60, NOW - 60), &one_install()),
+            [DataFile::Content]
         );
     }
 
@@ -280,7 +353,7 @@ mod tests {
         let qualifying = lacking(DataFile::Anglers);
         assert_eq!(
             schedule.due(NOW, &InGame::default(), &qualifying),
-            [DataFile::Following]
+            [DataFile::Following, DataFile::Content]
         );
         assert_eq!(
             schedule.due(
@@ -288,11 +361,11 @@ mod tests {
                 &InGame::default(),
                 &qualifying
             ),
-            [DataFile::Following]
+            [DataFile::Following, DataFile::Content]
         );
         assert_eq!(
             schedule.due(NOW + FOLLOWING_INTERVAL, &InGame::default(), &qualifying),
-            [DataFile::Following, DataFile::Anglers]
+            DataFile::ALL
         );
     }
 
@@ -303,19 +376,26 @@ mod tests {
         schedule.succeeded(DataFile::Following);
         assert_eq!(
             schedule.due(NOW, &done_at(NOW, NOW - 60), &one_install()),
+            [DataFile::Anglers, DataFile::Content]
+        );
+        schedule.succeeded(DataFile::Content);
+        assert_eq!(
+            schedule.due(NOW, &done_at(NOW, NOW - 60), &one_install()),
             [DataFile::Anglers]
         );
     }
 
     #[test]
-    fn linking_owes_both_and_forgets_the_holds() {
-        // CMP-R101: right after any link, both in-game downloads
+    fn linking_owes_every_download_and_forgets_the_holds() {
+        // CMP-R101: right after any link, the in-game downloads (CMP-R81:
+        // Content too, "right after linking")
         let mut schedule = settled();
         schedule.hold(DataFile::Following, NOW + FOLLOWING_INTERVAL);
+        schedule.hold(DataFile::Content, NOW + 60);
         schedule.owe_all();
         assert_eq!(
             schedule.due(NOW, &done_at(NOW, NOW), &one_install()),
-            [DataFile::Following, DataFile::Anglers]
+            DataFile::ALL
         );
     }
 
@@ -324,10 +404,11 @@ mod tests {
         // CMP-R81: a clock set back can't keep a download from being due for
         // as long as it went back
         let schedule = settled();
-        assert_eq!(
-            schedule.due(NOW, &done_at(NOW + 3_600, NOW + 60), &one_install()),
-            [DataFile::Following, DataFile::Anglers]
-        );
+        let future = InGame {
+            content_at: Some(NOW + 60),
+            ..done_at(NOW + 3_600, NOW + 60)
+        };
+        assert_eq!(schedule.due(NOW, &future, &one_install()), DataFile::ALL);
     }
 
     #[test]

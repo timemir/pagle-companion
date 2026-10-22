@@ -89,11 +89,11 @@ pub struct Hooks {
     /// Cancels every queued and running item of the queue (CMP-R63 step 1,
     /// CMP-R64, CMP-R65). The queue is the upload runs' (#28).
     pub cancel_queue: Hook,
-    /// Starts the post-link runs and both in-game downloads (CMP-R101) after
+    /// Starts the post-link runs and the in-game downloads (CMP-R101) after
     /// any link.
     pub start_post_link_runs: Hook,
-    /// Deletes both data addon folders in every install (CMP-R85), on Unlink
-    /// and on losing the link (B4).
+    /// Deletes the three data addon folders in every install (CMP-R85), on
+    /// Unlink and on losing the link (B4).
     pub delete_data_addon_folders: Hook,
     /// The link's status changed: the window and the tray show it again.
     pub changed: Hook,

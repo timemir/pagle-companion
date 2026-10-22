@@ -287,7 +287,7 @@ impl Harness {
         let Loaded::State(state) = state::load(&self.tmp.path().join("state.json")).unwrap() else {
             panic!("state.json didn't load");
         };
-        self.state = Store::new(self.tmp.path().join("state.json"), state);
+        self.state = Store::new(self.tmp.path().join("state.json"), *state);
         self.uploads = Arc::new(Uploads::new());
         self
     }

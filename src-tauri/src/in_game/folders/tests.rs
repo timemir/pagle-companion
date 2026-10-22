@@ -60,6 +60,70 @@ fn the_anglers_toc_is_load_on_demand_and_ends_with_an_lf() {
 }
 
 #[test]
+fn the_content_toc_is_hev_s_template_with_the_copied_lines() {
+    // HEV Contracts, The addon folder; HEV-R50, CMP-R83: the template byte
+    // for byte, loaded normally after Pagle (no LoadOnDemand), with Content.lua
+    // right after ## Version as HEV writes it
+    let text = toc(DataFile::Content, &copied_lines(TOC_LINES));
+    assert_eq!(
+        String::from_utf8(text).unwrap(),
+        "## Interface: 11508\n## AllowLoadGameType: classic\n## Title: Pagle Content\n\
+         ## Notes: Pagle Wagers and other content from Pagle. Written by the Pagle Companion.\n\
+         ## Group: Pagle\n## Category: Professions\n## Dependencies: Pagle\n## Version: 1\n\
+         Content.lua\n"
+    );
+    // A line Pagle.toc lacks is left out here too.
+    let toc = toc(DataFile::Content, &copied_lines(b"## Title: Pagle\n"));
+    assert!(toc.starts_with(b"## Title: Pagle Content\n"));
+}
+
+#[test]
+fn the_content_folder_is_written_like_the_others() {
+    // HEV-R50, CMP-R80, CMP-R83: Pagle_Content/ in every qualifying install,
+    // the body byte for byte as Content.lua with its TOC, written atomically
+    // (data file first), then everything else in the folder deleted
+    let tmp = tempfile::tempdir().unwrap();
+    let a = install(tmp.path(), "C/WoW/_classic_beta_", Some(TOC_LINES));
+    let b = install(tmp.path(), "D/WoW/_classic_beta_", None);
+    let dir = folder(&a, DataFile::Content);
+    fs::create_dir_all(dir.join("old")).unwrap();
+    fs::write(dir.join("old.lua"), "old").unwrap();
+    fs::write(dir.join(".Content.lua.tmp"), "half").unwrap();
+    let fs_ = FaultyFs::new(|_, _| false);
+    let ops = fs_.ops();
+    let writer = Writer::with_fs(Box::new(fs_));
+
+    let report = writer.write(&[a.clone(), b.clone()], DataFile::Content, BODY);
+    assert_eq!(report.written, std::slice::from_ref(&a));
+    assert_eq!(entries(&dir), ["Content.lua", "Pagle_Content.toc"]);
+    assert_eq!(fs::read(dir.join("Content.lua")).unwrap(), BODY);
+    assert_eq!(
+        fs::read(dir.join("Pagle_Content.toc")).unwrap(),
+        toc(DataFile::Content, &copied_lines(TOC_LINES))
+    );
+    let written: Vec<String> = ops
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(op, _)| matches!(op, Op::WriteSynced | Op::Rename))
+        .map(|(_, path)| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        written,
+        [
+            ".Content.lua.tmp",
+            ".Content.lua.tmp",
+            ".Pagle_Content.toc.tmp",
+            ".Pagle_Content.toc.tmp"
+        ]
+    );
+    assert!(!folder(&b, DataFile::Content).exists());
+    // The other two folders aren't touched by it.
+    assert!(!folder(&a, DataFile::Following).exists());
+    assert!(!folder(&a, DataFile::Anglers).exists());
+}
+
+#[test]
 fn a_line_pagle_toc_lacks_is_left_out() {
     // CMP-R83: a line Pagle.toc lacks is left out
     let toc = toc(DataFile::Following, &copied_lines(b"## Interface: 11508\n"));
@@ -342,6 +406,30 @@ fn a_failed_install_keeps_its_old_file_and_shows_the_message() {
 }
 
 #[test]
+fn a_content_write_failure_shows_its_own_folder() {
+    // CMP-R83, CMP UI: the WoW folders section lists each failing data addon
+    // folder, Pagle_Content's as the other two
+    let tmp = tempfile::tempdir().unwrap();
+    let a = install(tmp.path(), "WoW/_classic_beta_", Some(TOC_LINES));
+    let writer = Writer::with_fs(Box::new(FaultyFs::new(|op, path| {
+        op == Op::WriteSynced && path.ends_with(".Content.lua.tmp")
+    })));
+    writer.write(std::slice::from_ref(&a), DataFile::Following, BODY);
+    let report = writer.write(std::slice::from_ref(&a), DataFile::Content, BODY);
+    assert!(!report.succeeded());
+    let shown = os_path(&folder(&a, DataFile::Content));
+    assert!(shown.ends_with("Pagle_Content"), "{shown}");
+    assert_eq!(
+        writer.failures(),
+        [WriteFailure {
+            flavor: a.clone(),
+            folder: shown.clone(),
+            text: format!("Couldn't write the in-game files to {shown}."),
+        }]
+    );
+}
+
+#[test]
 fn a_write_failing_everywhere_is_no_success() {
     // CMP-R83, CMP-R81: when the write fails in every install, the download
     // isn't successful
@@ -383,8 +471,9 @@ fn the_toc_refresh_rewrites_tocs_whose_copied_lines_changed() {
     let a = install(tmp.path(), "WoW/_classic_beta_", Some(TOC_LINES));
     let flavors = [a.clone()];
     let writer = Writer::new();
-    writer.write(&flavors, DataFile::Following, BODY);
-    writer.write(&flavors, DataFile::Anglers, BODY);
+    for file in DataFile::ALL {
+        writer.write(&flavors, file, BODY);
+    }
     let pagle_toc = Path::new(&a).join("Interface/AddOns/Pagle/Pagle.toc");
     fs::write(
         &pagle_toc,
@@ -568,6 +657,7 @@ fn the_writer_lists_qualifying_installs_lacking_each_data_file() {
             installs: vec![a.clone(), b.clone()],
             lacking_following: vec![a.clone(), b.clone()],
             lacking_anglers: vec![a.clone(), b.clone()],
+            lacking_content: vec![a.clone(), b.clone()],
         }
     );
 
@@ -576,15 +666,19 @@ fn the_writer_lists_qualifying_installs_lacking_each_data_file() {
     let report = writer.qualifying(&all);
     assert!(report.lacking(DataFile::Following).is_empty());
     assert_eq!(report.lacking(DataFile::Anglers), std::slice::from_ref(&b));
+    assert_eq!(report.lacking(DataFile::Content), [a.clone(), b.clone()]);
+    writer.write(std::slice::from_ref(&b), DataFile::Content, BODY);
+    let report = writer.qualifying(&all);
+    assert_eq!(report.lacking(DataFile::Content), std::slice::from_ref(&a));
     assert!(report.any());
     assert!(!writer.qualifying(&[c]).any());
 }
 
 #[test]
-fn deleting_removes_both_folders_wherever_they_exist() {
-    // CMP-R85: on Unlink, losing the link and removal, both folders are
-    // deleted entirely in every install where they exist, whether or not the
-    // Pagle addon is still there
+fn deleting_removes_the_three_folders_wherever_they_exist() {
+    // CMP-R85: on Unlink, losing the link and removal, the three folders
+    // (Pagle_Content too, PUSH-R91) are deleted entirely in every install
+    // where they exist, whether or not the Pagle addon is still there
     let tmp = tempfile::tempdir().unwrap();
     let a = install(tmp.path(), "C/WoW/_classic_beta_", Some(TOC_LINES));
     let b = install(tmp.path(), "D/WoW/_classic_beta_", Some(TOC_LINES));
@@ -599,6 +693,13 @@ fn deleting_removes_both_folders_wherever_they_exist() {
     fs::create_dir_all(folder(&a, DataFile::Anglers).join("sub")).unwrap();
     fs::remove_dir_all(Path::new(&b).join("Interface/AddOns/Pagle")).unwrap();
     assert!(!writer.failures().is_empty());
+    assert!(folder(&a, DataFile::Content).join("Content.lua").is_file());
+    // A folder in another case is the same folder (CMP-R17).
+    fs::rename(
+        folder(&b, DataFile::Content),
+        Path::new(&b).join("Interface/AddOns/pagle_content"),
+    )
+    .unwrap();
 
     writer.delete_folders(&all);
     for flavor in [&a, &b] {
@@ -618,13 +719,15 @@ fn deleting_removes_both_folders_wherever_they_exist() {
 
 #[test]
 fn the_free_delete_is_the_one_removal_calls() {
-    // CMP-R85, CMP-R70 step 4: removal deletes both folders in every install
-    // the scan found or local state names, through the same delete
+    // CMP-R85, CMP-R70 step 4: removal deletes the three folders in every
+    // install the scan found or local state names, through the same delete
     let tmp = tempfile::tempdir().unwrap();
     let a = install(tmp.path(), "WoW/_classic_beta_", Some(TOC_LINES));
     Writer::new().write(std::slice::from_ref(&a), DataFile::Anglers, BODY);
+    Writer::new().write(std::slice::from_ref(&a), DataFile::Content, BODY);
     delete_data_addon_folders(std::slice::from_ref(&a));
     assert!(!folder(&a, DataFile::Anglers).exists());
+    assert!(!folder(&a, DataFile::Content).exists());
     assert!(
         Path::new(&a)
             .join("Interface/AddOns/Pagle/Pagle.toc")
@@ -722,9 +825,29 @@ fn the_etag_holds_only_when_every_qualifying_install_hashes_to_it() {
 }
 
 #[test]
+fn the_content_etag_holds_only_when_every_content_lua_hashes_to_it() {
+    // CMP-R81: the Content download sends If-None-Match as the Anglers
+    // download does, with the ETag of the Content.lua it holds (HEV-R37)
+    let tmp = tempfile::tempdir().unwrap();
+    let a = install(tmp.path(), "C/WoW/_classic_beta_", Some(TOC_LINES));
+    let b = install(tmp.path(), "D/WoW/_classic_beta_", Some(TOC_LINES));
+    let all = [a.clone(), b.clone()];
+    let writer = Writer::new();
+    let etag = etag_of(BODY);
+    writer.write(&all, DataFile::Anglers, BODY);
+    assert!(!writer.data_files_hash_to(&all, DataFile::Content, &etag));
+    writer.write(&all, DataFile::Content, BODY);
+    assert!(writer.data_files_hash_to(&all, DataFile::Content, &etag));
+    fs::write(folder(&b, DataFile::Content).join("Content.lua"), b"x").unwrap();
+    assert!(!writer.data_files_hash_to(&all, DataFile::Content, &etag));
+}
+
+#[test]
 fn the_folder_and_file_names_are_the_contracts() {
     // IGV Contracts, The addon folders: Pagle_Following/Pagle_Following.toc
-    // and Following.lua; Pagle_Anglers/Pagle_Anglers.toc and Anglers.lua
+    // and Following.lua; Pagle_Anglers/Pagle_Anglers.toc and Anglers.lua;
+    // HEV Contracts, The addon folder: Pagle_Content/Pagle_Content.toc and
+    // Content.lua
     let names: Vec<_> = DataFile::ALL
         .iter()
         .map(|f| (f.folder(), f.toc_name(), f.file_name()))
@@ -734,6 +857,7 @@ fn the_folder_and_file_names_are_the_contracts() {
         [
             ("Pagle_Following", "Pagle_Following.toc", "Following.lua"),
             ("Pagle_Anglers", "Pagle_Anglers.toc", "Anglers.lua"),
+            ("Pagle_Content", "Pagle_Content.toc", "Content.lua"),
         ]
     );
 }

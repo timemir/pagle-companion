@@ -1,20 +1,21 @@
-//! The in-game downloads (CMP-R81 to CMP-R84; IGV-R30 to IGV-R35, IGV-R53):
-//! `GET /api/v1/in-game/following` and `GET /api/v1/in-game/anglers` as the
+//! The in-game downloads (CMP-R81 to CMP-R84; IGV-R30 to IGV-R35, IGV-R53;
+//! HEV-R37, HEV-R38): `GET /api/v1/in-game/following`,
+//! `GET /api/v1/in-game/anglers` and `GET /api/v1/in-game/content` as the
 //! queue's items.
 //!
 //! [`Uploads::in_game_check`] is the timer's check: it refreshes the TOCs and,
 //! while linked and outside a stop, queues the downloads the [`Schedule`]
 //! says are due. A download ([`Uploads::download`]) sends the credential, the
-//! version header, `Accept-Encoding: gzip` and, for Anglers, `If-None-Match`
-//! when every qualifying install's `Anglers.lua` hashes to the kept `ETag`.
-//! It reads the decoded body up to [`DECODED_CAP`], checks it (CMP-R82),
-//! writes it (CMP-R83), and keeps the time and the `ETag` of a success in
-//! `inGame`. How it ended goes back into the schedule:
+//! version header, `Accept-Encoding: gzip` and, for Anglers and Content,
+//! `If-None-Match` when every qualifying install's data file hashes to the
+//! kept `ETag`. It reads the decoded body up to [`DECODED_CAP`], checks it
+//! (CMP-R82), writes it (CMP-R83), and keeps the time and the `ETag` of a
+//! success in `inGame`. How it ended goes back into the schedule:
 //! - a `200` written in at least one install, or a `304`: successful;
 //! - a body that fails CMP-R82, or is written nowhere: held one following
 //!   interval;
-//! - a `429`: dropped, held until `Retry-After` has passed (the queue doesn't
-//!   wait);
+//! - a `429`, or a `503 content_unavailable` (HEV-R37): dropped, held until
+//!   `Retry-After` has passed (the queue doesn't wait);
 //! - a `5xx`, a timeout or no connection: the queue's backoff (CMP-R51), then
 //!   queued again;
 //! - a stop, `credential_invalid` or any other refusal: due again at the next
@@ -39,6 +40,10 @@ use crate::in_game::timer::FOLLOWING_INTERVAL;
 /// CMP-R82 without being inflated further.
 pub const DECODED_CAP: usize = ANGLERS_CAP;
 
+/// The refusal code of a `503` before the backend's first content build has
+/// stored a file (HEV-R37, HEV Contracts, Endpoints).
+pub const CONTENT_UNAVAILABLE: &str = "content_unavailable";
+
 /// How a download ended (CMP-R81).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadEnd {
@@ -55,6 +60,9 @@ pub enum DownloadEnd {
     Unwritten,
     /// `429`: dropped, not due again before `Retry-After` has passed.
     RateLimited,
+    /// `503 content_unavailable` (HEV-R37): dropped like a `429`, not due
+    /// again before `Retry-After` has passed.
+    Unavailable,
     /// A refusal that ends the download: due again at the next check.
     Failed,
     /// A `5xx`, a timeout or no connection: the backoff was waited, and the
@@ -82,6 +90,7 @@ pub fn endpoint(file: DataFile) -> &'static str {
     match file {
         DataFile::Following => "in-game/following",
         DataFile::Anglers => "in-game/anglers",
+        DataFile::Content => "in-game/content",
     }
 }
 
@@ -90,11 +99,12 @@ fn checked(file: DataFile) -> check::DataFile {
     match file {
         DataFile::Following => check::DataFile::Following,
         DataFile::Anglers => check::DataFile::Anglers,
+        DataFile::Content => check::DataFile::Content,
     }
 }
 
 impl Uploads {
-    /// Right after linking (CMP-R101): both in-game downloads are owed again.
+    /// Right after linking (CMP-R101): the in-game downloads are owed again.
     /// The caller then makes an in-game check.
     pub fn owe_downloads(&self) {
         lock(&self.schedule).owe_all();
@@ -141,7 +151,7 @@ impl Uploads {
                 schedule.hold(file, now + FOLLOWING_INTERVAL);
             }
             // Held where the reply was read.
-            DownloadEnd::RateLimited => {}
+            DownloadEnd::RateLimited | DownloadEnd::Unavailable => {}
             DownloadEnd::Failed
             | DownloadEnd::Retry
             | DownloadEnd::Interrupted
@@ -169,8 +179,10 @@ impl Uploads {
             return not_downloaded(name, "no install has the Pagle addon");
         }
         let if_none_match = match file {
+            // IGV-R31: every Following answer is new, with no ETag.
             DataFile::Following => None,
-            DataFile::Anglers => self.if_none_match(ctx).await,
+            // IGV-R51, HEV-R37: the ETag is the data file's SHA-256.
+            DataFile::Anglers | DataFile::Content => self.if_none_match(ctx, file).await,
         };
         log::info!(
             "in-game download {name}{}",
@@ -217,11 +229,20 @@ impl Uploads {
         }
     }
 
-    /// The kept `ETag`, when every qualifying install's `Anglers.lua` hashes
-    /// to it (CMP-R81).
-    async fn if_none_match<N: Notifier, E: Env>(&self, ctx: &Ctx<'_, N, E>) -> Option<String> {
-        let kept = ctx.state.read(|s| s.in_game.anglers_etag.clone())?;
-        if ctx.env.data_files_hash_to(DataFile::Anglers, &kept).await {
+    /// The kept `ETag` of `file`, when every qualifying install's data file
+    /// hashes to it (CMP-R81): `Anglers.lua`'s, or `Content.lua`'s "as the
+    /// Anglers download does".
+    async fn if_none_match<N: Notifier, E: Env>(
+        &self,
+        ctx: &Ctx<'_, N, E>,
+        file: DataFile,
+    ) -> Option<String> {
+        let kept = ctx.state.read(|s| match file {
+            DataFile::Following => None,
+            DataFile::Anglers => s.in_game.anglers_etag.clone(),
+            DataFile::Content => s.in_game.content_etag.clone(),
+        })?;
+        if ctx.env.data_files_hash_to(file, &kept).await {
             Some(kept)
         } else {
             None
@@ -252,6 +273,22 @@ impl Uploads {
             Err(e) => return Reply::Ended(e.to_string()),
         };
         let status = reply.status();
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            // HEV-R37: `503 content_unavailable` with `Retry-After` before
+            // the first content build; any other 503 is a 5xx (CMP-R50).
+            let retry_after = retry_after(reply.headers());
+            return match reply.bytes().await {
+                Ok(body) => {
+                    let refused = refusal(status, retry_after, &body);
+                    if refused.code.as_deref() == Some(CONTENT_UNAVAILABLE) {
+                        Reply::Refused(refused)
+                    } else {
+                        Reply::Retry(status.to_string())
+                    }
+                }
+                Err(_) => Reply::Retry(status.to_string()),
+            };
+        }
         if status.is_server_error() {
             return Reply::Retry(status.to_string());
         }
@@ -335,8 +372,8 @@ impl Uploads {
         DownloadEnd::Written(report.written.len())
     }
 
-    /// A successful download (CMP-R81): its time, and for Anglers its
-    /// `ETag`, go into `inGame`.
+    /// A successful download (CMP-R81): its time, and for Anglers and
+    /// Content its `ETag`, go into `inGame`.
     fn downloaded<N: Notifier, E: Env>(
         &self,
         ctx: &Ctx<'_, N, E>,
@@ -349,6 +386,10 @@ impl Uploads {
             DataFile::Anglers => {
                 s.in_game.anglers_at = Some(at);
                 s.in_game.anglers_etag = etag;
+            }
+            DataFile::Content => {
+                s.in_game.content_at = Some(at);
+                s.in_game.content_etag = etag;
             }
         });
         if let Err(e) = saved {
@@ -392,18 +433,21 @@ impl Uploads {
             refusal.code.as_deref().unwrap_or("(no code)"),
             refusal.message.as_deref().unwrap_or("(no message)")
         );
+        if refusal.status == StatusCode::SERVICE_UNAVAILABLE.as_u16()
+            && refusal.code.as_deref() == Some(CONTENT_UNAVAILABLE)
+        {
+            // HEV-R37: no content file yet. The request cost a rate-limit
+            // token (HEV-R38), so it waits Retry-After to the second, as a
+            // 429 does; the queue doesn't wait.
+            self.hold_off(ctx, file, refusal.retry_after);
+            return DownloadEnd::Unavailable;
+        }
         match on_refusal(refusal) {
             Step::Wait { retry_after } => {
                 // CMP-R50: dropped, and not due again before Retry-After has
                 // passed (the retry backoff when it is missing); the queue
                 // doesn't wait.
-                let wait = retry_after.unwrap_or_else(|| lock(&self.backoff).next_delay());
-                let until = ctx.env.now() + i64::try_from(wait.as_secs()).unwrap_or(i64::MAX / 2);
-                lock(&self.schedule).hold(file, until);
-                log::info!(
-                    "in-game download {name}: not due again for {} s",
-                    wait.as_secs()
-                );
+                self.hold_off(ctx, file, retry_after);
                 DownloadEnd::RateLimited
             }
             Step::Stop(stop) => {
@@ -416,6 +460,27 @@ impl Uploads {
             // timer's next check.
             Step::End { .. } | Step::Restart => DownloadEnd::Failed,
         }
+    }
+}
+
+impl Uploads {
+    /// Drops `file`'s download and holds it off until `retry_after` has
+    /// passed, or the retry backoff when it is missing or unreadable
+    /// (CMP-R50's `429`, HEV-R37's `503`).
+    fn hold_off<N: Notifier, E: Env>(
+        &self,
+        ctx: &Ctx<'_, N, E>,
+        file: DataFile,
+        retry_after: Option<Duration>,
+    ) {
+        let wait = retry_after.unwrap_or_else(|| lock(&self.backoff).next_delay());
+        let until = ctx.env.now() + i64::try_from(wait.as_secs()).unwrap_or(i64::MAX / 2);
+        lock(&self.schedule).hold(file, until);
+        log::info!(
+            "in-game download {}: not due again for {} s",
+            file.folder(),
+            wait.as_secs()
+        );
     }
 }
 
