@@ -96,8 +96,7 @@ impl DataFile {
                 "Anglers.lua\n",
             ),
             // Loaded normally, after Pagle, so the data file has run before
-            // Core's PLAYER_LOGIN (HEV-R50, PUSH-R1). HEV's template has no
-            // blank line before the file name, unlike IGV's two.
+            // Core's PLAYER_LOGIN (HEV-R50, PUSH-R1).
             Self::Content => concat!(
                 "## Title: Pagle Content\n",
                 "## Notes: Pagle Wagers and other content from Pagle. Written by the Pagle Companion.\n",
@@ -105,6 +104,7 @@ impl DataFile {
                 "## Category: Professions\n",
                 "## Dependencies: Pagle\n",
                 "## Version: 1\n",
+                "\n",
                 "Content.lua\n",
             ),
         }

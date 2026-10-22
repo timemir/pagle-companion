@@ -62,15 +62,15 @@ fn the_anglers_toc_is_load_on_demand_and_ends_with_an_lf() {
 #[test]
 fn the_content_toc_is_hev_s_template_with_the_copied_lines() {
     // HEV Contracts, The addon folder; HEV-R50, CMP-R83: the template byte
-    // for byte, loaded normally after Pagle (no LoadOnDemand), with Content.lua
-    // right after ## Version as HEV writes it
+    // for byte, loaded normally after Pagle (no LoadOnDemand), with a blank
+    // line before Content.lua as in IGV's two
     let text = toc(DataFile::Content, &copied_lines(TOC_LINES));
     assert_eq!(
         String::from_utf8(text).unwrap(),
         "## Interface: 11508\n## AllowLoadGameType: classic\n## Title: Pagle Content\n\
          ## Notes: Pagle Wagers and other content from Pagle. Written by the Pagle Companion.\n\
          ## Group: Pagle\n## Category: Professions\n## Dependencies: Pagle\n## Version: 1\n\
-         Content.lua\n"
+         \nContent.lua\n"
     );
     // A line Pagle.toc lacks is left out here too.
     let toc = toc(DataFile::Content, &copied_lines(b"## Title: Pagle\n"));
