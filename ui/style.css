@@ -1,74 +1,775 @@
-:root {
-  color-scheme: light dark;
-  --bg: #f6f8f8;
-  --fg: #14232a;
-  --muted: #5b6b72;
-  --notice-bg: #fdf0d5;
-  --notice-fg: #6b4a00;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #11191d;
-    --fg: #e4ecee;
-    --muted: #93a4ab;
-    --notice-bg: #3a2f14;
-    --notice-fg: #f3d9a0;
-  }
-}
+/* Pagle Companion window (CMP UI). A parchment utility: the Fish Journal's
+   paper, ink and gilt, used quietly. Tokens are in tokens.css, the bundled
+   faces in fonts.css. Calm states recede; anything that wants the Player
+   carries a tone: "act" (brass), "fail" (wax), "info" (water), "off"
+   (greyed). Rows get their tone from catch-logs.js (data-tone); notices
+   from their class. */
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html { background: var(--pc-paper); }
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+  min-height: 100vh;
+  background: var(--pc-grain), var(--pc-paper);
+  color: var(--pc-ink);
+  font: 400 var(--pc-fs-base) / var(--pc-lh) var(--pc-font-body);
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-wrap: anywhere;
+  scrollbar-color: var(--pc-rule-strong) transparent;
+  scrollbar-width: thin;
 }
-main { padding: 16px 20px; }
-h1 { font-size: 18px; margin: 0 0 12px; }
-h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 4px; }
-p { margin: 0 0 4px; }
-.notice { background: var(--notice-bg); color: var(--notice-fg); padding: 8px 10px; border-radius: 6px; }
-footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
-.muted { color: var(--muted); }
-.installs { list-style: none; margin: 0 0 8px; padding: 0; }
-.install { padding: 6px 0; }
-.install.not-found { opacity: .55; }
-.install-root { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-.accounts { margin: 2px 0 0; padding-left: 18px; }
-.read-problem { background: var(--notice-bg); color: var(--notice-fg); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
-button.link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
-/* Status and Linking (CMP UI) */
-[hidden] { display: none !important; }
-.actions { display: flex; gap: 8px; margin: 8px 0; }
-.confirm { border: 1px solid var(--muted); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
-.user-code { font: 600 32px/1.2 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: .08em; margin: 4px 0 8px; }
-/* Dark on light in both themes, so phones can scan it. */
-.qr { width: 200px; margin: 8px 0; background: #fff; padding: 8px; border-radius: 6px; }
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-thumb { background: var(--pc-rule-strong); border: 3px solid var(--pc-paper); border-radius: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::selection { background: rgba(232, 201, 106, 0.55); color: inherit; }
+
+main {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: var(--pc-s4) var(--pc-gutter) var(--pc-s6);
+}
+p { margin: 0; }
+a { color: var(--pc-water); font-weight: 600; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; border-radius: var(--pc-r-sm); }
+
+/* ---------- Masthead ---------- */
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: var(--pc-s2);
+  /* The Journal's ruling: a hairline over a gilt line. */
+  background:
+    linear-gradient(var(--pc-rule-strong), var(--pc-rule-strong)) left bottom 3px / 100% 1px no-repeat,
+    linear-gradient(90deg, var(--pc-gilt), transparent 85%) left bottom / 100% 1px no-repeat;
+}
+.mark { width: 30px; height: 30px; flex: none; }
+.mark-ring { fill: #4a2c14; stroke: #e8c96a; stroke-width: 1.4; }
+.mark-line { stroke: #e8c96a; stroke-width: 1.4; stroke-linecap: round; fill: none; }
+.mark-cap { fill: #c2432c; }
+.mark-body { fill: #f6ead0; }
+.mark-band { stroke: #2a1608; stroke-width: 1.1; }
+h1 {
+  margin: 0;
+  font: 400 19px/1.1 var(--pc-font-display);
+  letter-spacing: 0.02em;
+  color: var(--pc-heading);
+}
+
+/* ---------- Section headings: small capitals with a running rule ---------- */
+.everyday > h2,
+#linking > h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 22px 0 10px;
+  font: 400 12.5px/1 var(--pc-font-display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--pc-kicker);
+}
+.everyday > h2::after,
+#linking > h2::after { content: ""; flex: 1; height: 1px; background: var(--pc-rule-strong); }
+#status > h2 { margin-top: 14px; }
+
+/* ---------- Cards ---------- */
+.status-card,
+.logs > .log,
+.installs > .install,
+.settings-list,
+.confirm,
+#linking-waiting {
+  background: var(--pc-paper-raised);
+  border: 1px solid var(--pc-rule-strong);
+  border-radius: var(--pc-r-lg);
+  box-shadow: var(--pc-shadow);
+}
+
+/* ---------- Buttons ---------- */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--pc-target);
+  padding: 0 14px;
+  border: 1px solid var(--pc-rule-strong);
+  border-radius: var(--pc-r);
+  background: linear-gradient(var(--pc-paper-raised), var(--pc-paper-sunk));
+  color: var(--pc-ink);
+  font: 600 var(--pc-fs-base) / 1.2 var(--pc-font-body);
+  text-align: center;
+  cursor: pointer;
+  overflow-wrap: normal;
+}
+button:hover { border-color: var(--pc-brass); }
+button:active { background: var(--pc-paper-sunk); }
+/* The primary answer: leather with gilt lettering (gilt with brass ink in dark). */
+button.primary {
+  background: linear-gradient(var(--pc-leather), var(--pc-leather-dark));
+  border-color: var(--pc-leather-dark);
+  color: var(--pc-gilt-text);
+  box-shadow: inset 0 0 0 1px rgba(232, 201, 106, 0.28), 0 1px 1px rgba(0, 0, 0, 0.18);
+}
+button.primary:hover { border-color: var(--pc-brass); }
+/* The destructive answer of a confirmation: wax. */
+button.danger {
+  background: linear-gradient(var(--pc-wax), var(--pc-wax-dark));
+  border-color: var(--pc-wax-dark);
+  color: var(--pc-on-wax);
+}
+button.danger-quiet { color: var(--pc-fail); }
+button.link {
+  min-height: 32px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--pc-water);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+button.link:hover { text-decoration-thickness: 2px; }
+button:disabled,
+button:disabled:hover {
+  opacity: 0.45;
+  cursor: default;
+  border-color: var(--pc-rule-strong);
+}
+button.link:disabled { text-decoration: none; }
+
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-s2); margin-top: 10px; }
+
+/* ---------- Switches (role="switch") and ticks ---------- */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--pc-target);
+  cursor: pointer;
+  overflow-wrap: normal;
+}
+.switch input,
+.tick input {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+.switch input {
+  position: relative;
+  width: var(--pc-switch-w);
+  height: var(--pc-switch-h);
+  border-radius: 12px;
+  border: 1px solid rgba(42, 26, 4, 0.18);
+  background: var(--pc-switch-off);
+  transition: background-color 0.15s;
+}
+.switch input::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--pc-knob);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s;
+}
+.switch input:checked { background: var(--pc-switch-on); }
+.switch input:checked::before { transform: translateX(16px); }
+.switch input:disabled,
+.tick input:disabled { opacity: 0.45; cursor: default; }
+.switch:has(input:disabled) { cursor: default; }
+.switch input:focus-visible,
+.tick input:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; }
+
+.tick { display: flex; align-items: center; gap: 10px; min-height: var(--pc-target); cursor: pointer; }
+.tick input {
+  display: grid;
+  place-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--pc-ink-3);
+  border-radius: var(--pc-r-sm);
+  background: var(--pc-paper-raised);
+}
+.tick input:checked { background: var(--pc-leather); border-color: var(--pc-leather-dark); }
+.tick input:checked::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  background: var(--pc-gilt-text);
+  -webkit-mask: url(icons/tick.svg) center / contain no-repeat;
+  mask: url(icons/tick.svg) center / contain no-repeat;
+}
+
+/* ---------- Glyphs: a tone's mark, drawn in currentColor or its tone ---------- */
+.glyph,
+.notice::before,
+.run-line > p:not(.actions)::before,
+.state-line > p:first-child::before,
+.accounts > li::before {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: var(--glyph-colour, currentColor);
+  -webkit-mask: var(--glyph) center / contain no-repeat;
+  mask: var(--glyph) center / contain no-repeat;
+}
+
+/* ---------- Notices ---------- */
+.notice {
+  position: relative;
+  margin-top: 10px;
+  padding: 9px 12px 9px 36px;
+  border: 1px solid var(--pc-info-edge);
+  border-radius: var(--pc-r);
+  background: var(--pc-info-bg);
+  color: var(--pc-ink);
+  font-size: var(--pc-fs-base);
+  --glyph: url(icons/info.svg);
+  --glyph-colour: var(--pc-info);
+}
+.notice::before { left: 12px; top: 11px; }
+.notice.act { background: var(--pc-act-bg); border-color: var(--pc-act-edge); --glyph: url(icons/act.svg); --glyph-colour: var(--pc-act); }
+.notice.stop { background: var(--pc-fail-bg); border-color: var(--pc-fail-edge); --glyph: url(icons/stop.svg); --glyph-colour: var(--pc-fail); }
+.notice.lock { --glyph: url(icons/lock.svg); }
+.notice a::after,
+.run-line a::after,
+#verification-uri::after {
+  content: "";
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-left: 3px;
+  vertical-align: -1px;
+  background: currentColor;
+  -webkit-mask: url(icons/external.svg) center / contain no-repeat;
+  mask: url(icons/external.svg) center / contain no-repeat;
+}
+#read-only { margin: 0 0 4px; }
+
+/* ---------- Status ---------- */
+.status-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px;
+}
+.status-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.status-lines .actions { margin-top: 6px; gap: 4px 12px; }
+.status-lines .actions button.link { margin-left: -4px; }
+#link-status { color: var(--pc-ink-2); }
+#last-uploaded { color: var(--pc-ink-2); }
+/* Uploading as it should: the last upload leads. */
+#status[data-health="ok"] #last-uploaded,
+#status[data-health="stopped"] #last-uploaded,
+#status[data-health="attention"] #last-uploaded {
+  order: -1;
+  font: 400 var(--pc-fs-lg) / 1.25 var(--pc-font-display);
+  color: var(--pc-heading);
+}
+/* Not linked: the link leads, and Link to Pagle is the one thing to do. */
+#status[data-health="unlinked"] #link-status,
+#status[data-health="unknown"] #link-status {
+  font: 400 var(--pc-fs-lg) / 1.25 var(--pc-font-display);
+  color: var(--pc-heading);
+}
+#status[data-health="unlinked"] #last-uploaded { font-size: var(--pc-fs-sm); color: var(--pc-ink-3); }
+#status[data-health="unlinked"] .actions { margin-top: 10px; }
+#status[data-health="stopped"] .status-card { border-color: var(--pc-fail-edge); }
+#status[data-health="attention"] .status-card { border-color: var(--pc-act-edge); }
+#stop-message { font-size: var(--pc-fs-md); font-weight: 600; border-left-width: 4px; padding-left: 38px; }
+#stop-message::before { top: 12px; left: 13px; }
+
+/* The seal: gilt with a tick when all is well, wax when stopped, brass when
+   something needs unlocking, plain when not linked. */
+.seal {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  --seal: linear-gradient(145deg, #c9b48c, #9a8460);
+  --seal-ink: transparent;
+  --seal-glyph: none;
+}
+.seal::before,
+.seal::after { content: ""; position: absolute; }
+.seal::before {
+  inset: 0;
+  background: var(--seal);
+  -webkit-mask: url(icons/seal.svg) center / contain no-repeat;
+  mask: url(icons/seal.svg) center / contain no-repeat;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.25));
+}
+.seal::after {
+  inset: 12px;
+  background: var(--seal-ink);
+  -webkit-mask: var(--seal-glyph) center / contain no-repeat;
+  mask: var(--seal-glyph) center / contain no-repeat;
+}
+[data-health="ok"] .seal,
+#fr-done .seal {
+  --seal: radial-gradient(circle at 35% 30%, #fff1b8, #e8c96a 40%, #b38a2a 100%);
+  --seal-ink: #3a2604;
+  --seal-glyph: url(icons/tick.svg);
+}
+[data-health="stopped"] .seal {
+  --seal: radial-gradient(circle at 35% 30%, #e0624a, #b8402a 45%, #7a1810 100%);
+  --seal-ink: #fff1d6;
+  --seal-glyph: url(icons/bang.svg);
+}
+[data-health="attention"] .seal {
+  --seal: radial-gradient(circle at 35% 30%, #ffe3a0, #d9a84a 45%, #9a7420 100%);
+  --seal-ink: #2a1a04;
+  --seal-glyph: url(icons/bang.svg);
+}
+[data-health="unlinked"] .seal {
+  --seal: var(--pc-paper-sunk);
+  --seal-ink: var(--pc-ink-3);
+  --seal-glyph: url(icons/link.svg);
+}
+[data-health="unlinked"] .seal::before { filter: drop-shadow(0 0 0 var(--pc-rule-strong)) drop-shadow(0 0 1px var(--pc-rule-strong)); }
+
+/* ---------- Busy lines (scanning, waiting, uploading): IM Fell, with a bobber ---------- */
+.lead-in {
+  font: italic 400 17px/1.4 var(--pc-font-accent);
+  color: var(--pc-ink-2);
+}
+.lead-in.busy { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.lead-in.busy::before {
+  content: "";
+  flex: none;
+  width: 20px;
+  height: 24px;
+  background: url(icons/bobber.svg) center / contain no-repeat;
+  animation: pc-bob 1.8s ease-in-out infinite;
+}
+@keyframes pc-bob {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  35% { transform: translateY(3px) rotate(-4deg); }
+  70% { transform: translateY(-1px) rotate(3deg); }
+}
+
+/* ---------- Linking ---------- */
+#linking-waiting { padding: 14px 16px 12px; }
+.user-code {
+  position: relative;
+  margin: 0 0 12px;
+  padding: 14px 24px 12px;
+  border: 1px solid #6a4a10;
+  border-radius: var(--pc-r);
+  background: linear-gradient(180deg, #f6e19c 0%, #e2c167 45%, #c39a3a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.7),
+    inset 0 0 0 3px rgba(255, 240, 190, 0.25),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+  color: #2a1a04;
+  font: 400 var(--pc-fs-code) / 1 var(--pc-font-display);
+  letter-spacing: 0.14em;
+  text-align: center;
+  text-shadow: 0 1px 0 rgba(255, 244, 200, 0.7);
+  -webkit-user-select: all;
+  user-select: all;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+/* Two brass screws. */
+.user-code::before,
+.user-code::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff4c8, #9a7420 70%);
+  box-shadow: inset 0 0 0 1px rgba(74, 48, 8, 0.6);
+}
+.user-code::before { left: 9px; }
+.user-code::after { right: 9px; }
+.code-scan {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+.code-how { font-size: var(--pc-fs-md); }
+#verification-uri { white-space: nowrap; }
+.qr {
+  width: 132px;
+  padding: 7px;
+  border: 1px solid var(--pc-rule-strong);
+  border-radius: var(--pc-r);
+  background: var(--pc-qr-paper);
+}
 .qr svg { display: block; width: 100%; height: auto; }
-/* Catch logs (CMP-R41) */
-.logs { list-style: none; margin: 0 0 8px; padding: 0; }
-.log { padding: 8px 0; border-bottom: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); }
-.log:last-child { border-bottom: 0; }
-.log-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.characters { font-weight: 600; overflow-wrap: anywhere; }
-.log-folder { font-size: 13px; overflow-wrap: anywhere; }
-.switch { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.state-line { margin-top: 4px; }
-.state-line.awaiting, .state-line.several-folders { border: 1px solid var(--muted); border-radius: 6px; padding: 6px 10px; }
-.state-line.not-found { color: var(--muted); }
-.state-line.problem p { background: var(--notice-bg); color: var(--notice-fg); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
-.state-line .actions { flex-wrap: wrap; margin: 6px 0 2px; }
-.log .notice { margin-top: 6px; font-size: 13px; }
-.log .notice a { color: inherit; }
-.run-line p { margin-top: 4px; font-size: 13px; color: var(--muted); }
-.run-line a { color: inherit; }
-/* Results the Player may act on, and held characters (CMP UI, CMP-R53). */
-.run-line p.divergence, .run-line p.deleted, .run-line p.dev-log, .run-line p.log-cap,
-.run-line p.too-large, .run-line p.failed, .run-line p.held-characters {
-  background: var(--notice-bg); color: var(--notice-fg); padding: 2px 6px; border-radius: 4px;
+#linking .lead-in.busy { margin-top: 12px; font-size: 16px; }
+#link-cancel { margin-top: 2px; }
+#linking > .actions { margin-top: 10px; }
+
+/* ---------- Catch logs ---------- */
+.logs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.logs > .log { position: relative; padding: 10px 14px 12px; }
+.log[data-tone="act"] { border-color: var(--pc-act-edge); border-left: 4px solid var(--pc-act-edge); padding-left: 11px; }
+.log[data-tone="fail"] { border-color: var(--pc-fail-edge); border-left: 4px solid var(--pc-fail-edge); padding-left: 11px; }
+.log[data-tone="off"] { background: transparent; border-style: dashed; box-shadow: none; }
+.log[data-tone="off"] .characters,
+.log[data-tone="off"] .log-folder { opacity: 0.7; }
+.log-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.characters { font-weight: 600; font-size: var(--pc-fs-md); line-height: 1.35; color: var(--pc-heading); padding-top: 7px; min-width: 0; }
+.log-head .switch { flex-direction: row-reverse; gap: 8px; font-size: var(--pc-fs-sm); color: var(--pc-ink-2); }
+.log-folder { font-size: var(--pc-fs-sm); color: var(--pc-ink-3); margin-top: 1px; }
+.log-folder button.link { min-height: 28px; font-size: var(--pc-fs-sm); padding: 0 2px; }
+.muted { color: var(--pc-ink-3); }
+
+.state-line,
+.run-line:not(:empty) { margin-top: 8px; }
+.run-line > p:not(.actions),
+.state-line > p:first-child {
+  position: relative;
+  padding-left: 22px;
+  --glyph-colour: var(--pc-ink-3);
 }
-.run-line .actions { flex-wrap: wrap; margin: 6px 0 2px; }
-.run-line .confirm p { color: inherit; }
-/* First run (CMP-R100): the everyday parts hide while it shows; the
-   linking part shows in its step 2 only. */
+.run-line > p + p { margin-top: 6px; }
+.run-line > p:not(.actions)::before,
+.state-line > p:first-child::before { left: 0; top: 0.18em; }
+.run-line > p.note { font-size: var(--pc-fs-sm); color: var(--pc-ink-2); }
+
+/* Calm: recede. */
+.run-line > p.uploaded,
+.run-line > p.up-to-date { color: var(--pc-ink-2); --glyph: url(icons/ok.svg); --glyph-colour: var(--pc-ok); }
+/* Information: nothing to do. */
+.run-line > p.stale,
+.run-line > p.dev-log,
+.run-line > p.waiting-for-pagle,
+.run-line > p.note.pending,
+.run-line > p.note.left-off { --glyph: url(icons/info.svg); --glyph-colour: var(--pc-info); }
+.run-line > p.waiting-for-pagle { --glyph: url(icons/wait.svg); }
+/* Wants the Player: a tinted block. */
+.run-line > p.divergence,
+.run-line > p.deleted,
+.run-line > p.log-cap,
+.run-line > p.note.held-characters,
+.state-line.awaiting,
+.state-line.several-folders {
+  background: var(--pc-act-bg);
+  border-radius: var(--pc-r);
+  --glyph: url(icons/act.svg);
+  --glyph-colour: var(--pc-act);
+}
+/* Didn't upload. */
+.run-line > p.failed,
+.run-line > p.too-large,
+.state-line.problem,
+.read-problem {
+  background: var(--pc-fail-bg);
+  border-radius: var(--pc-r);
+  --glyph: url(icons/fail.svg);
+  --glyph-colour: var(--pc-fail);
+}
+.run-line > p.divergence,
+.run-line > p.deleted,
+.run-line > p.log-cap,
+.run-line > p.note.held-characters,
+.run-line > p.failed,
+.run-line > p.too-large { padding: 8px 10px 8px 32px; color: var(--pc-ink); }
+.run-line > p.divergence::before,
+.run-line > p.deleted::before,
+.run-line > p.log-cap::before,
+.run-line > p.note.held-characters::before,
+.run-line > p.failed::before,
+.run-line > p.too-large::before { left: 10px; top: 10px; }
+.state-line.awaiting,
+.state-line.several-folders,
+.state-line.problem { padding: 8px 10px 10px; }
+.state-line.awaiting > p:first-child,
+.state-line.several-folders > p:first-child,
+.state-line.problem > p:first-child { color: var(--pc-ink); }
+.state-line.problem { padding-bottom: 8px; }
+.state-line.problem > p:first-child { --glyph-colour: var(--pc-fail); }
+.state-line.not-found > p:first-child { color: var(--pc-ink-3); --glyph: url(icons/off.svg); --glyph-colour: var(--pc-off); }
+.state-line .actions,
+.run-line .actions { margin-top: 8px; }
+.log .notice { font-size: var(--pc-fs-sm); }
+.log .notice::before { top: 10px; }
+
+/* ---------- Confirmations (inline, role="alertdialog") ---------- */
+.confirm {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-left: 4px solid var(--pc-fail-edge);
+}
+.confirm > p:first-child { font-weight: 600; color: var(--pc-ink); }
+.log .confirm { box-shadow: none; background: var(--pc-paper); }
+
+/* ---------- First run ---------- */
+#first-run { display: flex; flex-direction: column; }
+#first-run-heading {
+  margin: 0 0 6px;
+  font: 400 var(--pc-fs-xl) / 1.2 var(--pc-font-display);
+  color: var(--pc-heading);
+}
+#fr-intro { font-size: var(--pc-fs-sm); margin: 2px 0 10px; }
+#fr-logs .log { padding-top: 4px; }
+#fr-logs .log-folder { padding-left: 30px; }
+#fr-logs .state-line { margin-left: 30px; }
+#fr-logs .read-problem { margin: 6px 0 0 30px; padding: 6px 10px; font-size: var(--pc-fs-sm); }
+#fr-logs .characters { padding-top: 0; }
+
+/* The four steps, knotted on a line; the current one is a bobber. */
+.steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 4px 0 14px;
+  padding: 0;
+  position: relative;
+}
+.steps::before {
+  content: "";
+  position: absolute;
+  left: 12.5%;
+  right: 12.5%;
+  top: 9px;
+  height: 1px;
+  background: var(--pc-rule-strong);
+}
+.steps li {
+  position: relative;
+  padding-top: 24px;
+  text-align: center;
+  font-size: var(--pc-fs-xs);
+  line-height: 1.25;
+  color: var(--pc-ink-3);
+  overflow-wrap: normal;
+}
+.steps li::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: calc(50% - 6px);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--pc-rule-strong);
+  background: var(--pc-paper-raised);
+}
+/* Done steps: a filled knot with a tick. */
+#first-run[data-step="link"] li[data-step="scan"]::before,
+#first-run[data-step="uploading"] li:is([data-step="scan"], [data-step="link"])::before,
+#first-run[data-step="done"] li:not([data-step="done"])::before {
+  top: 2px;
+  left: calc(50% - 8px);
+  width: 16px;
+  height: 16px;
+  border-color: var(--pc-kicker);
+  background: var(--pc-kicker);
+}
+#first-run[data-step="link"] li[data-step="scan"]::after,
+#first-run[data-step="uploading"] li:is([data-step="scan"], [data-step="link"])::after,
+#first-run[data-step="done"] li:not([data-step="done"])::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: calc(50% - 5px);
+  width: 10px;
+  height: 10px;
+  background: var(--pc-paper-raised);
+  -webkit-mask: url(icons/tick.svg) center / contain no-repeat;
+  mask: url(icons/tick.svg) center / contain no-repeat;
+}
+/* The current step. */
+#first-run[data-step="scan"] li[data-step="scan"],
+#first-run[data-step="link"] li[data-step="link"],
+#first-run[data-step="uploading"] li[data-step="uploading"],
+#first-run[data-step="done"] li[data-step="done"] { color: var(--pc-ink); font-weight: 600; }
+#first-run[data-step="scan"] li[data-step="scan"]::before,
+#first-run[data-step="link"] li[data-step="link"]::before,
+#first-run[data-step="uploading"] li[data-step="uploading"]::before,
+#first-run[data-step="done"] li[data-step="done"]::before {
+  top: -2px;
+  left: calc(50% - 9px);
+  width: 18px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: url(icons/bobber.svg) center / contain no-repeat;
+}
+
+/* The step's own buttons stay in reach at 400px tall. */
+.actions.dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: var(--pc-s4) calc(-1 * var(--pc-gutter)) 0;
+  padding: 12px var(--pc-gutter) 14px;
+  background: var(--pc-grain), var(--pc-paper);
+  border-top: 1px solid var(--pc-rule-strong);
+}
+.actions.dock .primary { min-width: 9em; }
+/* First run fills the window, its buttons docked at the foot. */
+body.first-run main { display: flex; flex-direction: column; min-height: 100vh; padding-bottom: 0; }
+body.first-run #first-run { flex: 1; }
+/* Step 2: the linking panel sits inside the step, above its docked buttons. */
+body.first-run-link #first-run { display: contents; }
+body.first-run-link #linking { order: 1; flex: 1; }
+body.first-run-link #fr-link-actions { order: 2; margin-top: auto; }
+body.first-run footer { display: none; }
+#fr-scan { flex: 1; display: flex; flex-direction: column; }
+#fr-scan > .actions.dock { margin-top: auto; }
+body.first-run #first-run > #fr-link-actions { margin-top: var(--pc-s4); }
+#fr-uploading { margin: 18px 0; font-size: 19px; }
+
+/* Step 4: the seal and the status, then Close. */
+#fr-done {
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  column-gap: 14px;
+  align-items: start;
+  margin-top: 8px;
+}
+#fr-done .seal { width: 52px; height: 52px; }
+#fr-done .seal::after { inset: 14px; }
+#fr-status { flex: 1; min-width: 0; }
+#fr-status p { padding: 6px 0; border-bottom: 1px solid var(--pc-rule); color: var(--pc-ink-2); }
+#fr-status p:first-child { padding-top: 2px; font: 400 var(--pc-fs-lg) / 1.25 var(--pc-font-display); color: var(--pc-heading); }
+#fr-status p:last-child { border-bottom: 0; }
+#fr-done .actions.dock { grid-column: 1 / -1; grid-row: 3; }
+
+/* Empty states. */
+.empty,
+#fr-no-install > p:first-child {
+  position: relative;
+  padding: 44px 8px 6px;
+  text-align: center;
+  font: italic 400 17px/1.4 var(--pc-font-accent);
+  color: var(--pc-ink-2);
+}
+.empty::before,
+#fr-no-install > p:first-child::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: calc(50% - 15px);
+  width: 30px;
+  height: 30px;
+  background: var(--pc-ink-3);
+  -webkit-mask: url(icons/ripple.svg) center / contain no-repeat;
+  mask: url(icons/ripple.svg) center / contain no-repeat;
+}
+#fr-no-install .actions,
+#no-install:not([hidden]) ~ .actions { justify-content: center; }
+
+/* First run hides the everyday window; linking shows in step 2 only. */
 body.first-run .everyday { display: none !important; }
 body.first-run:not(.first-run-link) #linking { display: none !important; }
-.tick { display: inline-flex; align-items: center; gap: 6px; }
+body.first-run-link #linking-heading { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+/* ---------- WoW folders ---------- */
+.installs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.installs > .install { padding: 10px 14px 12px; }
+.install-root { font-size: var(--pc-fs-sm); color: var(--pc-ink-3); }
+.install-flavor { font-size: var(--pc-fs-md); font-weight: 600; color: var(--pc-heading); }
+.install-flavor .muted { font-weight: 400; font-size: var(--pc-fs-sm); }
+.install-flavor button.link { min-height: 28px; font-size: var(--pc-fs-sm); margin-left: 4px; }
+.install.not-found { background: transparent; border-style: dashed; box-shadow: none; }
+.install.not-found .install-root,
+.install.not-found .install-flavor { opacity: 0.7; }
+.accounts { list-style: none; margin: 8px 0 0; padding: 8px 0 0; border-top: 1px solid var(--pc-rule); }
+.accounts > li { position: relative; padding-left: 24px; margin: 3px 0; --glyph: url(icons/folder.svg); --glyph-colour: var(--pc-ink-3); }
+.accounts > li::before { left: 0; top: 0.2em; }
+.accounts > li .muted { font-size: var(--pc-fs-sm); }
+.install > p.muted { font-size: var(--pc-fs-sm); margin-top: 6px; }
+.read-problem { position: relative; margin-top: 6px; padding: 6px 10px 6px 30px; font-size: var(--pc-fs-sm); color: var(--pc-ink); }
+.read-problem::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  width: 14px;
+  height: 14px;
+  background: var(--pc-fail);
+  -webkit-mask: url(icons/fail.svg) center / contain no-repeat;
+  mask: url(icons/fail.svg) center / contain no-repeat;
+}
+
+/* ---------- Settings ---------- */
+.settings-list { padding: 2px 0; }
+.settings-list .switch {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 14px;
+  min-height: 48px;
+}
+.settings-list > .switch + #game-mode-setting:not([hidden]),
+.settings-list > .switch:not(:last-child) { border-bottom: 1px solid var(--pc-rule); }
+#game-mode-setting .muted { padding: 0 14px 8px; margin-top: -6px; }
+#game-mode-setting .muted button.link { font-size: var(--pc-fs-sm); }
+
+/* ---------- Footer ---------- */
+footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 28px;
+  font-size: var(--pc-fs-xs);
+  color: var(--pc-ink-3);
+  white-space: nowrap;
+}
+footer::before,
+footer::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, var(--pc-rule-strong)); }
+footer::after { background: linear-gradient(90deg, var(--pc-rule-strong), transparent); }
+
+/* ---------- Narrow: 400px and under ---------- */
+@media (max-width: 400px) {
+  :root { --pc-gutter: 14px; }
+  .status-card { gap: 12px; padding: 12px 14px; }
+  .seal { width: 38px; height: 38px; }
+  .seal::after { inset: 10px; }
+  .qr { width: 112px; padding: 6px; }
+  .user-code { font-size: 28px; letter-spacing: 0.1em; padding-left: 20px; padding-right: 20px; }
+  .code-how { font-size: var(--pc-fs-base); }
+  /* Only the current step keeps its name. */
+  .steps li { font-size: 0; }
+  #first-run[data-step="scan"] li[data-step="scan"],
+  #first-run[data-step="link"] li[data-step="link"],
+  #first-run[data-step="uploading"] li[data-step="uploading"],
+  #first-run[data-step="done"] li[data-step="done"] { font-size: var(--pc-fs-xs); }
+}
+@media (max-width: 340px) {
+  .code-scan { grid-template-columns: 1fr; justify-items: start; }
+}
+
+/* ---------- Motion and forced colours ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+@media (forced-colors: active) {
+  .switch input { border: 1px solid CanvasText; }
+  .switch input::before { background: CanvasText; forced-color-adjust: none; }
+  .switch input:checked { background: Highlight; }
+  .status-card, .logs > .log, .installs > .install, .notice, .confirm, .settings-list { border: 1px solid CanvasText; }
+  .seal { display: none; }
+}
+
+/* Scanning and uploading sit in the middle of the step, a little larger. */
+#fr-uploading,
+#fr-scan > #fr-reading { justify-content: center; margin: auto 0; padding: 24px 0; font-size: 19px; }

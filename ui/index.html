@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Pagle Companion</title>
+    <link rel="stylesheet" href="fonts.css" />
+    <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="style.css" />
     <script src="main.js" defer></script>
     <script src="folders.js" defer></script>
@@ -14,98 +16,124 @@
   </head>
   <body>
     <main>
-      <h1>Pagle Companion</h1>
-      <p id="read-only" class="notice" hidden>Another Pagle Companion is running for this user.</p>
+      <header class="masthead">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <circle cx="16" cy="16" r="15" class="mark-ring" />
+          <path d="M16 3.5v6.2" class="mark-line" />
+          <path d="M9.4 17.2a6.6 6.6 0 0 1 13.2 0z" class="mark-cap" />
+          <path d="M9.4 17.2a6.6 6.6 0 0 0 13.2 0z" class="mark-body" />
+          <rect x="14.6" y="8.6" width="2.8" height="2.6" rx=".8" class="mark-cap" />
+          <path d="M9.4 17.2h13.2" class="mark-band" />
+        </svg>
+        <h1>Pagle Companion</h1>
+      </header>
+      <p id="read-only" class="notice info lock" hidden>Another Pagle Companion is running for this user.</p>
       <section id="first-run" aria-labelledby="first-run-heading" aria-live="polite" hidden>
+        <ol class="steps" aria-hidden="true">
+          <li data-step="scan">Your Catch logs</li>
+          <li data-step="link">Link to Pagle</li>
+          <li data-step="uploading">Uploading</li>
+          <li data-step="done">All set</li>
+        </ol>
         <h2 id="first-run-heading"></h2>
         <div id="fr-scan" hidden>
-          <p id="fr-reading">Looking for your Catch logs…</p>
+          <p id="fr-reading" class="lead-in busy">Looking for your Catch logs…</p>
           <div id="fr-no-install" hidden>
             <p>No WoW Forever install found. If WoW Forever is installed, add its folder.</p>
             <p class="actions"><button id="fr-add-folder" type="button">Add a WoW folder…</button></p>
           </div>
-          <p id="fr-none" hidden>No Catch logs found yet.</p>
+          <p id="fr-none" class="empty" hidden>No Catch logs found yet.</p>
           <p id="fr-intro" class="muted" hidden>The ticked Catch logs upload to Pagle once you link.</p>
           <ul id="fr-logs" class="logs"></ul>
-          <p class="actions">
-            <button id="fr-primary" type="button">Link to Pagle</button>
+          <p class="actions dock">
+            <button id="fr-primary" type="button" class="primary">Link to Pagle</button>
             <button id="fr-not-now" type="button">Not now</button>
           </p>
         </div>
-        <p id="fr-link-actions" class="actions" hidden>
-          <button id="fr-link-again" type="button">Link to Pagle</button>
+        <p id="fr-link-actions" class="actions dock" hidden>
+          <button id="fr-link-again" type="button" class="primary">Link to Pagle</button>
           <button id="fr-link-not-now" type="button">Not now</button>
         </p>
-        <p id="fr-uploading" role="status" hidden>Uploading…</p>
+        <p id="fr-uploading" class="lead-in busy" role="status" hidden>Uploading…</p>
         <div id="fr-done" hidden>
+          <span class="seal" aria-hidden="true"></span>
           <div id="fr-status"></div>
-          <p class="actions"><button id="fr-close" type="button">Close</button></p>
+          <p class="actions dock"><button id="fr-close" type="button" class="primary">Close</button></p>
         </div>
-        <p id="fr-error" class="notice" role="alert" hidden></p>
+        <p id="fr-error" class="notice stop" role="alert" hidden></p>
       </section>
-      <section class="everyday" aria-labelledby="status-heading">
+      <section id="status" class="everyday" aria-labelledby="status-heading" data-health="unknown">
         <h2 id="status-heading">Status</h2>
-        <p id="link-status">Not linked</p>
-        <p id="keyring-locked" class="notice" hidden>Pagle Companion can't open your keyring. Unlock it to keep uploading.</p>
-        <p class="actions">
-          <button id="link-start" type="button" hidden>Link to Pagle</button>
-          <button id="link-again" type="button" hidden>Link again…</button>
-          <button id="unlink" type="button" hidden>Unlink</button>
-        </p>
+        <div class="status-card">
+          <span class="seal" aria-hidden="true"></span>
+          <div class="status-lines">
+            <p id="link-status">Not linked</p>
+            <p id="last-uploaded">Nothing uploaded yet</p>
+            <p class="actions">
+              <button id="link-start" type="button" class="primary" hidden>Link to Pagle</button>
+              <button id="link-again" type="button" class="link" hidden>Link again…</button>
+              <button id="unlink" type="button" class="link" hidden>Unlink</button>
+            </p>
+          </div>
+        </div>
+        <p id="stop-message" class="notice stop" role="status" hidden></p>
+        <p id="keyring-locked" class="notice act" hidden>Pagle Companion can't open your keyring. Unlock it to keep uploading.</p>
         <div id="unlink-confirm" class="confirm" role="alertdialog" aria-labelledby="unlink-question" hidden>
           <p id="unlink-question">Unlink this Companion? Pagle keeps your Catch logs; this computer stops uploading.</p>
           <p class="actions">
-            <button id="unlink-yes" type="button">Unlink</button>
+            <button id="unlink-yes" type="button" class="danger">Unlink</button>
             <button id="unlink-no" type="button">Cancel</button>
           </p>
         </div>
-        <p id="last-uploaded">Nothing uploaded yet</p>
-        <p id="stop-message" class="notice" role="status" hidden></p>
       </section>
       <section id="linking" aria-labelledby="linking-heading" aria-live="polite" hidden>
         <h2 id="linking-heading">Linking</h2>
-        <p id="linking-starting">Starting…</p>
+        <p id="linking-starting" class="lead-in busy">Starting…</p>
         <div id="linking-waiting" hidden>
           <p id="user-code" class="user-code"></p>
-          <p>Go to <a id="verification-uri" href="#"></a> and enter this code, or scan:</p>
-          <div id="qr" class="qr"></div>
-          <p>Waiting for you to approve…</p>
+          <div class="code-scan">
+            <p class="code-how">Go to <a id="verification-uri" href="#"></a> and enter this code, or scan:</p>
+            <div id="qr" class="qr"></div>
+          </div>
+          <p class="lead-in busy">Waiting for you to approve…</p>
         </div>
-        <p id="linking-outcome" hidden></p>
+        <p id="linking-outcome" class="notice act" hidden></p>
         <p class="actions"><button id="link-cancel" type="button">Cancel</button></p>
       </section>
       <section id="catch-logs-section" class="everyday" aria-labelledby="catch-logs-heading" hidden>
         <h2 id="catch-logs-heading">Catch logs</h2>
         <ul id="catch-logs" class="logs"></ul>
-        <p id="catch-logs-error" class="notice" role="alert" hidden></p>
+        <p id="catch-logs-error" class="notice stop" role="alert" hidden></p>
       </section>
       <section class="everyday" aria-labelledby="folders-heading">
         <h2 id="folders-heading">WoW folders</h2>
-        <p id="no-install" hidden>No WoW Forever install found. If WoW Forever is installed, add its folder.</p>
+        <p id="no-install" class="empty" hidden>No WoW Forever install found. If WoW Forever is installed, add its folder.</p>
         <ul id="installs" class="installs"></ul>
-        <p id="folder-error" class="notice" role="alert" hidden></p>
-        <button id="add-folder" type="button" disabled>Add a WoW folder…</button>
+        <p id="folder-error" class="notice stop" role="alert" hidden></p>
+        <p class="actions"><button id="add-folder" type="button" disabled>Add a WoW folder…</button></p>
       </section>
       <section class="everyday" aria-labelledby="settings-heading">
         <h2 id="settings-heading">Settings</h2>
+        <div class="settings-list">
         <label class="switch"><input id="start-at-login" type="checkbox" role="switch" disabled /><span>Start at login</span></label>
         <div id="game-mode-setting" hidden>
           <label class="switch"><input id="game-mode" type="checkbox" role="switch" disabled /><span>Keep uploading in Game Mode (experimental)</span></label>
           <p class="muted"><button id="steam-deck-report" type="button" class="link">Report how it works on your Steam Deck</button></p>
         </div>
-        <p id="settings-error" class="notice" role="alert" hidden></p>
+        </div>
+        <p id="settings-error" class="notice stop" role="alert" hidden></p>
         <p class="actions">
           <button id="quit" type="button">Quit</button>
-          <button id="remove" type="button" hidden>Remove Pagle Companion</button>
+          <button id="remove" type="button" class="danger-quiet" hidden>Remove Pagle Companion</button>
         </p>
         <div id="remove-confirm" class="confirm" role="alertdialog" aria-labelledby="remove-question" hidden>
           <p id="remove-question">Remove Pagle Companion? This unlinks this computer and deletes Pagle Companion's settings.</p>
           <p class="actions">
-            <button id="remove-yes" type="button">Remove</button>
+            <button id="remove-yes" type="button" class="danger">Remove</button>
             <button id="remove-no" type="button">Cancel</button>
           </p>
         </div>
-        <p id="removing" role="status" hidden>Removing Pagle Companion…</p>
+        <p id="removing" class="lead-in busy" role="status" hidden>Removing Pagle Companion…</p>
       </section>
       <footer><span id="version"></span></footer>
     </main>

@@ -27,6 +27,24 @@
     "held-characters": ["Sign in", "open_sign_in"],
   };
 
+  // Each state's tone (style.css, Catch logs): "act" asks something of the
+  // Player, "fail" didn't upload, "info" needs nothing, "ok" is calm and
+  // "off" is greyed.
+  const TONES = {
+    awaiting: "act", "several-folders": "act", divergence: "act",
+    deleted: "act", "log-cap": "act",
+    failed: "fail", "too-large": "fail", problem: "fail",
+    stale: "info", "dev-log": "info", "waiting-for-pagle": "info",
+    uploaded: "ok", "up-to-date": "ok", "not-found": "off",
+  };
+
+  function tone(row) {
+    const kind = row.line && row.line.kind;
+    const notes = (row.line && row.line.notes) || [];
+    if (TONES[kind] === "ok" && notes.some((n) => n.kind === "held-characters")) return "act";
+    return TONES[kind] ?? "none";
+  }
+
   let view = null;
   let readOnly = false;
   // logIds whose Change folder question is open.
@@ -107,7 +125,7 @@
         ask.append(element("p", "", line.question));
         const actions = element("p", "actions");
         actions.append(
-          button("Replace", () => replace(row.logId)),
+          button("Replace", () => replace(row.logId), "danger"),
           button("Cancel", () => {
             replacing.delete(row.logId);
             render();
@@ -150,7 +168,7 @@
     if (line.kind === "awaiting") {
       const actions = element("p", "actions");
       actions.append(
-        button("Upload", () => answer(row.logId, true)),
+        button("Upload", () => answer(row.logId, true), "primary"),
         button("Don't upload", () => answer(row.logId, false)),
       );
       block.append(actions);
@@ -177,6 +195,8 @@
 
   function rowItem(row) {
     const item = element("li", "log");
+    item.dataset.tone = changing.has(row.logId) ? "act" : tone(row);
+    item.dataset.upload = row.upload ? "on" : "off";
     const head = element("div", "log-head");
     head.append(element("span", "characters", row.characters), uploadSwitch(row));
     item.append(head);
@@ -214,7 +234,7 @@
     item.append(runLine(row));
 
     if (!row.upload && switchedOff.has(row.logId)) {
-      const note = element("p", "notice", `${view.switchedOff} `);
+      const note = element("p", "notice info", `${view.switchedOff} `);
       note.append(pageLink("My Anglers", "open_my_anglers"));
       item.append(note);
     }

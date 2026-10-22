@@ -25,6 +25,15 @@
     if (linkStatus.offerLink) $("unlink-confirm").hidden = true;
     $("stop-message").hidden = !linkStatus.stop;
     $("stop-message").textContent = linkStatus.stop ?? "";
+    // The seal and the leading line (style.css, Status): stopped, keyring
+    // locked, not linked, or uploading as it should.
+    $("status").dataset.health = linkStatus.stop
+      ? "stopped"
+      : linkStatus.keyringLocked
+        ? "attention"
+        : linkStatus.offerLink
+          ? "unlinked"
+          : "ok";
     for (const id of ["link-start", "link-again", "unlink", "unlink-yes"]) {
       $(id).disabled = readOnly || linkingUnderWay();
     }
