@@ -14,7 +14,7 @@ body {
   min-height: 100vh;
   background: var(--pc-grain), var(--pc-paper);
   color: var(--pc-ink);
-  font: 400 var(--pc-fs-base) / var(--pc-lh) var(--pc-font-body);
+  font: 450 var(--pc-fs-base) / var(--pc-lh) var(--pc-font-body);
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;

@@ -15,10 +15,10 @@
   --pc-rule-strong: #c4a874;     /* card and control borders, section rules */
   --pc-shadow: 0 1px 0 rgba(90, 58, 24, 0.10), 0 1px 3px rgba(90, 58, 24, 0.08);
   /* Ink */
-  --pc-ink: #3a2614;             /* body text, 11.9:1 */
-  --pc-ink-2: #5a4028;           /* secondary text, 7.9:1 */
-  --pc-ink-3: #6e5132;           /* meta text: paths, versions, notes, 6.0:1 */
-  --pc-kicker: #7a4a1e;          /* section headings, 6.2:1 */
+  --pc-ink: #2e1c0c;             /* body text, 13.5:1 */
+  --pc-ink-2: #4a321c;           /* secondary text, 9.9:1 */
+  --pc-ink-3: #5a4026;           /* meta text: paths, versions, notes, 7.9:1 */
+  --pc-kicker: #6a3c14;          /* section headings, 7.7:1 */
   --pc-heading: #3e220c;
   /* Brand */
   --pc-gilt: #e8c96a;
@@ -62,8 +62,8 @@
     --pc-rule-strong: #5e4729;
     --pc-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
     --pc-ink: #f0e3c6;
-    --pc-ink-2: #d2bc94;
-    --pc-ink-3: #b39a72;
+    --pc-ink-2: #e2cfa8;
+    --pc-ink-3: #cbb38a;
     --pc-kicker: #d9b46a;
     --pc-heading: #f6e7c4;
     --pc-gilt: #e8c96a;
@@ -104,8 +104,8 @@
   --pc-rule-strong: #5e4729;
   --pc-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
   --pc-ink: #f0e3c6;
-  --pc-ink-2: #d2bc94;
-  --pc-ink-3: #b39a72;
+  --pc-ink-2: #e2cfa8;
+  --pc-ink-3: #cbb38a;
   --pc-kicker: #d9b46a;
   --pc-heading: #f6e7c4;
   --pc-gilt: #e8c96a;
@@ -140,10 +140,10 @@
   --pc-font-display: "Pagle Marcellus", "Marcellus", Georgia, serif;
   --pc-font-body: "Pagle Source Serif", "Source Serif 4", Georgia, "Times New Roman", serif;
   --pc-font-accent: "Pagle Fell", "IM Fell English", Georgia, serif;
-  --pc-fs-xs: 12px;     /* version, step labels */
-  --pc-fs-sm: 13px;     /* paths, notes, meta */
-  --pc-fs-base: 14px;   /* body, buttons */
-  --pc-fs-md: 15px;     /* characters, row titles */
+  --pc-fs-xs: 13px;     /* version, step labels */
+  --pc-fs-sm: 14px;     /* paths, notes, meta */
+  --pc-fs-base: 15px;   /* body, buttons */
+  --pc-fs-md: 16px;     /* characters, row titles */
   --pc-fs-lg: 18px;     /* the status line */
   --pc-fs-xl: 22px;     /* first-run step titles */
   --pc-fs-code: 32px;   /* the user code */
