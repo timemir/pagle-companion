@@ -48,10 +48,9 @@ pub fn sign_in_url(base_url: &str) -> String {
 /// answered **Upload**, with its folder settled by CMP-R42 (CMP-R45).
 pub type Confirmed = BTreeMap<String, String>;
 
-/// CMP-R40's question.
-pub fn question(characters: &str, folder: &str) -> String {
-    format!("Found a Catch log: {characters}, account folder {folder}. Upload it?")
-}
+/// CMP-R40's question as the awaiting row's state line says it (CMP UI,
+/// Catch logs): the row already shows the characters and account folder.
+pub const UPLOAD_IT: &str = "Upload it?";
 
 /// CMP-R42's question, `folders` being the folder labels.
 pub fn pick_question(folders: &[String]) -> String {
@@ -321,9 +320,9 @@ pub struct Choice {
     rename_all_fields = "camelCase"
 )]
 pub enum Line {
-    /// CMP-R40's question, with **Upload** and **Don't upload**.
+    /// CMP-R40's question, "Upload it?", with **Upload** and **Don't upload**.
     Awaiting {
-        text: String,
+        text: &'static str,
     },
     /// CMP-R42's question, with one button per choice; and, while awaiting,
     /// **Don't upload**, which needs no pick (CMP-R40).
@@ -621,9 +620,7 @@ fn row(log_id: &str, log: &LogState, snapshot: &Snapshot, installs: &[String], n
             dont_upload: log.answer.is_none(),
         })
     } else if awaiting(log, &decision) {
-        Some(Line::Awaiting {
-            text: question(&log.characters, folder.as_deref().unwrap_or_default()),
-        })
+        Some(Line::Awaiting { text: UPLOAD_IT })
     } else if decision.not_found {
         Some(Line::NotFound { text: NOT_FOUND })
     } else {
@@ -1005,12 +1002,10 @@ mod tests {
 
     #[test]
     fn the_texts_are_cmp_r40s_r41s_and_r42s() {
-        // CMP-R40: the question; CMP-R41: "Not found on this computer" and
-        // the text after switching Upload off; CMP-R42: the pick question
-        assert_eq!(
-            question("Ada Brook, Kukli Vail", "ADA#1"),
-            "Found a Catch log: Ada Brook, Kukli Vail, account folder ADA#1. Upload it?"
-        );
+        // CMP-R40: the question, as the row's state line says it (CMP UI);
+        // CMP-R41: "Not found on this computer" and the text after switching
+        // Upload off; CMP-R42: the pick question
+        assert_eq!(UPLOAD_IT, "Upload it?");
         assert_eq!(
             pick_question(&["ADA#1".into(), "ADA#2".into()]),
             "The same Catch log is in 2 account folders: ADA#1, ADA#2. It was probably \
@@ -1085,9 +1080,7 @@ mod tests {
         assert!(!row.upload);
         assert_eq!(
             row.line,
-            Some(Line::Awaiting {
-                text: "Found a Catch log: Ada Brook, account folder ADA#1. Upload it?".into()
-            })
+            Some(Line::Awaiting { text: "Upload it?" })
         );
         assert_eq!(
             present(&state, &snapshot),
