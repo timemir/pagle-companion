@@ -1,0 +1,6 @@
+{items={
+{kind="huntEvent",v=1,id="p_test_tide",zones={85,10,},tags={"night",},skill={75,150,},rotation=false,name="Test Tide",note="A line with \"quotes\", a \\ and\na second line.",hunts={{id="p_test_tide_haul",name="The Haul",class="species.any",minBand=3,conditions={time={{1260,240,},},},tiers={20,50,100,},},},},
+{kind="huntRun",v=1,event="p_test_tide",start=1791720000,["end"]=1791979200,},
+{kind="notice",v=1,text="a kind this Core doesn't know",},
+{kind="huntRun",v=2,event="p_test_tide",start=1791720000,["end"]=1791979200,},
+},}
