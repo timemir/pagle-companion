@@ -68,16 +68,26 @@ pub struct ConfigRead {
 pub struct Settings {
     pub start_at_login: bool,
     pub game_mode: bool,
+    /// "Install updates automatically" (DST-R77). A version 1 file
+    /// from before it reads as on.
+    #[serde(default = "on")]
+    pub install_updates_automatically: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        // Start at login is on by default (CMP-R3); Game Mode is off (CMP-R90).
+        // Start at login is on by default (CMP-R3); Game Mode is off (CMP-R90);
+        // installing updates automatically is on (DST-R77).
         Self {
             start_at_login: true,
             game_mode: false,
+            install_updates_automatically: true,
         }
     }
+}
+
+fn on() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,7 +390,7 @@ mod tests {
   "firstRunDone": true,
   "keptAppImagePaths": [],
   "config": { "foreverProductUid": "wow_classic_beta", "readAt": 1791735000 },
-  "settings": { "startAtLogin": true, "gameMode": false },
+  "settings": { "startAtLogin": true, "gameMode": false, "installUpdatesAutomatically": true },
   "battleTag": "Ada#1234",
   "credentialStore": "secret-service",
   "logs": {
@@ -418,6 +428,33 @@ mod tests {
         let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         let example: serde_json::Value = serde_json::from_str(EXAMPLE).unwrap();
         assert_eq!(written, example);
+    }
+
+    #[test]
+    fn a_version_1_file_from_before_install_updates_automatically_has_it_on() {
+        // DST-R77: "Install updates automatically" is on by
+        // default; a file written before it existed reads as on, and one
+        // turned off stays off
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state.json");
+        let before = EXAMPLE.replace(", \"installUpdatesAutomatically\": true", "");
+        assert!(!before.contains("installUpdatesAutomatically"));
+        fs::write(&path, before).unwrap();
+        let Loaded::State(state) = load(&path).unwrap() else {
+            panic!("the file didn't load");
+        };
+        assert!(state.settings.install_updates_automatically);
+        assert!(state.settings.start_at_login);
+
+        let off = EXAMPLE.replace(
+            "\"installUpdatesAutomatically\": true",
+            "\"installUpdatesAutomatically\": false",
+        );
+        fs::write(&path, off).unwrap();
+        let Loaded::State(state) = load(&path).unwrap() else {
+            panic!("the file didn't load");
+        };
+        assert!(!state.settings.install_updates_automatically);
     }
 
     #[test]
@@ -541,10 +578,12 @@ mod tests {
     #[test]
     fn fresh_state_starts_at_login_and_is_not_linked() {
         // CMP-R3: start at login is on by default; CMP Data: battleTag is
-        // null while not linked
+        // null while not linked; DST-R77: so is installing updates
+        // automatically
         let json = serde_json::to_value(State::default()).unwrap();
         assert_eq!(json["v"], 1);
         assert_eq!(json["settings"]["startAtLogin"], true);
+        assert_eq!(json["settings"]["installUpdatesAutomatically"], true);
         assert!(json["battleTag"].is_null());
     }
 
