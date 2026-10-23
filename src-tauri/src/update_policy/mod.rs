@@ -10,9 +10,11 @@
 //!   linking in progress and the window closed. There is no save timer:
 //!   WoW writes `Pagle.lua` only on `/reload` or logout, and the disk is the
 //!   queue. It installs quietly ([`crate::updater::install::Ui::Quiet`]): on
-//!   Windows NSIS `/S` with the running process's arguments, on Linux a
-//!   restart into the AppImage already in place (DST-R54), and headless
-//!   exits with status 0 so the unit starts the new version (DST-R58).
+//!   Windows NSIS `/S`, on Linux a restart into the AppImage already in
+//!   place (DST-R54), each with the running process's arguments plus
+//!   `--autostart`, so the Companion comes back in the tray with no window;
+//!   headless exits with status 0 so the unit starts the new version
+//!   (DST-R58).
 //! - **Recommended:** below `recommendedCompanionVersion` (DST-R67), a
 //!   waiting update nudges the Player with DST-R78's important-update texts
 //!   ([`Nudge::Important`]): the window's `act` notice, the tray's status

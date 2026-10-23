@@ -527,7 +527,7 @@ pub fn restart_to_update(app: &AppHandle) {
 
 /// The idle install and the install at once under update required (DST-R76,
 /// DST-R56): the waiting update, installed quietly with this process's
-/// arguments, then exit. Called on the updater's thread.
+/// arguments plus `--autostart`, then exit. Called on the updater's thread.
 fn install_quietly(app: &AppHandle) -> Installed {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let installed = app

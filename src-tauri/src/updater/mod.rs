@@ -310,7 +310,7 @@ impl Updater {
                 install::installer_launch(&waiting.file, &release::plugin_config(), ui, args)
             }
             // Replaced in place once verified: the file every start runs.
-            Keeper::AppImage { .. } => install::appimage_launch(&waiting.file, args),
+            Keeper::AppImage { .. } => install::appimage_launch(&waiting.file, ui, args),
         };
         log::info!(
             "installing update {}: {}",
