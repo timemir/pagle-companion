@@ -62,6 +62,10 @@ The workflow checks the tag, builds both packages into a draft, verifies their u
 - The updater key leaks ([DST-R26](https://github.com/timemir/pagle-backend/blob/main/docs/spec/companion/distribution.md#windows-channels)).
 - Raising the minimum Companion version ([DST-R66](https://github.com/timemir/pagle-backend/blob/main/docs/spec/companion/distribution.md#version-gate)).
 
+## Security
+
+Report a vulnerability privately, never in a public issue: see [SECURITY.md](SECURITY.md), which also says how to check a download's signature.
+
 ## Licence
 
 The Companion is MIT-licensed. See [LICENSE](LICENSE).
