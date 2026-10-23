@@ -42,6 +42,12 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// What the window says when a picked folder holds no install (CMP-R13).
 pub const NOT_A_FOREVER_FOLDER: &str = "This isn't a WoW Forever folder.";
 
+/// The most bytes of a `product.db` read; Battle.net's are kilobytes.
+const PRODUCT_DB_CAP: u64 = 16 * 1024 * 1024;
+
+/// The most bytes of a `.flavor.info` read; the game's are a few lines.
+const FLAVOR_INFO_CAP: u64 = 64 * 1024;
+
 /// One `product.db` to read: Battle.net's `Agent` folder, and on Linux the
 /// Wine or Proton prefix it sits in, which its locations map into (CMP-R11).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +142,7 @@ pub fn scan(sources: &[DbSource], manual: &[String], uid: &str) -> Scan {
         let Some(db) = paths::lookup(&source.agent_dir, "product.db") else {
             continue;
         };
-        let candidates = match fs::read(&db) {
+        let candidates = match paths::read_file(&db, PRODUCT_DB_CAP) {
             Ok(bytes) => product_db::decode(&bytes).map_err(|e| e.to_string()),
             Err(e) => Err(e.to_string()),
         };
@@ -177,7 +183,7 @@ fn qualifying(flavor: &Path, uid: &str) -> Option<String> {
         return None;
     }
     let info = paths::lookup(flavor, ".flavor.info")?;
-    let code = flavor_info::product_code(&fs::read(info).ok()?)?;
+    let code = flavor_info::product_code(&paths::read_file(&info, FLAVOR_INFO_CAP).ok()?)?;
     if code.as_bytes() != uid.as_bytes() {
         return None;
     }

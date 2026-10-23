@@ -11,12 +11,15 @@
 //! the write failures the window shows; [`window`] connects it to the app.
 //!
 //! It writes and deletes only inside the three folders (CMP-R4), and reads only
-//! each install's `Pagle/Pagle.toc` and folder listings besides.
+//! each install's `Pagle/Pagle.toc` and folder listings besides. An install
+//! may be writable by other OS users (CMP-R132), so a data addon folder is
+//! written only while it is a folder of its own, never through a link
+//! ([`Pinned`]).
 
 pub mod window;
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -24,7 +27,16 @@ use std::sync::{Mutex, MutexGuard};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::in_game::check::ANGLERS_CAP;
 use crate::installs::paths;
+
+/// The most bytes of a TOC read: `Pagle/Pagle.toc`, or one this writer
+/// wrote. Real ones are a few hundred.
+const TOC_CAP: u64 = 64 * 1024;
+
+/// The most bytes of a data file read to hash it: no download larger than
+/// the Anglers cap is ever written (CMP-R82).
+const DATA_FILE_CAP: u64 = ANGLERS_CAP as u64;
 
 /// One of the three data addon folders and its data file (IGV Contracts, The
 /// addon folders; HEV Contracts, The addon folder).
@@ -171,45 +183,208 @@ pub fn etag_of(bytes: &[u8]) -> String {
     format!("\"{}\"", sha256_hex(bytes))
 }
 
+/// What a write or delete acts on: `shown`, the path the window and the log
+/// name it by, and the path the OS resolves. The two are the same except
+/// inside a [`Pinned`] folder on Linux, where the OS path goes through the
+/// folder's descriptor.
+pub struct Target {
+    pub shown: PathBuf,
+    at: PathBuf,
+}
+
+impl Target {
+    /// `path` itself, resolved as it is.
+    fn plain(path: &Path) -> Self {
+        Self {
+            shown: path.to_path_buf(),
+            at: path.to_path_buf(),
+        }
+    }
+}
+
 /// The writes and deletes the writer makes, so tests can inject faults
 /// (a read-only folder doesn't fail writes on Windows, or for root).
 pub trait Fs: Send + Sync {
-    /// Creates or truncates `path`, writes `bytes` whole and flushes them to
-    /// disk.
-    fn write_synced(&self, path: &Path, bytes: &[u8]) -> io::Result<()>;
+    /// Creates `target`, which must not exist yet, writes `bytes` whole and
+    /// flushes them to disk. Nothing already there is followed or written
+    /// through.
+    fn write_synced(&self, target: &Target, bytes: &[u8]) -> io::Result<()>;
     /// Renames `from` over `to`.
-    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+    fn rename(&self, from: &Target, to: &Target) -> io::Result<()>;
     /// Creates one folder.
-    fn create_dir(&self, path: &Path) -> io::Result<()>;
-    fn remove_file(&self, path: &Path) -> io::Result<()>;
-    fn remove_dir_all(&self, path: &Path) -> io::Result<()>;
+    fn create_dir(&self, target: &Target) -> io::Result<()>;
+    fn remove_file(&self, target: &Target) -> io::Result<()>;
+    fn remove_dir_all(&self, target: &Target) -> io::Result<()>;
 }
 
 /// The file system itself.
 pub struct RealFs;
 
 impl Fs for RealFs {
-    fn write_synced(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
-        let mut file = File::create(path)?;
+    fn write_synced(&self, target: &Target, bytes: &[u8]) -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target.at)?;
         file.write_all(bytes)?;
         file.sync_all()
     }
 
-    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        fs::rename(from, to)
+    fn rename(&self, from: &Target, to: &Target) -> io::Result<()> {
+        fs::rename(&from.at, &to.at)
     }
 
-    fn create_dir(&self, path: &Path) -> io::Result<()> {
-        fs::create_dir(path)
+    fn create_dir(&self, target: &Target) -> io::Result<()> {
+        fs::create_dir(&target.at)
     }
 
-    fn remove_file(&self, path: &Path) -> io::Result<()> {
-        fs::remove_file(path)
+    fn remove_file(&self, target: &Target) -> io::Result<()> {
+        fs::remove_file(&target.at)
     }
 
-    fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
-        fs::remove_dir_all(path)
+    fn remove_dir_all(&self, target: &Target) -> io::Result<()> {
+        fs::remove_dir_all(&target.at)
     }
+}
+
+/// A data addon folder, held while it is written or swept (CMP-R83).
+///
+/// Another OS user who can write to the install (CMP-R132) could put a link
+/// where a data addon folder belongs: a symlink, or on Windows a junction,
+/// which needs no privilege. Writing through it, then deleting "every other
+/// file in the folder", would delete whatever it points at. So a folder is
+/// used only when it is a folder of its own, looked at without following a
+/// link, and stays pinned while it is used:
+/// - on Windows it is held open without delete sharing, so nobody can move
+///   or replace it, or a folder above it, meanwhile;
+/// - on Linux, where an open folder can still be renamed, every listing,
+///   write, rename and delete in it goes through its descriptor
+///   (`/proc/self/fd/<fd>/<name>`), which the kernel resolves to the pinned
+///   folder itself, never to whatever has been swapped in at its path.
+///
+/// Either way [`Pinned::check`] also stops a write once the path names
+/// another folder.
+struct Pinned {
+    path: PathBuf,
+    handle: File,
+}
+
+impl Pinned {
+    /// Pins the folder at `path`: `Ok(None)` when nothing is there, an
+    /// error when a link or anything but a folder is.
+    fn open(path: &Path) -> io::Result<Option<Self>> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(not_a_folder_of_its_own()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        }
+        let handle = open_folder_itself(path)?;
+        if !handle.metadata()?.is_dir() {
+            return Err(not_a_folder_of_its_own());
+        }
+        Ok(Some(Self {
+            path: path.to_path_buf(),
+            handle,
+        }))
+    }
+
+    /// Pins the folder at `path`, creating it through `fs` when nothing is
+    /// there.
+    fn open_or_create(fs: &dyn Fs, path: &Path) -> io::Result<Self> {
+        if let Some(pinned) = Self::open(path)? {
+            return Ok(pinned);
+        }
+        fs.create_dir(&Target::plain(path))?;
+        Self::open(path)?.ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+    }
+
+    /// The path the OS resolves to the pinned folder itself.
+    #[cfg(windows)]
+    fn anchor(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    /// The path the OS resolves to the pinned folder itself: its descriptor
+    /// in `/proc`.
+    #[cfg(target_os = "linux")]
+    fn anchor(&self) -> PathBuf {
+        use std::os::fd::AsRawFd;
+        PathBuf::from(format!("/proc/self/fd/{}", self.handle.as_raw_fd()))
+    }
+
+    /// The entry `name` of the pinned folder.
+    fn target(&self, name: impl AsRef<Path>) -> Target {
+        Target {
+            shown: self.path.join(&name),
+            at: self.anchor().join(name),
+        }
+    }
+
+    /// Fails unless the path still names the pinned folder.
+    fn check(&self) -> io::Result<()> {
+        let meta = fs::symlink_metadata(&self.path)?;
+        if meta.is_dir() && is_same_folder(&meta, &self.handle) {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "the folder was moved or replaced while in use",
+            ))
+        }
+    }
+}
+
+fn not_a_folder_of_its_own() -> io::Error {
+    io::Error::other("a link or a file is where the folder belongs")
+}
+
+/// Opens the folder at `path` as itself, never what a link there points at.
+#[cfg(windows)]
+fn open_folder_itself(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    OpenOptions::new()
+        .read(true)
+        // Without FILE_SHARE_DELETE, nobody can move, rename or delete the
+        // folder, or a folder above it, while this handle is open.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        // A junction or symlink opens as itself, so its metadata shows it.
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// Opens the folder at `path` as itself, never what a link there points at.
+#[cfg(target_os = "linux")]
+fn open_folder_itself(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)
+}
+
+/// Whether `meta`, looked up by path, is the folder `handle` holds open.
+/// On Windows the handle keeps the folder where it is, so the path can name
+/// no other.
+#[cfg(windows)]
+fn is_same_folder(_meta: &fs::Metadata, _handle: &File) -> bool {
+    true
+}
+
+/// Whether `meta`, looked up by path, is the folder `handle` holds open.
+#[cfg(target_os = "linux")]
+fn is_same_folder(meta: &fs::Metadata, handle: &File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    handle
+        .metadata()
+        .is_ok_and(|held| held.dev() == meta.dev() && held.ino() == meta.ino())
+}
+
+/// Whether a folder of its own, not a link, is at `path`.
+fn is_folder_of_its_own(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
 }
 
 /// An install that has the Pagle addon (CMP-R80): its `Interface/AddOns/`
@@ -234,14 +409,19 @@ impl Addon {
             .unwrap_or_else(|| self.addons.join(file.folder()))
     }
 
-    /// The folder for `file` when it holds its data file.
+    /// The folder for `file` when it is a folder of its own holding its data
+    /// file, neither of them a link.
     fn folder_with_data(&self, file: DataFile) -> Option<PathBuf> {
         let folder = self.folder(file);
-        folder.join(file.file_name()).is_file().then_some(folder)
+        let data = fs::symlink_metadata(folder.join(file.file_name()));
+        (is_folder_of_its_own(&folder) && data.is_ok_and(|meta| meta.is_file())).then_some(folder)
     }
 
     fn toc(&self, file: DataFile) -> io::Result<Vec<u8>> {
-        Ok(toc(file, &copied_lines(&fs::read(&self.pagle_toc)?)))
+        Ok(toc(
+            file,
+            &copied_lines(&paths::read_file(&self.pagle_toc, TOC_CAP)?),
+        ))
     }
 }
 
@@ -267,14 +447,20 @@ pub fn failure_text(folder: &str) -> String {
 }
 
 /// Writes `bytes` whole to `.{name}.tmp` in `folder`, flushed, then renames
-/// it over `name` (CMP-R83). On failure the old file stays, and the `.tmp` is
+/// it over `name` (CMP-R83). The `.tmp` is always a new file: whatever is
+/// at its name first, a leftover or a link someone put there, is deleted,
+/// never written through. On failure the old file stays, and the `.tmp` is
 /// deleted if it can be.
-fn write_atomic(fs: &dyn Fs, folder: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
-    let tmp = folder.join(format!(".{name}.tmp"));
+fn write_atomic(fs: &dyn Fs, folder: &Pinned, name: &str, bytes: &[u8]) -> io::Result<()> {
+    folder.check()?;
+    let tmp = folder.target(format!(".{name}.tmp"));
+    if fs::symlink_metadata(&tmp.at).is_ok() {
+        fs.remove_file(&tmp)?;
+    }
     let written = fs
         .write_synced(&tmp, bytes)
-        .and_then(|()| fs.rename(&tmp, &folder.join(name)));
-    if written.is_err() && tmp.exists() {
+        .and_then(|()| fs.rename(&tmp, &folder.target(name)));
+    if written.is_err() && fs::symlink_metadata(&tmp.at).is_ok() {
         let _ = fs.remove_file(&tmp);
     }
     written
@@ -297,25 +483,23 @@ fn is_kept(name: &str, file: DataFile) -> bool {
 /// created only here, at a data file write (CMP-R80).
 fn write_install(fs: &dyn Fs, addon: &Addon, file: DataFile, body: &[u8]) -> io::Result<()> {
     let toc = addon.toc(file)?;
-    let folder = addon.folder(file);
-    if !folder.is_dir() {
-        fs.create_dir(&folder)?;
-    }
+    let folder = Pinned::open_or_create(fs, &addon.folder(file))?;
     // The data file first, so no folder ever holds a TOC alone (CMP-R80).
     write_atomic(fs, &folder, file.file_name(), body)?;
     write_atomic(fs, &folder, file.toc_name(), &toc)?;
-    for entry in fs::read_dir(&folder)?.filter_map(Result::ok) {
+    for entry in fs::read_dir(folder.anchor())?.filter_map(Result::ok) {
         if is_kept(&entry.file_name().to_string_lossy(), file) {
             continue;
         }
-        let path = entry.path();
+        folder.check()?;
+        let target = folder.target(entry.file_name());
         let deleted = if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            fs.remove_dir_all(&path)
+            fs.remove_dir_all(&target)
         } else {
-            fs.remove_file(&path)
+            fs.remove_file(&target)
         };
         if let Err(e) = deleted {
-            log::warn!("couldn't delete {}: {e}", path.display());
+            log::warn!("couldn't delete {}: {e}", target.shown.display());
         }
     }
     Ok(())
@@ -325,17 +509,32 @@ fn write_install(fs: &dyn Fs, addon: &Addon, file: DataFile, body: &[u8]) -> io:
 /// has the Pagle addon (CMP-R83).
 fn sweep_tmp(fs: &dyn Fs, addon: &Addon) {
     for file in DataFile::ALL {
-        let Ok(entries) = fs::read_dir(addon.folder(file)) else {
+        let folder = match Pinned::open(&addon.folder(file)) {
+            Ok(Some(folder)) => folder,
+            Ok(None) => continue,
+            Err(e) => {
+                log::warn!("not sweeping {}: {e}", addon.folder(file).display());
+                continue;
+            }
+        };
+        let Ok(entries) = fs::read_dir(folder.anchor()) else {
             continue;
         };
         for entry in entries.filter_map(Result::ok) {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.')
+            if !(name.starts_with('.')
                 && name.ends_with(".tmp")
-                && entry.file_type().is_ok_and(|t| t.is_file())
-                && let Err(e) = fs.remove_file(&entry.path())
+                && entry.file_type().is_ok_and(|t| t.is_file()))
             {
-                log::warn!("couldn't delete {}: {e}", entry.path().display());
+                continue;
+            }
+            if let Err(e) = folder.check() {
+                log::warn!("stopped sweeping {}: {e}", folder.path.display());
+                break;
+            }
+            let target = folder.target(entry.file_name());
+            if let Err(e) = fs.remove_file(&target) {
+                log::warn!("couldn't delete {}: {e}", target.shown.display());
             }
         }
     }
@@ -362,8 +561,9 @@ fn delete_folders(fs: &dyn Fs, flavors: &[String]) {
             {
                 continue;
             }
+            // `remove_dir_all` deletes a link here, never what it points at.
             let path = entry.path();
-            match fs.remove_dir_all(&path) {
+            match fs.remove_dir_all(&Target::plain(&path)) {
                 Ok(()) => log::info!("deleted {}", path.display()),
                 Err(e) => log::warn!("couldn't delete {}: {e}", path.display()),
             }
@@ -556,12 +756,14 @@ impl Writer {
                     continue;
                 };
                 let refreshed = addon.toc(file).and_then(|want| {
-                    let have = fs::read(folder.join(file.toc_name())).ok();
+                    let pinned = Pinned::open(&folder)?
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+                    let have = paths::read_file(&pinned.target(file.toc_name()).at, TOC_CAP).ok();
                     if have.as_deref() == Some(want.as_slice()) {
                         return Ok(());
                     }
                     log::info!("rewriting {}", folder.join(file.toc_name()).display());
-                    write_atomic(self.fs.as_ref(), &folder, file.toc_name(), &want)
+                    write_atomic(self.fs.as_ref(), &pinned, file.toc_name(), &want)
                 });
                 match refreshed {
                     Ok(()) => {
@@ -648,8 +850,11 @@ impl Writer {
             .iter()
             .filter_map(|flavor| {
                 let addon = Addon::of(flavor)?;
-                let hash = fs::read(addon.folder(file).join(file.file_name()))
-                    .ok()
+                let hash = addon
+                    .folder_with_data(file)
+                    .and_then(|folder| {
+                        paths::read_file(&folder.join(file.file_name()), DATA_FILE_CAP).ok()
+                    })
                     .map(|bytes| sha256_hex(&bytes));
                 Some((flavor.clone(), hash))
             })
@@ -752,39 +957,43 @@ pub(crate) mod fixture {
             Arc::clone(&self.ops)
         }
 
+        /// Runs `real` unless `fails` says no to `target`, by the path it
+        /// is shown as.
         fn run(
             &self,
             op: Op,
-            path: &Path,
+            target: &Target,
             real: impl FnOnce() -> io::Result<()>,
         ) -> io::Result<()> {
-            if (self.fails)(op, path) {
+            if (self.fails)(op, &target.shown) {
                 return Err(io::Error::other("injected fault"));
             }
-            lock(&self.ops).push((op, path.to_path_buf()));
+            lock(&self.ops).push((op, target.shown.clone()));
             real()
         }
     }
 
     impl Fs for FaultyFs {
-        fn write_synced(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
-            self.run(Op::WriteSynced, path, || RealFs.write_synced(path, bytes))
+        fn write_synced(&self, target: &Target, bytes: &[u8]) -> io::Result<()> {
+            self.run(Op::WriteSynced, target, || {
+                RealFs.write_synced(target, bytes)
+            })
         }
 
-        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fn rename(&self, from: &Target, to: &Target) -> io::Result<()> {
             self.run(Op::Rename, from, || RealFs.rename(from, to))
         }
 
-        fn create_dir(&self, path: &Path) -> io::Result<()> {
-            self.run(Op::CreateDir, path, || RealFs.create_dir(path))
+        fn create_dir(&self, target: &Target) -> io::Result<()> {
+            self.run(Op::CreateDir, target, || RealFs.create_dir(target))
         }
 
-        fn remove_file(&self, path: &Path) -> io::Result<()> {
-            self.run(Op::RemoveFile, path, || RealFs.remove_file(path))
+        fn remove_file(&self, target: &Target) -> io::Result<()> {
+            self.run(Op::RemoveFile, target, || RealFs.remove_file(target))
         }
 
-        fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
-            self.run(Op::RemoveDirAll, path, || RealFs.remove_dir_all(path))
+        fn remove_dir_all(&self, target: &Target) -> io::Result<()> {
+            self.run(Op::RemoveDirAll, target, || RealFs.remove_dir_all(target))
         }
     }
 }
