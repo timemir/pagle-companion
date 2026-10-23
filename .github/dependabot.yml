@@ -11,8 +11,9 @@ updates:
       cargo:
         patterns: ['*']
     ignore:
-      # zbus 6 drops the blocking API the Secret Service store is built on;
-      # moving to it is #45.
+      # notify-rust and Tauri's opener and single-instance plugins still need
+      # zbus 5, so moving the Secret Service store to 6 alone would add a
+      # second D-Bus stack, not drop zbus 5 (#45). Lift this once they move.
       - dependency-name: zbus
         update-types: ['version-update:semver-major']
 
