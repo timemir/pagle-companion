@@ -53,10 +53,13 @@ impl Notifier for OsNotifier {
         let text = text.to_owned();
         // Waiting for the click blocks, so each notification gets a thread.
         std::thread::spawn(move || {
+            let markup = notify_rust::get_capabilities()
+                .is_ok_and(|caps| caps.iter().any(|cap| cap == "body-markup"));
+            let body = if markup { escape_markup(&text) } else { text };
             let shown = notify_rust::Notification::new()
                 .appname(TITLE)
                 .summary(TITLE)
-                .body(&text)
+                .body(&body)
                 .action("default", "Open Pagle Companion")
                 .show();
             match shown {
@@ -68,5 +71,41 @@ impl Notifier for OsNotifier {
                 Err(e) => log::warn!("couldn't show a notification: {e}"),
             }
         });
+    }
+}
+
+/// `text` as the body of a notification on a server that reads markup in it
+/// (the freedesktop `body-markup` capability): `&`, `<` and `>` as entities.
+/// The text holds character names read from `Pagle.lua` and the server's
+/// refusal messages (CMP-R111), which show as written, never as a link or
+/// an image someone else chose.
+#[cfg(any(test, target_os = "linux"))]
+fn escape_markup(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markup_in_a_notification_shows_as_written() {
+        // CMP-R111: "Found a Catch log: {characters}. Upload it?"
+        assert_eq!(
+            escape_markup(
+                r#"Found a Catch log: <a href="https://evil.example">Ada</a> & Bo. Upload it?"#
+            ),
+            r#"Found a Catch log: &lt;a href="https://evil.example"&gt;Ada&lt;/a&gt; &amp; Bo. Upload it?"#
+        );
+        assert_eq!(escape_markup("Ada Brook"), "Ada Brook");
     }
 }
