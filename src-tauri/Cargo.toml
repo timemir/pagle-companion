@@ -1,6 +1,6 @@
 [package]
 name = "pagle-companion"
-version = "0.0.0"
+version = "0.1.0"
 description = "Pagle Companion: carries Pagle data between the game's files and the backend"
 license = "MIT"
 repository = "https://github.com/timemir/pagle-companion"
