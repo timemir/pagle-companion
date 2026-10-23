@@ -155,6 +155,15 @@ impl World {
         bytes
     }
 
+    /// Publishes `version` as the latest Release, its file an AppImage
+    /// signed with the Companion's key.
+    fn publish_appimage(&self, version: &str) -> Vec<u8> {
+        let bytes = format!("AppImage {version}").into_bytes();
+        let signature = self.keys.sign(&bytes, &appimage_comment(version));
+        self.publish_signed(version, &bytes, &signature);
+        bytes
+    }
+
     fn publish_signed(&self, version: &str, bytes: &[u8], signature: &str) {
         let path = format!("/download/v{version}/Pagle.Companion_{version}_x64-setup.exe");
         let latest = serde_json::json!({
@@ -171,6 +180,14 @@ impl World {
         let mut files = self.files.0.lock().unwrap();
         files.insert("/latest.json".into(), latest.to_string().into_bytes());
         files.insert(path, bytes.to_vec());
+    }
+
+    /// Makes the published latest.json name `url` as this platform's file.
+    fn point_latest_at(&self, url: &str) {
+        let mut files = self.files.0.lock().unwrap();
+        let mut latest: serde_json::Value = serde_json::from_slice(&files["/latest.json"]).unwrap();
+        latest["platforms"][release::platform()]["url"] = url.into();
+        files.insert("/latest.json".into(), latest.to_string().into_bytes());
     }
 
     /// Every request the stub received.
@@ -208,9 +225,15 @@ impl World {
     }
 }
 
-/// The trusted comment `tauri signer sign` writes.
+/// The trusted comment `tauri signer sign` writes for the Windows
+/// installer.
 fn trusted_comment(version: &str) -> String {
-    format!("timestamp:1800000000\tfile:Pagle.Companion_{version}_x64-setup.exe")
+    format!("timestamp:1800000000\tfile:Pagle Companion_{version}_x64-setup.exe")
+}
+
+/// The trusted comment `tauri signer sign` writes for the AppImage.
+fn appimage_comment(version: &str) -> String {
+    format!("timestamp:1800000000\tfile:Pagle Companion_{version}_amd64.AppImage")
 }
 
 fn v(version: &str) -> Version {
@@ -412,6 +435,82 @@ fn a_file_signed_for_another_version_fails_verification() {
 }
 
 #[test]
+fn an_old_releases_file_offered_as_a_new_version_fails_verification() {
+    // DST-R52, DST-R53: latest.json isn't signed, so a forged one could
+    // announce 1.2.0 and serve 1.1.0's validly signed installer. The version
+    // in the signed file name (as `tauri signer` writes it) refuses that.
+    let world = World::new();
+    let old = b"MZ installer 1.1.0".to_vec();
+    let signature = world.keys.sign(&old, &trusted_comment("1.1.0"));
+    world.publish_signed("1.2.0", &old, &signature);
+    let updater = world.updater("1.1.5");
+    assert_eq!(
+        updater.tick(t0()),
+        Some(Checked::NotVerified { in_a_row: 1 })
+    );
+    assert_eq!(updater.waiting(), None);
+    assert_eq!(world.state_files(), ["updater.json"]);
+}
+
+#[test]
+fn the_other_platforms_file_of_the_release_fails_verification() {
+    // DST-R53, DST Contracts "Release assets": a forged latest.json could
+    // name the Windows installer, validly signed for the same version, as
+    // the Linux file; renamed over the AppImage, it could never start or
+    // update again. And the other way round.
+    let world = World::new();
+    let appimage = world.tmp.path().join("pagle-companion.AppImage");
+    fs::write(&appimage, b"old AppImage").unwrap();
+    world.publish("1.2.0");
+    let linux = world.updater_with(
+        "1.0.0",
+        Keeper::AppImage {
+            path: Some(appimage.clone()),
+        },
+        Hooks::default(),
+    );
+    assert_eq!(linux.tick(t0()), Some(Checked::NotVerified { in_a_row: 1 }));
+    assert_eq!(fs::read(&appimage).unwrap(), b"old AppImage");
+
+    let world = World::new();
+    world.publish_appimage("1.2.0");
+    let windows = world.updater("1.0.0");
+    assert_eq!(
+        windows.tick(t0()),
+        Some(Checked::NotVerified { in_a_row: 1 })
+    );
+    assert_eq!(world.state_files(), ["updater.json"]);
+}
+
+#[test]
+fn a_signature_naming_no_version_fails_verification() {
+    // DST-R52, DST-R53: a signed file whose trusted comment names no version
+    // could be any Release's
+    let world = World::new();
+    let bytes = b"MZ installer 1.2.0".to_vec();
+    let signature = world.keys.sign(&bytes, "timestamp:1800000000");
+    world.publish_signed("1.2.0", &bytes, &signature);
+    assert_eq!(
+        world.updater("1.0.0").tick(t0()),
+        Some(Checked::NotVerified { in_a_row: 1 })
+    );
+}
+
+#[test]
+fn a_file_outside_the_releases_is_never_downloaded() {
+    // DST-R50: latest.json can point the updater only at the Releases' own
+    // files; anything else is a bad document, checked again next interval
+    let world = World::new();
+    world.publish("1.2.0");
+    world.point_latest_at("http://127.0.0.2:9/Pagle.Companion_1.2.0_x64-setup.exe");
+    let updater = world.updater("1.0.0");
+
+    assert_eq!(updater.tick(t0()), Some(Checked::Failed));
+    assert_eq!(world.downloads(), 0);
+    assert_eq!(updater.waiting(), None);
+}
+
+#[test]
 fn a_new_version_in_latest_json_resets_the_failed_verification_count() {
     // DST-R57: reset by a new version in latest.json
     let world = World::new();
@@ -533,7 +632,7 @@ fn the_appimage_is_replaced_as_soon_as_it_verifies() {
     let world = World::new();
     let appimage = world.tmp.path().join("pagle-companion.AppImage");
     fs::write(&appimage, b"old AppImage").unwrap();
-    let bytes = world.publish("1.2.0");
+    let bytes = world.publish_appimage("1.2.0");
     let updater = world.updater_with(
         "1.0.0",
         Keeper::AppImage {
@@ -838,7 +937,7 @@ fn restart_to_update_on_linux_starts_the_replaced_appimage_with_the_same_argumen
     let world = World::new();
     let appimage = world.tmp.path().join("pagle-companion.AppImage");
     fs::write(&appimage, b"old AppImage").unwrap();
-    let bytes = world.publish("1.2.0");
+    let bytes = world.publish_appimage("1.2.0");
     let updater = world.updater_with(
         "1.0.0",
         Keeper::AppImage {

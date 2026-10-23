@@ -43,7 +43,7 @@ use std::time::SystemTime;
 use reqwest::header::{ACCEPT, HeaderValue};
 use semver::Version;
 
-use crate::api::{CONNECT_TIMEOUT, REQUEST_TIMEOUT};
+use crate::api::{self, CONNECT_TIMEOUT, REQUEST_TIMEOUT};
 use crate::host::Host;
 use crate::state_dir::StateDir;
 use install::Launcher;
@@ -91,6 +91,15 @@ pub enum Installed {
     CouldntStart,
 }
 
+/// The most bytes of `latest.json` the updater reads. The real one is a few
+/// kilobytes; a longer one is a bad document (DST-R51).
+pub const LATEST_CAP: usize = 1024 * 1024;
+
+/// The most bytes of an update the updater downloads: far above the
+/// installer and the AppImage, so that a broken or hostile server can't fill
+/// memory before the signature is checked.
+pub const DOWNLOAD_CAP: usize = 512 * 1024 * 1024;
+
 /// What the rest of the Companion does after each check.
 pub struct Hooks {
     pub after_check: Box<dyn Fn(&Checked) + Send + Sync>,
@@ -119,10 +128,13 @@ impl Source {
     /// `endpoint` serves `latest.json`; `pubkey` is base64, as in
     /// `plugins.updater.pubkey`.
     pub fn new(endpoint: impl Into<String>, pubkey: impl Into<String>) -> reqwest::Result<Self> {
-        // No default headers: nothing about the machine (CMP-R6).
+        // No default headers: nothing about the machine (CMP-R6). GitHub
+        // redirects a download to its file host, so redirects are followed,
+        // but a release build never leaves HTTPS.
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(REQUEST_TIMEOUT)
+            .https_only(!cfg!(debug_assertions))
             .build()?;
         Ok(Self {
             endpoint: endpoint.into(),
@@ -150,7 +162,9 @@ impl Source {
         if !reply.status().is_success() {
             return Err(format!("status {}", reply.status()));
         }
-        let body = reply.bytes().await.map_err(|e| e.to_string())?;
+        let body = api::read_capped(reply, LATEST_CAP)
+            .await
+            .map_err(|e| e.to_string())?;
         release::read_latest(&body, &self.platform).ok_or_else(|| "a bad latest.json".into())
     }
 
@@ -165,7 +179,9 @@ impl Source {
         if !reply.status().is_success() {
             return Err(format!("status {}", reply.status()));
         }
-        Ok(reply.bytes().await.map_err(|e| e.to_string())?.to_vec())
+        api::read_capped(reply, DOWNLOAD_CAP)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -249,6 +265,7 @@ impl Updater {
             &bytes,
             &waiting.signature,
             &waiting.version,
+            self.keeper.bundle_suffix(),
         )
     }
 
@@ -372,6 +389,10 @@ impl Updater {
             log::warn!("update check failed: latest.json names no file for this platform");
             return Checked::Failed;
         };
+        if !release::is_release_file(&self.source.endpoint, &asset.url) {
+            log::warn!("update check failed: latest.json names a file outside the Releases");
+            return Checked::Failed;
+        }
         log::info!("downloading update {}", latest.version);
         let bytes = match self.source.download(&asset.url).await {
             Ok(bytes) => bytes,
@@ -385,6 +406,7 @@ impl Updater {
             &bytes,
             &asset.signature,
             &latest.version,
+            self.keeper.bundle_suffix(),
         ) {
             let in_a_row = self.failures.failed(&latest.version);
             log::warn!(
