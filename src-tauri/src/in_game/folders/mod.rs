@@ -1,15 +1,16 @@
 //! The data addon folders (CMP-R80, CMP-R83, CMP-R85; IGV-R40, IGV Contracts
-//! "The addon folders"): which installs get `Interface/AddOns/Pagle_Following/`
-//! and `Pagle_Anglers/`, each folder's TOC, atomic writes of a checked body as
-//! the data file, the TOC refresh, the start sweep of leftover `.tmp` files,
-//! and deleting both folders.
+//! "The addon folders"; HEV-R50, HEV Contracts "The addon folder"): which
+//! installs get `Interface/AddOns/Pagle_Following/`, `Pagle_Anglers/` and
+//! `Pagle_Content/`, each folder's TOC, atomic writes of a checked body as the
+//! data file, the TOC refresh, the start sweep of leftover `.tmp` files, and
+//! deleting the three folders.
 //!
 //! Everything here works on flavor folders, with the writes and deletes going
 //! through the [`Fs`] seam, so it runs on temporary folder trees and can have
 //! faults injected in tests. The [`Writer`] serialises the changes and keeps
 //! the write failures the window shows; [`window`] connects it to the app.
 //!
-//! It writes and deletes only inside the two folders (CMP-R4), and reads only
+//! It writes and deletes only inside the three folders (CMP-R4), and reads only
 //! each install's `Pagle/Pagle.toc` and folder listings besides.
 
 pub mod window;
@@ -25,8 +26,8 @@ use sha2::{Digest, Sha256};
 
 use crate::installs::paths;
 
-/// One of the two data addon folders and its data file (IGV Contracts, The
-/// addon folders).
+/// One of the three data addon folders and its data file (IGV Contracts, The
+/// addon folders; HEV Contracts, The addon folder).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DataFile {
@@ -34,16 +35,19 @@ pub enum DataFile {
     Following,
     /// `Pagle_Anglers/Anglers.lua`: `GET /api/v1/in-game/anglers`.
     Anglers,
+    /// `Pagle_Content/Content.lua`: `GET /api/v1/in-game/content` (HEV-R50).
+    Content,
 }
 
 impl DataFile {
-    pub const ALL: [DataFile; 2] = [Self::Following, Self::Anglers];
+    pub const ALL: [DataFile; 3] = [Self::Following, Self::Anglers, Self::Content];
 
     /// The folder's name in `Interface/AddOns/`.
     pub fn folder(self) -> &'static str {
         match self {
             Self::Following => "Pagle_Following",
             Self::Anglers => "Pagle_Anglers",
+            Self::Content => "Pagle_Content",
         }
     }
 
@@ -52,6 +56,7 @@ impl DataFile {
         match self {
             Self::Following => "Following.lua",
             Self::Anglers => "Anglers.lua",
+            Self::Content => "Content.lua",
         }
     }
 
@@ -60,11 +65,13 @@ impl DataFile {
         match self {
             Self::Following => "Pagle_Following.toc",
             Self::Anglers => "Pagle_Anglers.toc",
+            Self::Content => "Pagle_Content.toc",
         }
     }
 
     /// The TOC template's lines after the two copied ones (IGV Contracts, The
-    /// TOCs), LF line ends, the last one included.
+    /// TOCs; for `Pagle_Content`, HEV Contracts, The addon folder), LF line
+    /// ends, the last one included.
     fn toc_rest(self) -> &'static str {
         match self {
             Self::Following => concat!(
@@ -87,6 +94,18 @@ impl DataFile {
                 "## Version: 1\n",
                 "\n",
                 "Anglers.lua\n",
+            ),
+            // Loaded normally, after Pagle, so the data file has run before
+            // Core's PLAYER_LOGIN (HEV-R50, PUSH-R1).
+            Self::Content => concat!(
+                "## Title: Pagle Content\n",
+                "## Notes: Pagle Wagers and other content from Pagle. Written by the Pagle Companion.\n",
+                "## Group: Pagle\n",
+                "## Category: Professions\n",
+                "## Dependencies: Pagle\n",
+                "## Version: 1\n",
+                "\n",
+                "Content.lua\n",
             ),
         }
     }
@@ -302,8 +321,8 @@ fn write_install(fs: &dyn Fs, addon: &Addon, file: DataFile, body: &[u8]) -> io:
     Ok(())
 }
 
-/// Deletes leftover `.*.tmp` files in both folders of an install that has
-/// the Pagle addon (CMP-R83).
+/// Deletes leftover `.*.tmp` files in the three folders of an install that
+/// has the Pagle addon (CMP-R83).
 fn sweep_tmp(fs: &dyn Fs, addon: &Addon) {
     for file in DataFile::ALL {
         let Ok(entries) = fs::read_dir(addon.folder(file)) else {
@@ -322,10 +341,11 @@ fn sweep_tmp(fs: &dyn Fs, addon: &Addon) {
     }
 }
 
-/// Deletes both data addon folders entirely in every install of `flavors`
-/// where they exist, whether or not the Pagle addon is still there
-/// (CMP-R85). Every entry of `Interface/AddOns/` named like either folder,
-/// in any case, goes, so the addon reads them as absent (IGV-R44).
+/// Deletes the three data addon folders entirely in every install of
+/// `flavors` where they exist, whether or not the Pagle addon is still there
+/// (CMP-R85). Every entry of `Interface/AddOns/` named like any of them, in
+/// any case, goes, so the addon reads them as absent (IGV-R44; PUSH-R13 for
+/// `Pagle_Content`, which then falls back to its rotation, HNT-R153).
 fn delete_folders(fs: &dyn Fs, flavors: &[String]) {
     for flavor in flavors {
         let Some(addons) = paths::lookup_path(Path::new(flavor), &["Interface", "AddOns"]) else {
@@ -351,7 +371,8 @@ fn delete_folders(fs: &dyn Fs, flavors: &[String]) {
     }
 }
 
-/// Deletes both data addon folders in every install of `flavors` (CMP-R85):
+/// Deletes the three data addon folders in every install of `flavors`
+/// (CMP-R85):
 /// the one delete for Unlink, losing the link and removal. Removal (CMP-R70
 /// step 4) passes every install its scan found or local state names.
 pub fn delete_data_addon_folders(flavors: &[String]) {
@@ -398,6 +419,7 @@ pub struct Qualifying {
     pub installs: Vec<String>,
     pub lacking_following: Vec<String>,
     pub lacking_anglers: Vec<String>,
+    pub lacking_content: Vec<String>,
 }
 
 impl Qualifying {
@@ -409,6 +431,7 @@ impl Qualifying {
         match file {
             DataFile::Following => &self.lacking_following,
             DataFile::Anglers => &self.lacking_anglers,
+            DataFile::Content => &self.lacking_content,
         }
     }
 }
@@ -584,8 +607,8 @@ impl Writer {
         *lock(&self.busy) = true;
     }
 
-    /// Deletes both folders in every install of `flavors` where they exist
-    /// (CMP-R85), which leaves no write failure to show.
+    /// Deletes the three folders in every install of `flavors` where they
+    /// exist (CMP-R85), which leaves no write failure to show.
     pub fn delete_folders(&self, flavors: &[String]) {
         let _busy = lock(&self.busy);
         delete_folders(self.fs.as_ref(), flavors);
@@ -606,6 +629,9 @@ impl Writer {
             }
             if addon.folder_with_data(DataFile::Anglers).is_none() {
                 report.lacking_anglers.push(flavor.clone());
+            }
+            if addon.folder_with_data(DataFile::Content).is_none() {
+                report.lacking_content.push(flavor.clone());
             }
         }
         report

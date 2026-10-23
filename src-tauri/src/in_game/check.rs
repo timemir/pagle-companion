@@ -1,10 +1,15 @@
 //! Checking a downloaded data file body before it is written (CMP-R82,
-//! IGV-R41): [`check_following`] and [`check_anglers`] take the decoded body
-//! of a `200` and say whether it may be written.
+//! IGV-R41, HEV-R51): [`check_following`], [`check_anglers`] and
+//! [`check_content`] take the decoded body of a `200` and say whether it may
+//! be written.
 //!
 //! A body passes only when it matches its file's grammar in
 //! `in-game-views.md` (Contracts) byte for byte, with the constraints its
-//! comments add and the Companion's two caps. Everything the addon would
+//! comments add and the Companion's two caps; a `Pagle_Content` body, the
+//! grammar of `hunt-events.md` (Contracts, `Pagle_Content`) byte for byte,
+//! its constraints and both content caps, and its decoded payload the payload
+//! grammar as Core's reader takes it ([`payload`]). The signature is never
+//! checked: only the addon holds keys (HEV-R51, PUSH-R12). Everything the addon would
 //! treat as absent (IGV-R44) is a rejection, so a written file is always one
 //! the addon reads; and since the grammars admit nothing but data, a server
 //! can never put anything else into the game. Orderings the file alone can't
@@ -18,8 +23,13 @@
 //! A [`Rejection`] says where and by which rule, never what the body holds,
 //! so its `Display` is safe for the local log (CMP-R112).
 
+mod payload;
+
 use std::cmp::Ordering;
 use std::fmt;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 
 /// The followed cap (CMP Tunables, IGV-R41): at most this many Anglers in
 /// `Pagle_Following`.
@@ -28,6 +38,25 @@ pub const FOLLOWED_CAP: usize = 200;
 /// The Anglers cap (CMP Tunables, IGV-R41): at most this many bytes of
 /// `Pagle_Anglers`.
 pub const ANGLERS_CAP: usize = 16 * 1024 * 1024;
+
+/// The content file cap (HEV Tunables, CMP Tunables "Content caps"): at most
+/// this many bytes of `Pagle_Content`'s data file.
+pub const CONTENT_CAP: usize = 90_112;
+
+/// The payload cap (HEV Tunables, PUSH Tunables): at most this many bytes of
+/// `Pagle_Content`'s decoded payload.
+pub const PAYLOAD_CAP: usize = 65_536;
+
+/// The bytes `sig` decodes to: one RSA-2048 signature (HEV Contracts,
+/// `Pagle_Content`; HEV-R35).
+pub const SIG_LEN: usize = 256;
+
+/// The most digits of a header `int` (HEV Contracts, `Pagle_Content`), so
+/// every one is below 2^53 (exact in the addon's doubles).
+const INT_DIGITS: usize = 15;
+
+/// The longest `keyId` (HEV Contracts, `Pagle_Content`; HEV-R40).
+const KEY_ID_LEN: usize = 32;
 
 /// Characters of one card in a block's `cards` (IGV Tunables, card width).
 const CARD_WIDTH: usize = 16;
@@ -38,13 +67,15 @@ const KEY_WIDTH: usize = 19;
 /// Characters of a key's search key: its realm and UID (IGV Contracts).
 const SEARCH_KEY_WIDTH: usize = 13;
 
-/// One of the two data files (IGV-R40).
+/// One of the three data files (IGV-R40, HEV-R50).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFile {
     /// `Pagle_Following`, the followed tier (IGV-R42).
     Following,
     /// `Pagle_Anglers`, the region tier (IGV-R43).
     Anglers,
+    /// `Pagle_Content`, the pushed content (HEV-R50).
+    Content,
 }
 
 impl DataFile {
@@ -53,6 +84,7 @@ impl DataFile {
         match self {
             DataFile::Following => "Pagle_Following",
             DataFile::Anglers => "Pagle_Anglers",
+            DataFile::Content => "Pagle_Content",
         }
     }
 }
@@ -103,6 +135,27 @@ pub enum Reason {
     TitlesOrder,
     /// A block names one title twice.
     DuplicateTitle,
+    /// The body is longer than the content file cap.
+    ContentCap,
+    /// A header `int` has more than 15 digits.
+    IntTooLong,
+    /// `keyId` isn't 1 to 32 of `[A-Za-z0-9_-]`.
+    BadKeyId,
+    /// Base64 that isn't the standard alphabet, padded, on one line.
+    BadBase64,
+    /// Base64 whose padding bits aren't zero.
+    Base64PaddingBits,
+    /// `expires` isn't after `generatedAt`.
+    ExpiresNotAfterGenerated,
+    /// `sig` doesn't decode to exactly 256 bytes.
+    SigLength,
+    /// The decoded payload is longer than the payload cap.
+    PayloadCap,
+    /// The decoded payload isn't valid UTF-8 from its byte `at`.
+    PayloadUtf8 { at: usize },
+    /// The decoded payload breaks the payload grammar at its byte `at`, for
+    /// the reason Core's reader gives (in words).
+    PayloadGrammar { at: usize, what: &'static str },
 }
 
 impl Reason {
@@ -126,6 +179,15 @@ impl Reason {
             | Reason::DuplicateSearchKey
             | Reason::TitlesOrder
             | Reason::DuplicateTitle => "IGV-R41",
+            Reason::ContentCap | Reason::PayloadCap => "HEV-R51, CMP-R82",
+            Reason::IntTooLong
+            | Reason::BadKeyId
+            | Reason::BadBase64
+            | Reason::Base64PaddingBits
+            | Reason::ExpiresNotAfterGenerated
+            | Reason::SigLength
+            | Reason::PayloadUtf8 { .. } => "HEV Contracts, Pagle_Content",
+            Reason::PayloadGrammar { .. } => "HEV-R51, PUSH-R20",
         }
     }
 }
@@ -167,6 +229,38 @@ impl fmt::Display for Reason {
             Reason::DuplicateSearchKey => write!(f, "two keys share a search key"),
             Reason::TitlesOrder => write!(f, "titles aren't in ascending byte order"),
             Reason::DuplicateTitle => write!(f, "a title is given twice"),
+            Reason::ContentCap => {
+                write!(
+                    f,
+                    "the body is over the content file cap of {CONTENT_CAP} bytes"
+                )
+            }
+            Reason::IntTooLong => write!(f, "an int has more than {INT_DIGITS} digits"),
+            Reason::BadKeyId => {
+                write!(f, "keyId isn't 1 to {KEY_ID_LEN} of A-Z, a-z, 0-9, _ and -")
+            }
+            Reason::BadBase64 => write!(
+                f,
+                "not padded standard Base64 on one line (RFC 4648 section 4)"
+            ),
+            Reason::Base64PaddingBits => write!(f, "Base64 whose padding bits aren't zero"),
+            Reason::ExpiresNotAfterGenerated => write!(f, "expires isn't after generatedAt"),
+            Reason::SigLength => write!(f, "sig doesn't decode to {SIG_LEN} bytes"),
+            Reason::PayloadCap => {
+                write!(
+                    f,
+                    "the decoded payload is over the payload cap of {PAYLOAD_CAP} bytes"
+                )
+            }
+            Reason::PayloadUtf8 { at } => {
+                write!(f, "the decoded payload isn't UTF-8 at its byte {at}")
+            }
+            Reason::PayloadGrammar { at, what } => {
+                write!(
+                    f,
+                    "the decoded payload breaks its grammar at its byte {at}: {what}"
+                )
+            }
         }
     }
 }
@@ -205,6 +299,7 @@ pub fn check(file: DataFile, body: &[u8]) -> Result<(), Rejection> {
     match file {
         DataFile::Following => check_following(body),
         DataFile::Anglers => check_anglers(body),
+        DataFile::Content => check_content(body),
     }
 }
 
@@ -223,6 +318,20 @@ pub fn check_anglers(body: &[u8]) -> Result<(), Rejection> {
         anglers(&mut Cursor::new(body))
     };
     checked.map_err(|fail| fail.rejection(DataFile::Anglers, body))
+}
+
+/// Checks a decoded `Pagle_Content` body (CMP-R82, HEV-R51): the `file`
+/// grammar of HEV Contracts, `Pagle_Content`, byte for byte, with its
+/// constraints (`expires > generatedAt`, a 256-byte `sig`), the content file
+/// cap and the payload cap, and the decoded payload against the payload
+/// grammar as Core's reader takes it. Never the signature.
+pub fn check_content(body: &[u8]) -> Result<(), Rejection> {
+    let checked = if body.len() > CONTENT_CAP {
+        reject_at(CONTENT_CAP, Reason::ContentCap)
+    } else {
+        content(&mut Cursor::new(body))
+    };
+    checked.map_err(|fail| fail.rejection(DataFile::Content, body))
 }
 
 /// Where and why a check failed, before it is told which file it was.
@@ -443,6 +552,77 @@ fn block(c: &mut Cursor) -> Step {
     c.line(" },")
 }
 
+/// `file` (HEV Contracts, `Pagle_Content`), then its constraints.
+fn content(c: &mut Cursor) -> Step {
+    c.line("PagleContentData = {")?;
+    c.tab()?;
+    c.line("v = 1,")?;
+    c.tab()?;
+    c.text("generatedAt = ")?;
+    let generated_at = c.int()?;
+    c.line(",")?;
+    c.tab()?;
+    c.text("keyId = \"")?;
+    c.key_id()?;
+    c.line("\",")?;
+    c.tab()?;
+    c.text("seq = ")?;
+    c.int()?;
+    c.line(",")?;
+    c.tab()?;
+    c.text("expires = ")?;
+    let expires_at = c.pos;
+    let expires = c.int()?;
+    c.line(",")?;
+    c.tab()?;
+    c.text("payload = \"")?;
+    let (payload_at, payload) = c.base64()?;
+    c.line("\",")?;
+    c.tab()?;
+    c.text("sig = \"")?;
+    let (sig_at, sig) = c.base64()?;
+    c.line("\",")?;
+    c.line("}")?;
+    c.end()?;
+
+    if expires <= generated_at {
+        return reject_at(expires_at, Reason::ExpiresNotAfterGenerated);
+    }
+    let sig = decode(sig_at, sig)?;
+    if sig.len() != SIG_LEN {
+        return reject_at(sig_at, Reason::SigLength);
+    }
+    let payload = decode(payload_at, payload)?;
+    if payload.len() > PAYLOAD_CAP {
+        return reject_at(payload_at, Reason::PayloadCap);
+    }
+    // HEV Contracts, `Pagle_Content`: the payload is valid UTF-8, which
+    // Core's reader doesn't itself require.
+    if let Err(e) = std::str::from_utf8(&payload) {
+        return reject_at(
+            payload_at,
+            Reason::PayloadUtf8 {
+                at: e.valid_up_to(),
+            },
+        );
+    }
+    payload::check(&payload).map_err(|e| Fail {
+        at: payload_at,
+        reason: Reason::PayloadGrammar {
+            at: e.at,
+            what: e.what,
+        },
+    })
+}
+
+/// Decodes Base64 the grammar already admitted, refusing padding bits that
+/// aren't zero (RFC 4648 section 3.5, as HEV Contracts' `b64` has it).
+fn decode(at: usize, base64: &[u8]) -> Step<Vec<u8>> {
+    STANDARD
+        .decode(base64)
+        .or_else(|_| reject_at(at, Reason::Base64PaddingBits))
+}
+
 /// The value of a run of ASCII digits, already checked to be digits.
 fn decimal(digits: &[u8]) -> u64 {
     digits.iter().fold(0, |n, &d| n * 10 + u64::from(d - b'0'))
@@ -525,6 +705,93 @@ impl<'a> Cursor<'a> {
             }
             _ => self.fail(Reason::Expected("a nat")),
         }
+    }
+
+    /// One HTAB.
+    fn tab(&mut self) -> Step {
+        if self.peek() != Some(b'\t') {
+            return self.fail(Reason::Expected("a tab"));
+        }
+        self.pos += 1;
+        Ok(())
+    }
+
+    /// `int` of HEV Contracts, `Pagle_Content`: `"0" / (%x31-39 0*14DIGIT)`.
+    /// A digit past the 15th fails here; anything else after it is the next
+    /// production's to refuse.
+    fn int(&mut self) -> Step<u64> {
+        match self.peek() {
+            Some(b'0') => {
+                if self.body.get(self.pos + 1).is_some_and(u8::is_ascii_digit) {
+                    return self.fail(Reason::LeadingZero);
+                }
+                self.pos += 1;
+                Ok(0)
+            }
+            Some(b'1'..=b'9') => {
+                let run = self
+                    .rest()
+                    .iter()
+                    .take_while(|b| b.is_ascii_digit())
+                    .count();
+                if run > INT_DIGITS {
+                    return reject_at(self.pos + INT_DIGITS, Reason::IntTooLong);
+                }
+                let value = decimal(&self.rest()[..run]);
+                self.pos += run;
+                Ok(value)
+            }
+            _ => self.fail(Reason::Expected("an int")),
+        }
+    }
+
+    /// `keyid` of HEV Contracts, `Pagle_Content`: `1*32(ALPHA / DIGIT / "_"
+    /// / "-")`, up to its closing quote.
+    fn key_id(&mut self) -> Step {
+        let run = self
+            .rest()
+            .iter()
+            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            .count();
+        if run == 0 || run > KEY_ID_LEN {
+            return reject_at(self.pos + run.min(KEY_ID_LEN), Reason::BadKeyId);
+        }
+        if self.body.get(self.pos + run) != Some(&b'"') {
+            return reject_at(self.pos + run, Reason::BadKeyId);
+        }
+        self.pos += run;
+        Ok(())
+    }
+
+    /// `b64` of HEV Contracts, `Pagle_Content`, up to its closing quote:
+    /// `*(4b64c) [2b64c "==" / 3b64c "="]`, the standard alphabet, padded,
+    /// with no line breaks. Its offset and text.
+    fn base64(&mut self) -> Step<(usize, &'a [u8])> {
+        let start = self.pos;
+        let rest = self.rest();
+        let chars = rest
+            .iter()
+            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+            .count();
+        let pads = rest[chars..]
+            .iter()
+            .take(2)
+            .take_while(|&&b| b == b'=')
+            .count();
+        let end = start + chars + pads;
+        if self.body.get(end) != Some(&b'"') {
+            return reject_at(end, Reason::BadBase64);
+        }
+        let whole = match pads {
+            0 => chars % 4 == 0,
+            1 => chars % 4 == 3,
+            _ => chars % 4 == 2,
+        };
+        if !whole {
+            return reject_at(start, Reason::BadBase64);
+        }
+        self.pos = end;
+        Ok((start, &self.body[start..end]))
     }
 
     /// `bool`.
@@ -613,6 +880,9 @@ impl<'a> Cursor<'a> {
         Ok((start, &self.body[start..end]))
     }
 }
+
+#[cfg(test)]
+mod content_tests;
 
 #[cfg(test)]
 mod tests {

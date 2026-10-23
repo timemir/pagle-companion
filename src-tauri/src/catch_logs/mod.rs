@@ -1866,7 +1866,7 @@ mod tests {
         assert_eq!(saved.logs[LOG_A].answer, None);
 
         // The tray-mode process that starts next asks about it.
-        let tray = running(saved, Hooks::default());
+        let tray = running(*saved, Hooks::default());
         tray.refresh(&snapshot);
         assert_eq!(
             tray.recorder.shown(),
@@ -1897,7 +1897,7 @@ mod tests {
             panic!("state.json wasn't written");
         };
         assert_eq!(saved.logs[LOG_A].answer, Some(Answer::Skip));
-        let restarted = running(saved, Hooks::default());
+        let restarted = running(*saved, Hooks::default());
         restarted.refresh(&snapshot);
         assert!(restarted.recorder.shown().is_empty());
         assert!(restarted.catch_logs.confirmed().is_empty());

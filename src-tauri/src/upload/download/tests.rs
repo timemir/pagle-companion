@@ -23,9 +23,12 @@ use crate::device_flow::Approval;
 use crate::in_game::backend_bodies::{
     self, ANGLERS_EXAMPLE, FOLLOWING_EXAMPLE, FOLLOWING_NONE, anglers_file,
 };
+use crate::in_game::content_vector::{self, content_file};
 use crate::in_game::folders::fixture::{FaultyFs, Op, install};
 use crate::in_game::folders::{DataFile, Qualifying, WriteReport, Writer, etag_of};
-use crate::in_game::timer::{ANGLERS_REFETCH_AGE, CHECK_INTERVAL, FOLLOWING_INTERVAL};
+use crate::in_game::timer::{
+    ANGLERS_REFETCH_AGE, CHECK_INTERVAL, CONTENT_POLL_INTERVAL, FOLLOWING_INTERVAL,
+};
 use crate::link::{Hooks, Link};
 use crate::notify::{Notifications, Notifier};
 use crate::readings::fixture::{LOG_A, account_folder, pagle_lua_text, save};
@@ -279,6 +282,20 @@ fn ends(ends: &[DownloadEnd]) -> Vec<RunEnd> {
     ends.iter().cloned().map(RunEnd::Download).collect()
 }
 
+/// The vector's `good` file, the stub's Content body at first.
+fn good_content() -> Vec<u8> {
+    content_file("good").into_bytes()
+}
+
+/// `503 content_unavailable` before the first content build (HEV-R37, HEV
+/// Contracts, Endpoints).
+fn content_unavailable(retry_after: &str) -> ResponseTemplate {
+    ResponseTemplate::new(503)
+        .insert_header("Retry-After", retry_after)
+        .set_body_json(json!({ "reason": "content_unavailable",
+            "message": "The in-game content isn't ready yet. Try again in a minute." }))
+}
+
 fn rate_limited(retry_after: &str) -> ResponseTemplate {
     ResponseTemplate::new(429)
         .insert_header("Retry-After", retry_after)
@@ -290,14 +307,18 @@ fn rate_limited(retry_after: &str) -> ResponseTemplate {
 // --- the timer (CMP-R81, IGV-R50, IGV-R51)
 
 #[tokio::test]
-async fn at_start_both_downloads_run_once_and_are_written_and_kept() {
-    // CMP-R81: the Following and the Anglers download at start; a download
-    // is successful once written in at least one install, and its time (and
-    // the Anglers ETag) goes into inGame
+async fn at_start_every_download_runs_once_and_is_written_and_kept() {
+    // CMP-R81: the Following, Anglers and Content downloads at start; a
+    // download is successful once written in at least one install, and its
+    // time (and the Anglers and Content ETags) goes into inGame
     let h = Harness::new().await;
     assert_eq!(
         h.check().await,
-        ends(&[DownloadEnd::Written(1), DownloadEnd::Written(1)])
+        ends(&[
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1)
+        ])
     );
     let flavor = &h.flavors[0];
     assert_eq!(
@@ -309,22 +330,28 @@ async fn at_start_both_downloads_run_once_and_are_written_and_kept() {
         ANGLERS_EXAMPLE.as_bytes()
     );
     assert_eq!(
+        h.data_file(flavor, DataFile::Content).unwrap(),
+        good_content()
+    );
+    assert_eq!(
         h.in_game_state(),
         InGame {
             following_at: Some(START),
             anglers_at: Some(START),
             anglers_etag: Some(etag_of(ANGLERS_EXAMPLE.as_bytes())),
+            content_at: Some(START),
+            content_etag: Some(etag_of(&good_content())),
         }
     );
     // Once only.
     assert_eq!(h.check().await, []);
-    assert_eq!(h.in_game.received().len(), 2);
+    assert_eq!(h.in_game.received().len(), 3);
 }
 
 #[tokio::test]
 async fn in_game_is_kept_in_state_json_under_its_spec_names() {
     // CMP Data: state.json holds inGame.followingAt, anglersAt and
-    // anglersEtag
+    // anglersEtag, and (HEV-R50) contentAt and contentEtag
     let h = Harness::new().await;
     h.check().await;
     let json: serde_json::Value =
@@ -332,7 +359,8 @@ async fn in_game_is_kept_in_state_json_under_its_spec_names() {
     assert_eq!(
         json["inGame"],
         json!({ "followingAt": START, "anglersAt": START,
-                "anglersEtag": etag_of(ANGLERS_EXAMPLE.as_bytes()) })
+                "anglersEtag": etag_of(ANGLERS_EXAMPLE.as_bytes()),
+                "contentAt": START, "contentEtag": etag_of(&good_content()) })
     );
 }
 
@@ -343,7 +371,7 @@ async fn every_download_carries_the_credential_version_and_gzip() {
     let h = Harness::new().await;
     h.check().await;
     let received = h.in_game.received();
-    assert_eq!(received.len(), 2);
+    assert_eq!(received.len(), 3);
     for download in received {
         assert_eq!(download.accept_encoding.as_deref(), Some("gzip"));
         assert_eq!(download.version.as_deref(), Some("1.0.0"));
@@ -361,7 +389,7 @@ async fn a_gzip_body_is_decoded_and_written_byte_for_byte() {
     let body = anglers_file(1_791_730_000, &[]);
     h.in_game.set_body(DataFile::Anglers, body.clone());
     h.check().await;
-    assert_eq!(h.in_game.gzipped(), [true, true]);
+    assert_eq!(h.in_game.gzipped(), [true, true, true]);
     assert_eq!(
         h.data_file(&h.flavors[0], DataFile::Anglers).unwrap(),
         body.as_bytes()
@@ -377,7 +405,11 @@ async fn following_runs_again_every_hour() {
     h.advance(FOLLOWING_INTERVAL - 1);
     assert_eq!(h.check().await, []);
     h.advance(1);
-    assert_eq!(h.check().await, ends(&[DownloadEnd::Written(1)]));
+    // Content's poll interval is the same hour; its file is unchanged.
+    assert_eq!(
+        h.check().await,
+        ends(&[DownloadEnd::Written(1), DownloadEnd::NotModified])
+    );
     assert_eq!(h.requests(DataFile::Following), 2);
     assert_eq!(h.requests(DataFile::Anglers), 1);
     assert_eq!(h.in_game_state().following_at, Some(h.now()));
@@ -402,14 +434,10 @@ async fn anglers_runs_again_after_12_hours_with_if_none_match_and_a_304_writes_n
     assert_eq!(anglers.len(), 2);
     assert_eq!(anglers[1].if_none_match.as_deref(), Some(etag.as_str()));
     assert_eq!(h.writes_of(DataFile::Anglers), written);
-    assert_eq!(
-        h.in_game_state(),
-        InGame {
-            following_at: Some(h.now() - CHECK),
-            anglers_at: Some(h.now()),
-            anglers_etag: Some(etag),
-        }
-    );
+    let in_game = h.in_game_state();
+    assert_eq!(in_game.following_at, Some(h.now() - CHECK));
+    assert_eq!(in_game.anglers_at, Some(h.now()));
+    assert_eq!(in_game.anglers_etag, Some(etag));
 }
 
 #[tokio::test]
@@ -429,9 +457,10 @@ async fn following_never_sends_if_none_match() {
 }
 
 #[tokio::test]
-async fn right_after_linking_both_downloads_run_without_if_none_match() {
-    // CMP-R101: right after any link, both in-game downloads; CMP-R64:
-    // Link again… clears inGame, so they send no If-None-Match
+async fn right_after_linking_every_download_runs_without_if_none_match() {
+    // CMP-R101: right after any link, the in-game downloads (CMP-R81:
+    // Content "right after linking" too); CMP-R64: Link again… clears
+    // inGame, so they send no If-None-Match
     let h = Harness::new().await;
     h.check().await;
     h.advance(60);
@@ -450,6 +479,10 @@ async fn right_after_linking_both_downloads_run_without_if_none_match() {
     assert_eq!(anglers.len(), 2);
     assert_eq!(anglers[1].if_none_match, None);
     assert_eq!(h.in_game_state().anglers_at, Some(h.now()));
+    let content = h.in_game.received_of(DataFile::Content);
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[1].if_none_match, None);
+    assert_eq!(h.in_game_state().content_at, Some(h.now()));
 }
 
 #[tokio::test]
@@ -494,16 +527,24 @@ async fn a_deleted_anglers_lua_makes_the_download_due_at_once_without_if_none_ma
 }
 
 #[tokio::test]
-async fn a_new_install_with_the_pagle_addon_gets_both_files_at_the_next_check() {
-    // CMP-R80: an install that newly qualifies lacks both data files, so
-    // both downloads are due at the next check
+async fn a_new_install_with_the_pagle_addon_gets_every_file_at_the_next_check() {
+    // CMP-R80: an install that newly qualifies lacks every data file, so
+    // every download is due at the next check
     let mut h = Harness::new().await;
     h.check().await;
     let new = h.add_install("WoW/_anniversary_", Some(PAGLE_TOC));
     h.advance(CHECK);
     assert_eq!(
         h.check().await,
-        ends(&[DownloadEnd::Written(2), DownloadEnd::Written(2)])
+        ends(&[
+            DownloadEnd::Written(2),
+            DownloadEnd::Written(2),
+            DownloadEnd::Written(2)
+        ])
+    );
+    assert_eq!(
+        h.data_file(&new, DataFile::Content).unwrap(),
+        good_content()
     );
     assert_eq!(
         h.data_file(&new, DataFile::Following).unwrap(),
@@ -540,7 +581,7 @@ async fn no_qualifying_install_means_no_in_game_request() {
     )
     .unwrap();
     h.advance(CHECK);
-    assert_eq!(h.check().await.len(), 2);
+    assert_eq!(h.check().await.len(), 3);
 }
 
 #[tokio::test]
@@ -581,7 +622,7 @@ async fn an_upload_run_waiting_goes_before_a_due_download() {
     h.uploads.in_game_check(&h.ctx());
     h.uploads.trigger(LOG_A, Trigger::Start);
     let ended = h.uploads.run_queued(&h.ctx()).await;
-    assert_eq!(ended.len(), 3);
+    assert_eq!(ended.len(), 4);
     assert!(matches!(ended[0], RunEnd::Recorded(_)), "{ended:?}");
     let paths: Vec<String> = h
         .server
@@ -609,7 +650,10 @@ async fn a_body_that_fails_its_check_is_never_written_and_waits_one_following_in
     h.in_game.set_body(DataFile::Following, bad);
     h.advance(FOLLOWING_INTERVAL);
     let failed_at = h.now();
-    assert_eq!(h.check().await, ends(&[DownloadEnd::Rejected]));
+    assert_eq!(
+        h.check().await,
+        ends(&[DownloadEnd::Rejected, DownloadEnd::NotModified])
+    );
     assert_eq!(
         h.data_file(&h.flavors[0], DataFile::Following).unwrap(),
         FOLLOWING_EXAMPLE.as_bytes()
@@ -623,7 +667,10 @@ async fn a_body_that_fails_its_check_is_never_written_and_waits_one_following_in
     assert_eq!(h.requests(DataFile::Following), 2);
     h.in_game.set_body(DataFile::Following, FOLLOWING_NONE);
     h.advance(CHECK);
-    assert_eq!(h.check().await, ends(&[DownloadEnd::Written(1)]));
+    assert_eq!(
+        h.check().await,
+        ends(&[DownloadEnd::Written(1), DownloadEnd::NotModified])
+    );
     assert_eq!(
         h.data_file(&h.flavors[0], DataFile::Following).unwrap(),
         FOLLOWING_NONE.as_bytes()
@@ -646,7 +693,11 @@ async fn a_body_past_the_decoded_cap_is_rejected_without_inflating_it_whole() {
     );
     assert_eq!(
         h.check().await,
-        ends(&[DownloadEnd::Written(1), DownloadEnd::Rejected])
+        ends(&[
+            DownloadEnd::Written(1),
+            DownloadEnd::Rejected,
+            DownloadEnd::Written(1)
+        ])
     );
     assert_eq!(h.data_file(&h.flavors[0], DataFile::Anglers), None);
     assert_eq!(h.in_game_state().anglers_at, None);
@@ -694,7 +745,11 @@ async fn a_body_written_nowhere_isnt_successful_and_waits_one_following_interval
     .await;
     assert_eq!(
         h.check().await,
-        ends(&[DownloadEnd::Unwritten, DownloadEnd::Written(1)])
+        ends(&[
+            DownloadEnd::Unwritten,
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1)
+        ])
     );
     assert_eq!(h.in_game_state().following_at, None);
     let failures = h.env.writer.failures();
@@ -711,7 +766,10 @@ async fn a_body_written_nowhere_isnt_successful_and_waits_one_following_interval
     }
     assert_eq!(h.requests(DataFile::Following), 1);
     h.advance(CHECK);
-    assert_eq!(h.check().await, ends(&[DownloadEnd::Unwritten]));
+    assert_eq!(
+        h.check().await,
+        ends(&[DownloadEnd::Unwritten, DownloadEnd::NotModified])
+    );
     assert_eq!(h.requests(DataFile::Following), 2);
 }
 
@@ -726,18 +784,22 @@ async fn a_body_written_in_one_install_is_successful() {
     h.add_install("WoW/_classic_era_", Some(PAGLE_TOC));
     assert_eq!(
         h.check().await,
-        ends(&[DownloadEnd::Written(1), DownloadEnd::Written(1)])
+        ends(&[
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1)
+        ])
     );
     assert_eq!(h.in_game_state().following_at, Some(START));
-    assert_eq!(h.env.writer.failures().len(), 2);
+    assert_eq!(h.env.writer.failures().len(), 3);
 }
 
 // --- failed downloads (CMP-R50, CMP-R84)
 
 #[tokio::test]
-async fn credential_invalid_unlinks_and_deletes_both_folders() {
+async fn credential_invalid_unlinks_and_deletes_the_three_folders() {
     // CMP-R84, CMP-R65, CMP-R85: credential_invalid is the no-longer-linked
-    // state, and both data addon folders are deleted
+    // state, and the three data addon folders are deleted
     let h = Harness::new().await;
     h.check().await;
     h.in_game.script(
@@ -750,6 +812,7 @@ async fn credential_invalid_unlinks_and_deletes_both_folders() {
     let addons = Path::new(&h.flavors[0]).join("Interface/AddOns");
     assert!(!addons.join("Pagle_Following").exists());
     assert!(!addons.join("Pagle_Anglers").exists());
+    assert!(!addons.join("Pagle_Content").exists());
     assert_eq!(h.in_game_state(), InGame::default());
     // IGV-R53: nothing more is downloaded.
     h.advance(ANGLERS_REFETCH_AGE);
@@ -774,10 +837,14 @@ async fn suspended_and_update_required_stop_downloads_and_keep_the_files() {
             ANGLERS_EXAMPLE.as_bytes()
         );
         assert!(h.data_file(&h.flavors[0], DataFile::Following).is_some());
+        assert_eq!(
+            h.data_file(&h.flavors[0], DataFile::Content).unwrap(),
+            good_content()
+        );
         // CMP-R81: nothing during the stop.
         h.advance(CHECK);
         assert_eq!(h.check().await, [], "{code}");
-        assert_eq!(h.in_game.received().len(), 3, "{code}");
+        assert_eq!(h.in_game.received().len(), 4, "{code}");
     }
 }
 
@@ -790,7 +857,11 @@ async fn a_429_drops_the_download_until_retry_after_and_the_queue_doesnt_wait() 
         .script(DataFile::Anglers, vec![Some(rate_limited("600"))]);
     assert_eq!(
         h.check().await,
-        ends(&[DownloadEnd::Written(1), DownloadEnd::RateLimited])
+        ends(&[
+            DownloadEnd::Written(1),
+            DownloadEnd::RateLimited,
+            DownloadEnd::Written(1)
+        ])
     );
     assert!(h.env.sleeps.lock().unwrap().is_empty());
     h.advance(599);
@@ -812,6 +883,7 @@ async fn a_5xx_waits_the_backoff_then_the_download_runs_again() {
         ended,
         ends(&[
             DownloadEnd::Retry,
+            DownloadEnd::Written(1),
             DownloadEnd::Written(1),
             DownloadEnd::Written(1)
         ])
@@ -842,6 +914,7 @@ async fn a_body_that_doesnt_decode_counts_as_a_lost_connection() {
         ends(&[
             DownloadEnd::Retry,
             DownloadEnd::Written(1),
+            DownloadEnd::Written(1),
             DownloadEnd::Written(1)
         ])
     );
@@ -860,7 +933,11 @@ async fn any_other_refusal_is_due_again_at_the_next_check() {
         .script(DataFile::Following, vec![Some(ResponseTemplate::new(404))]);
     assert_eq!(
         h.check().await,
-        ends(&[DownloadEnd::Failed, DownloadEnd::Written(1)])
+        ends(&[
+            DownloadEnd::Failed,
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1)
+        ])
     );
     h.advance(CHECK);
     assert_eq!(h.check().await, ends(&[DownloadEnd::Written(1)]));
@@ -868,15 +945,192 @@ async fn any_other_refusal_is_due_again_at_the_next_check() {
 
 #[tokio::test]
 async fn unlink_clears_in_game_and_deletes_the_folders() {
-    // CMP Data: Unlink clears inGame; CMP-R85: and deletes both folders
+    // CMP Data: Unlink clears inGame; CMP-R85: and deletes the three
+    // folders (PUSH-R91: the addon then reads Pagle_Content as missing)
     let h = Harness::new().await;
     h.check().await;
     h.ctx().account.unlink().await;
     assert_eq!(h.in_game_state(), InGame::default());
-    assert!(
-        !Path::new(&h.flavors[0])
-            .join("Interface/AddOns/Pagle_Anglers")
-            .exists()
-    );
+    let addons = Path::new(&h.flavors[0]).join("Interface/AddOns");
+    for file in DataFile::ALL {
+        assert!(!addons.join(file.folder()).exists(), "{file:?}");
+    }
+    assert!(addons.join("Pagle/Pagle.toc").is_file());
     assert_eq!(h.check().await, []);
+}
+
+// --- the Content download (CMP-R81, HEV-R37, HEV-R50, HEV-R51)
+
+#[tokio::test]
+async fn content_runs_every_hour_and_a_304_keeps_the_file() {
+    // CMP-R81, HEV Tunables: the Content download every content poll
+    // interval (1 h), with If-None-Match set to the kept ETag (the SHA-256
+    // of Content.lua, HEV-R37); a 304 is successful, updates contentAt and
+    // writes nothing
+    let h = Harness::new().await;
+    h.check().await;
+    let etag = etag_of(&good_content());
+    let written = h.writes_of(DataFile::Content);
+    h.advance(CONTENT_POLL_INTERVAL - CHECK);
+    h.check().await;
+    assert_eq!(h.requests(DataFile::Content), 1);
+    h.advance(CHECK);
+    let ended = h.check().await;
+    assert!(ended.contains(&RunEnd::Download(DownloadEnd::NotModified)));
+    let content = h.in_game.received_of(DataFile::Content);
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0].if_none_match, None);
+    assert_eq!(content[1].if_none_match.as_deref(), Some(etag.as_str()));
+    assert_eq!(h.writes_of(DataFile::Content), written);
+    assert_eq!(
+        h.data_file(&h.flavors[0], DataFile::Content).unwrap(),
+        good_content()
+    );
+    let in_game = h.in_game_state();
+    assert_eq!(in_game.content_at, Some(h.now()));
+    assert_eq!(in_game.content_etag, Some(etag));
+}
+
+#[tokio::test]
+async fn a_new_content_build_is_written_byte_for_byte_and_its_etag_kept() {
+    // HEV-R37: a new build always makes a new body, answered 200 to the old
+    // ETag; HEV-R50: written byte for byte, payload and sig unchanged
+    let h = Harness::new().await;
+    h.check().await;
+    let big = content_file("big");
+    h.in_game.set_body(DataFile::Content, big.clone());
+    h.advance(CONTENT_POLL_INTERVAL);
+    let ended = h.check().await;
+    assert!(ended.contains(&RunEnd::Download(DownloadEnd::Written(1))));
+    let content = h.in_game.received_of(DataFile::Content);
+    assert_eq!(
+        content[1].if_none_match,
+        Some(etag_of(&good_content())),
+        "sent with the old ETag"
+    );
+    assert_eq!(
+        h.data_file(&h.flavors[0], DataFile::Content).unwrap(),
+        big.as_bytes()
+    );
+    assert_eq!(
+        h.in_game_state().content_etag,
+        Some(etag_of(big.as_bytes()))
+    );
+}
+
+#[tokio::test]
+async fn an_edited_or_deleted_content_lua_gets_a_full_body_without_if_none_match() {
+    // CMP-R81: If-None-Match only when Content.lua of every qualifying
+    // install hashes to the kept ETag; CMP-R80: a missing one is due at once
+    let h = Harness::new().await;
+    h.check().await;
+    let flavor = &h.flavors[0];
+    fs::remove_file(h.path(flavor, DataFile::Content)).unwrap();
+    h.advance(CHECK);
+    assert_eq!(h.check().await, ends(&[DownloadEnd::Written(1)]));
+    fs::write(h.path(flavor, DataFile::Content), b"edited").unwrap();
+    h.advance(CONTENT_POLL_INTERVAL);
+    let ended = h.check().await;
+    assert!(ended.contains(&RunEnd::Download(DownloadEnd::Written(1))));
+    let content = h.in_game.received_of(DataFile::Content);
+    assert_eq!(content.len(), 3);
+    assert!(content.iter().all(|d| d.if_none_match.is_none()));
+    assert_eq!(
+        h.data_file(flavor, DataFile::Content).unwrap(),
+        good_content()
+    );
+}
+
+#[tokio::test]
+async fn content_unavailable_holds_the_download_off_until_retry_after() {
+    // HEV-R37: 503 content_unavailable with Retry-After before the first
+    // build; it costs a rate-limit token (HEV-R38), so it is dropped and not
+    // sent again before Retry-After has passed, as a 429 (CMP-R50); the queue
+    // doesn't wait, and nothing is written
+    let h = Harness::new().await;
+    h.in_game
+        .script(DataFile::Content, vec![Some(content_unavailable("60"))]);
+    assert_eq!(
+        h.check().await,
+        ends(&[
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1),
+            DownloadEnd::Unavailable
+        ])
+    );
+    assert!(h.env.sleeps.lock().unwrap().is_empty());
+    assert_eq!(h.data_file(&h.flavors[0], DataFile::Content), None);
+    assert_eq!(h.in_game_state().content_at, None);
+    // Lacking its file doesn't make it due before Retry-After.
+    h.advance(59);
+    assert_eq!(h.check().await, []);
+    assert_eq!(h.requests(DataFile::Content), 1);
+    h.advance(1);
+    assert_eq!(h.check().await, ends(&[DownloadEnd::Written(1)]));
+    assert_eq!(
+        h.data_file(&h.flavors[0], DataFile::Content).unwrap(),
+        good_content()
+    );
+}
+
+#[tokio::test]
+async fn any_other_503_is_a_5xx() {
+    // CMP-R50: any 5xx (JSON or not) waits the retry backoff, then the
+    // download runs again; only content_unavailable is held off (HEV-R37)
+    let h = Harness::new().await;
+    h.in_game.script(
+        DataFile::Content,
+        vec![Some(
+            ResponseTemplate::new(503).set_body_json(json!({ "reason": "maintenance" })),
+        )],
+    );
+    assert_eq!(
+        h.check().await,
+        ends(&[
+            DownloadEnd::Written(1),
+            DownloadEnd::Written(1),
+            DownloadEnd::Retry,
+            DownloadEnd::Written(1)
+        ])
+    );
+    assert_eq!(*h.env.sleeps.lock().unwrap(), [Duration::from_secs(30)]);
+}
+
+#[tokio::test]
+async fn a_content_body_that_fails_its_check_is_never_written_and_waits() {
+    // HEV-R51, CMP-R82: a body outside the grammar (the vector's functionCall
+    // and singleQuote, and every file under bad/) is never written, the file
+    // on disk stays, and the download isn't tried again before one following
+    // interval has passed
+    let h = Harness::new().await;
+    h.check().await;
+    let mut bodies: Vec<(String, Vec<u8>)> = ["functionCall", "singleQuote"]
+        .iter()
+        .map(|name| (name.to_string(), content_file(name).into_bytes()))
+        .collect();
+    bodies.extend(
+        content_vector::BAD
+            .iter()
+            .map(|(name, body)| (name.to_string(), body.to_vec())),
+    );
+    for (name, body) in bodies {
+        h.in_game.set_body(DataFile::Content, body);
+        h.advance(FOLLOWING_INTERVAL);
+        let ended = h.check().await;
+        assert!(
+            ended.contains(&RunEnd::Download(DownloadEnd::Rejected)),
+            "{name}: {ended:?}"
+        );
+        assert_eq!(
+            h.data_file(&h.flavors[0], DataFile::Content).unwrap(),
+            good_content(),
+            "{name}"
+        );
+        assert_eq!(h.in_game_state().content_at, Some(START), "{name}");
+        // Held one following interval, though its last success is old.
+        let requests = h.requests(DataFile::Content);
+        h.advance(FOLLOWING_INTERVAL - CHECK);
+        h.check().await;
+        assert_eq!(h.requests(DataFile::Content), requests, "{name}");
+    }
 }

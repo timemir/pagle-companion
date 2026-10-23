@@ -91,7 +91,7 @@ pub fn data_files_hash_to<H: Host>(app: &H, file: DataFile, etag: &str) -> bool 
         .data_files_hash_to(&installs(app), file, etag)
 }
 
-/// Deletes both folders in every install the Companion knows (CMP-R85): the
+/// Deletes the three folders in every install the Companion knows (CMP-R85): the
 /// link's hook on Unlink and on losing the link.
 pub fn delete_folders<H: Host>(app: &H) {
     let Some(writer) = app.try_state::<Writer>() else {

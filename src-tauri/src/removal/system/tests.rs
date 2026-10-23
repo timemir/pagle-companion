@@ -120,7 +120,7 @@ impl Machine {
         fs::create_dir_all(appimage.parent().unwrap()).unwrap();
         fs::write(&appimage, "ELF").unwrap();
         let flavor = install(tmp.path(), "WoW/_classic_beta_", Some(TOC));
-        for folder in ["Pagle_Following", "Pagle_Anglers"] {
+        for folder in ["Pagle_Following", "Pagle_Anglers", "Pagle_Content"] {
             let dir = Path::new(&flavor).join("Interface/AddOns").join(folder);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("x.lua"), "x").unwrap();
@@ -164,7 +164,7 @@ impl Machine {
     }
 
     fn data_addon_folders(&self) -> Vec<PathBuf> {
-        ["Pagle_Following", "Pagle_Anglers"]
+        ["Pagle_Following", "Pagle_Anglers", "Pagle_Content"]
             .iter()
             .map(|f| Path::new(&self.flavor).join("Interface/AddOns").join(f))
             .collect()

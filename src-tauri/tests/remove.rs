@@ -103,7 +103,7 @@ mod linux {
                 fs::write(path, "x\n").unwrap();
             }
             fs::create_dir_all(self.flavor.join("Interface/AddOns/Pagle")).unwrap();
-            for name in ["Pagle_Following", "Pagle_Anglers"] {
+            for name in ["Pagle_Following", "Pagle_Anglers", "Pagle_Content"] {
                 fs::create_dir_all(self.folder(name)).unwrap();
                 fs::write(self.folder(name).join("x.lua"), "x").unwrap();
             }
@@ -205,6 +205,7 @@ mod linux {
         assert!(!exists(&sandbox.autostart()));
         assert!(!exists(&sandbox.folder("Pagle_Following")));
         assert!(!exists(&sandbox.folder("Pagle_Anglers")));
+        assert!(!exists(&sandbox.folder("Pagle_Content")));
         assert!(exists(&sandbox.flavor.join("Interface/AddOns/Pagle")));
         let calls = sandbox.systemctl_calls();
         assert!(

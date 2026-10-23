@@ -1,0 +1,4 @@
+# pagle-backend's pushed-content test vector, copied byte for byte (see
+# mod.rs) and compared byte for byte: bad/crlf.lua keeps its CRLF.
+* -text
+mod.rs text eol=lf
