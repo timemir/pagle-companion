@@ -28,7 +28,7 @@ use crate::local_log::Logger;
 use crate::os_notify::OsNotifier;
 use crate::state::State;
 use crate::state_dir::{self, StateDir};
-use crate::updater::install::{CommandLine, Launch, Launcher, SystemLauncher};
+use crate::updater::install::{CommandLine, Launch, Launcher, SystemLauncher, Ui};
 use crate::updater::{Installed, Updater};
 use crate::upload::{self, queue::Trigger};
 use crate::{
@@ -503,9 +503,9 @@ fn restart_to_update(app: &AppHandle) {
     // Off the main thread: verifying reads the whole installer.
     std::thread::spawn(move || {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let installed = app
-            .state::<Updater>()
-            .install(&TrayLauncher(app.clone()), &args);
+        let installed =
+            app.state::<Updater>()
+                .install(&TrayLauncher(app.clone()), Ui::Passive, &args);
         exit_if_started(&app, &installed);
         show_waiting_update(&app);
     });

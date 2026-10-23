@@ -4,9 +4,11 @@
 //!
 //! - **Windows:** the kept installer, run as the updater plugin runs an NSIS
 //!   update: `plugins.updater.windows.installMode`'s arguments (`/P`,
-//!   passive: a progress bar, no questions), `/UPDATE`, then `/R /ARGS` and
-//!   this process's arguments, so that the installer starts the new version
-//!   with them once it is installed (DST-R13); then the configured
+//!   passive: a progress bar, no questions; [`Ui::Passive`]) or, for an
+//!   install the Player didn't choose, quiet mode's (`/S`: no progress bar,
+//!   no window; [`Ui::Quiet`], pagle-backend#287), `/UPDATE`, then `/R
+//!   /ARGS` and this process's arguments, so that the installer starts the
+//!   new version with them once it is installed (DST-R13); then the configured
 //!   `installerArgs` (none). `/UPDATE` is how the installer and
 //!   `windows/hooks.nsh` know it is an update: Tauri's installer skips its
 //!   reinstall page, so the old uninstaller and `--remove` never run, and
@@ -22,6 +24,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tauri_plugin_updater::Config;
+
+/// How the Windows installer shows itself. Linux has nothing to show: the
+/// new AppImage just starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ui {
+    /// `plugins.updater.windows.installMode`, passive: a progress bar and no
+    /// questions. **Restart to update** and the install at start (DST-R13,
+    /// DST-R54).
+    Passive,
+    /// NSIS `/S`: no progress bar, no window and so no notification. The
+    /// installs the Player didn't choose: the idle install and the forced
+    /// one under update required (pagle-backend#287).
+    Quiet,
+}
 
 /// What starts the new version.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,20 +97,32 @@ fn raw_arg(_command: &mut Command, _line: &str) -> io::Result<()> {
     ))
 }
 
-/// The kept installer, run as an update with `args`, this process's
-/// arguments without the program (DST-R13).
-pub fn installer_launch(installer: &Path, config: &Config, args: &[String]) -> Launch {
+/// NSIS's silent option, which the updater plugin's `quiet` install mode
+/// passes in place of passive's `/P`.
+pub const QUIET: &str = "/S";
+
+/// The kept installer, run as an update shown as `ui` with `args`, this
+/// process's arguments without the program (DST-R13).
+pub fn installer_launch(installer: &Path, config: &Config, ui: Ui, args: &[String]) -> Launch {
     let windows = config.windows.clone().unwrap_or_default();
-    let mut line: Vec<String> = windows
-        .install_mode
-        .nsis_args()
-        .iter()
-        .map(|arg| (*arg).to_owned())
-        .collect();
+    let (mut line, restarts): (Vec<String>, bool) = match ui {
+        Ui::Passive => (
+            windows
+                .install_mode
+                .nsis_args()
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .collect(),
+            // The plugin restarts the app after every mode but basicUi,
+            // whose finish page has its own "Run" box.
+            windows.install_mode.to_string() != "basicUi",
+        ),
+        // `/S` in place of `/P`; the rest as passive's, so the new version
+        // starts again with the same arguments.
+        Ui::Quiet => (vec![QUIET.to_owned()], true),
+    };
     line.push("/UPDATE".into());
-    // The plugin restarts the app after every mode but basicUi, whose finish
-    // page has its own "Run" box.
-    if windows.install_mode.to_string() != "basicUi" {
+    if restarts {
         line.push("/R".into());
     }
     line.push("/ARGS".into());
@@ -175,27 +203,58 @@ mod tests {
         let installer = Path::new(r"C:\state\pagle-companion_1.2.0_x64-setup.exe");
         let config = release::plugin_config();
 
-        let launch = installer_launch(installer, &config, &args(&["--autostart"]));
+        let launch = installer_launch(installer, &config, Ui::Passive, &args(&["--autostart"]));
         assert_eq!(launch.program, installer);
         assert_eq!(raw(&launch), "/P /UPDATE /R /ARGS --autostart");
 
-        let launch = installer_launch(installer, &config, &[]);
+        let launch = installer_launch(installer, &config, Ui::Passive, &[]);
         assert_eq!(raw(&launch), "/P /UPDATE /R /ARGS");
+    }
+
+    #[test]
+    fn a_quiet_install_runs_silent_as_an_update_and_restarts_with_the_same_arguments() {
+        // pagle-backend#287: the idle install runs the installer quietly
+        // (NSIS /S) with the start arguments of the running process, as the
+        // passive install passes them: /S in place of /P, the rest the same
+        let installer = Path::new(r"C:\state\pagle-companion_1.2.0_x64-setup.exe");
+        let config = release::plugin_config();
+
+        let launch = installer_launch(installer, &config, Ui::Quiet, &args(&["--autostart"]));
+        assert_eq!(launch.program, installer);
+        assert_eq!(raw(&launch), "/S /UPDATE /R /ARGS --autostart");
+
+        let launch = installer_launch(installer, &config, Ui::Quiet, &[]);
+        assert_eq!(raw(&launch), "/S /UPDATE /R /ARGS");
+
+        // Only the first option differs from the passive install's.
+        let passive = installer_launch(installer, &config, Ui::Passive, &args(&["a b"]));
+        let quiet = installer_launch(installer, &config, Ui::Quiet, &args(&["a b"]));
+        assert_eq!(
+            raw(&passive).strip_prefix("/P"),
+            raw(&quiet).strip_prefix(QUIET)
+        );
     }
 
     #[test]
     fn the_command_line_is_the_one_hooks_nsh_reads_as_an_update() {
         // DST-R13, DST-R14: hooks.nsh keeps local state when the installer's
         // $UpdateMode is 1, which Tauri's installer sets from /UPDATE, and
-        // closes the Companion with --quit before installing
+        // closes the Companion with --quit before installing; quiet or not
         let hooks = include_str!("../../windows/hooks.nsh");
         assert!(hooks.contains("${If} $UpdateMode = 1"));
         assert!(hooks.contains("--quit"));
-        let launch = installer_launch(Path::new("setup.exe"), &release::plugin_config(), &[]);
+        let config = release::plugin_config();
+        let launch = installer_launch(Path::new("setup.exe"), &config, Ui::Passive, &[]);
         let options: Vec<&str> = raw(&launch).split(' ').collect();
         assert!(options.contains(&"/UPDATE"));
         assert!(options.contains(&"/P"));
         assert!(!options.contains(&"/S"), "passive, not silent");
+
+        let launch = installer_launch(Path::new("setup.exe"), &config, Ui::Quiet, &[]);
+        let options: Vec<&str> = raw(&launch).split(' ').collect();
+        assert!(options.contains(&"/UPDATE"));
+        assert!(options.contains(&"/S"));
+        assert!(!options.contains(&"/P"), "silent, not passive");
     }
 
     #[test]
@@ -263,11 +322,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let fake = tmp.path().join("fake-setup.bat");
         std::fs::write(&fake, "@echo off\r\necho %*> \"%~dp0args.txt\"\r\n").unwrap();
-        let launch = installer_launch(&fake, &release::plugin_config(), &args(&["--autostart"]));
+        let config = release::plugin_config();
+        let launch = installer_launch(&fake, &config, Ui::Passive, &args(&["--autostart"]));
 
         SystemLauncher.launch(&launch).unwrap();
         let recorded = read_when_written(&tmp.path().join("args.txt"));
         assert_eq!(recorded.trim_end(), "/P /UPDATE /R /ARGS --autostart");
+
+        // pagle-backend#287: the quiet install's too.
+        std::fs::remove_file(tmp.path().join("args.txt")).unwrap();
+        let launch = installer_launch(&fake, &config, Ui::Quiet, &args(&["--autostart"]));
+        SystemLauncher.launch(&launch).unwrap();
+        let recorded = read_when_written(&tmp.path().join("args.txt"));
+        assert_eq!(recorded.trim_end(), "/S /UPDATE /R /ARGS --autostart");
     }
 
     #[cfg(unix)]
