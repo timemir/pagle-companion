@@ -10,6 +10,11 @@ updates:
     groups:
       cargo:
         patterns: ['*']
+    ignore:
+      # zbus 6 drops the blocking API the Secret Service store is built on;
+      # moving to it is #45.
+      - dependency-name: zbus
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: npm
     directory: /
