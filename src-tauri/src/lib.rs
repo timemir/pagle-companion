@@ -15,6 +15,8 @@ pub mod game_mode;
 pub mod handover;
 pub mod headless;
 pub mod host;
+#[cfg(test)]
+mod hostile_input;
 pub mod in_game;
 pub mod installs;
 pub mod link;
