@@ -29,8 +29,8 @@ use reqwest::header::HeaderName;
 use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use serde::Serialize;
 
-use crate::api::Api;
-use crate::credential_store::{Keychain, StoreError};
+use crate::api::{self, Api, BodyError};
+use crate::credential_store::{self, Keychain, StoreError};
 use crate::device_flow::Approval;
 use crate::notify::{Cause, CauseKey, Notifications, Notifier};
 use crate::state::{InGame, Store};
@@ -392,6 +392,10 @@ impl<N: Notifier> Account<'_, N> {
         else {
             return;
         };
+        if !credential_store::is_well_formed(successor) {
+            log::warn!("the successor credential isn't a Bearer token; keeping the current one");
+            return;
+        }
         // A link made meanwhile owns the store now.
         if !self.holds(current) {
             return;
@@ -614,12 +618,17 @@ pub async fn self_revoke(api: &Api, credential: &str, timeout: Duration) -> Resu
 }
 
 /// The refusal code of a reply: its body's `reason`, `code` or `error`,
-/// whichever is present (CMP-R50). The reply comes back whole.
+/// whichever is present (CMP-R50). The reply comes back whole; a body over
+/// the reply cap comes back empty, with no code, as "any other `4xx`".
 async fn refusal_code(reply: Response) -> Result<(Option<String>, Response), reqwest::Error> {
     let status = reply.status();
     let version = reply.version();
     let headers = reply.headers().clone();
-    let body = reply.bytes().await?;
+    let body = match api::read_capped(reply, api::REPLY_CAP).await {
+        Ok(body) => body,
+        Err(BodyError::TooLarge { .. }) => Vec::new(),
+        Err(BodyError::Http(e)) => return Err(e),
+    };
     let code = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
         .and_then(|json| {
@@ -1117,6 +1126,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reply.status(), 422);
+        assert_eq!(h.os.credential().as_deref(), Some(OLD));
+    }
+
+    #[tokio::test]
+    async fn a_successor_that_isnt_a_bearer_token_is_never_stored() {
+        // CMP-R49, CMP Contracts "Credential store entries": a successor
+        // that could split the credential file's line or the header is
+        // ignored, and the current credential stays in use
+        let h = Harness::windows(linked(None)).await;
+        h.os.write(OLD).unwrap();
+        stub_server::script(
+            &h.server,
+            "POST",
+            "uploads",
+            vec![ResponseTemplate::new(200).insert_header("Pagle-New-Credential", "pgc_a b")],
+        )
+        .await;
+
+        h.account()
+            .send(Method::POST, "uploads", |r| r)
+            .await
+            .unwrap();
         assert_eq!(h.os.credential().as_deref(), Some(OLD));
     }
 

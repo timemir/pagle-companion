@@ -18,6 +18,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Carries the running version on every request (DST Contracts, Version header).
 pub const VERSION_HEADER: HeaderName = HeaderName::from_static("pagle-companion-version");
 
+/// The most bytes of a JSON reply the Companion reads: a cursor, an Upload
+/// reply, a refusal, the device flow's answers or the config. Each is a few
+/// hundred bytes; anything longer is a broken or hostile server, and is
+/// refused before it can fill memory.
+pub const REPLY_CAP: usize = 1024 * 1024;
+
 /// The base URL this build talks to: `PAGLE_COMPANION_BASE_URL` in a debug
 /// build when it is set, otherwise `https://pagle.app`. Release builds ignore
 /// the variable.
@@ -44,6 +50,11 @@ impl Api {
     /// A client for `base_url` that sends `Pagle-Companion-Version: <version>`
     /// and nothing else about the machine: no `User-Agent`, no cookies
     /// (CMP-R6).
+    ///
+    /// It follows no redirect: no endpoint redirects, so a `3xx` is answered
+    /// like any other refusal, and the credential and Catch logs never go
+    /// anywhere but the base URL. A release build speaks HTTPS only (CMP
+    /// Contracts, HTTP).
     pub fn new(version: &str, base_url: impl Into<String>) -> Result<Self, ApiError> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -54,6 +65,8 @@ impl Api {
             .default_headers(headers)
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .https_only(!cfg!(debug_assertions))
             .build()
             .map_err(ApiError::Client)?;
         Ok(Self {
@@ -71,6 +84,44 @@ impl Api {
         let url = format!("{}/api/v1/{}", self.base_url, path.trim_start_matches('/'));
         self.http.request(method, url)
     }
+}
+
+/// Why a reply's body wasn't read.
+#[derive(Debug)]
+pub enum BodyError {
+    /// The body, decoded, is longer than the cap the reader was given.
+    TooLarge { cap: usize },
+    /// The connection failed mid-body, or the body doesn't decode.
+    Http(reqwest::Error),
+}
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BodyError::TooLarge { cap } => write!(f, "the reply's body is over {cap} bytes"),
+            BodyError::Http(e) => write!(f, "the reply's body didn't read: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for BodyError {}
+
+/// Reads `reply`'s body, decoded, refusing one longer than `cap` bytes.
+/// A gzip body is decoded as it arrives, so a small body that inflates past
+/// the cap stops at most one chunk past it, and a hostile or broken server
+/// can't make the Companion hold more than that.
+pub async fn read_capped(mut reply: reqwest::Response, cap: usize) -> Result<Vec<u8>, BodyError> {
+    if reply.content_length().is_some_and(|len| len > cap as u64) {
+        return Err(BodyError::TooLarge { cap });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = reply.chunk().await.map_err(BodyError::Http)? {
+        if body.len() + chunk.len() > cap {
+            return Err(BodyError::TooLarge { cap });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 #[derive(Debug)]
@@ -179,6 +230,86 @@ mod tests {
             resolve_base_url(true, Some("  ".into())),
             "https://pagle.app"
         );
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_not_followed() {
+        // The credential and Catch logs go to the base URL only: a 3xx comes
+        // back as the reply
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", "https://elsewhere.example/"),
+            )
+            .mount(&server)
+            .await;
+        let api = Api::new("1.0.0", server.uri()).unwrap();
+
+        let reply = api
+            .request(reqwest::Method::POST, "uploads")
+            .bearer_auth("pgc_secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), 307);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    /// A reply of `template`, with the server that sent it, which must live
+    /// while the body is read.
+    async fn reply_with(
+        template: wiremock::ResponseTemplate,
+    ) -> (wiremock::MockServer, reqwest::Response) {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer};
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        let api = Api::new("1.0.0", server.uri()).unwrap();
+        let reply = api.request(reqwest::Method::GET, "x").send().await.unwrap();
+        (server, reply)
+    }
+
+    #[tokio::test]
+    async fn a_body_up_to_the_cap_is_read() {
+        let body = vec![b'x'; 1000];
+        let (_server, reply) =
+            reply_with(wiremock::ResponseTemplate::new(200).set_body_bytes(body.clone())).await;
+        assert_eq!(read_capped(reply, 1000).await.unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_cap_is_refused() {
+        let (_server, reply) =
+            reply_with(wiremock::ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 1001])).await;
+        assert!(matches!(
+            read_capped(reply, 1000).await,
+            Err(BodyError::TooLarge { cap: 1000 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_gzip_body_that_inflates_past_the_cap_is_refused() {
+        // A few kilobytes of gzip that decode to 64 MiB stop at the cap
+        use std::io::Write as _;
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        gzip.write_all(&vec![0u8; 64 * 1024 * 1024]).unwrap();
+        let bomb = gzip.finish().unwrap();
+        assert!(bomb.len() < REPLY_CAP / 4);
+        let (_server, reply) = reply_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-encoding", "gzip")
+                .set_body_bytes(bomb),
+        )
+        .await;
+        assert!(matches!(
+            read_capped(reply, REPLY_CAP).await,
+            Err(BodyError::TooLarge { .. })
+        ));
     }
 
     #[test]

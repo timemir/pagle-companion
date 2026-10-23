@@ -30,6 +30,7 @@ mod tests;
 use reqwest::header::{ACCEPT_ENCODING, ETAG, IF_NONE_MATCH};
 
 use super::*;
+use crate::api::{self, BodyError};
 use crate::in_game::check::{self, ANGLERS_CAP};
 use crate::in_game::folders::etag_of;
 use crate::in_game::timer::FOLLOWING_INTERVAL;
@@ -267,7 +268,7 @@ impl Uploads {
                 }
             })
             .await;
-        let mut reply = match sent {
+        let reply = match sent {
             Ok(reply) => reply,
             Err(SendError::Http(e)) => return Reply::Retry(e.to_string()),
             Err(e) => return Reply::Ended(e.to_string()),
@@ -277,7 +278,7 @@ impl Uploads {
             // HEV-R37: `503 content_unavailable` with `Retry-After` before
             // the first content build; any other 503 is a 5xx (CMP-R50).
             let retry_after = retry_after(reply.headers());
-            return match reply.bytes().await {
+            return match api::read_capped(reply, api::REPLY_CAP).await {
                 Ok(body) => {
                     let refused = refusal(status, retry_after, &body);
                     if refused.code.as_deref() == Some(CONTENT_UNAVAILABLE) {
@@ -303,28 +304,24 @@ impl Uploads {
         }
         if !status.is_success() {
             let retry_after = retry_after(reply.headers());
-            return match reply.bytes().await {
+            return match api::read_capped(reply, api::REPLY_CAP).await {
                 Ok(body) => Reply::Refused(refusal(status, retry_after, &body)),
                 Err(e) => Reply::Retry(e.to_string()),
             };
         }
         // The client decodes a gzip body as it arrives, so stopping at the
         // cap inflates at most one chunk past it.
-        let mut body = Vec::new();
-        loop {
-            match reply.chunk().await {
-                Ok(Some(chunk)) => {
-                    if body.len() + chunk.len() > DECODED_CAP {
-                        lock(&self.backoff).reset();
-                        return Reply::Ok(Fetched::TooLarge);
-                    }
-                    body.extend_from_slice(&chunk);
-                }
-                Ok(None) => break,
-                // A connection lost mid-body, or a body that doesn't decode.
-                Err(e) => return Reply::Retry(format!("{status} whose body didn't read: {e}")),
+        let body = match api::read_capped(reply, DECODED_CAP).await {
+            Ok(body) => body,
+            Err(BodyError::TooLarge { .. }) => {
+                lock(&self.backoff).reset();
+                return Reply::Ok(Fetched::TooLarge);
             }
-        }
+            // A connection lost mid-body, or a body that doesn't decode.
+            Err(BodyError::Http(e)) => {
+                return Reply::Retry(format!("{status} whose body didn't read: {e}"));
+            }
+        };
         lock(&self.backoff).reset();
         Reply::Ok(Fetched::Body { body, etag })
     }
