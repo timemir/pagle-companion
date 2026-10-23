@@ -2,7 +2,7 @@
 //! `GET /api/v1/companion/config`, with the version header and no
 //! credential. A reply that isn't `200` JSON with a valid `MAJOR.MINOR.PATCH`
 //! `minCompanionVersion` and a non-blank `foreverProductUid` is a failed
-//! read (#18). Beside them, `recommendedCompanionVersion` (pagle-backend#287)
+//! read (#18). Beside them, `recommendedCompanionVersion` (DST-R67)
 //! is `0.0.0` when missing, so a backend from before it breaks nothing; one
 //! that isn't `MAJOR.MINOR.PATCH` reads as `0.0.0` too, since only the
 //! nudge hangs off it (`update_policy`).
@@ -21,7 +21,7 @@ pub const PATH: &str = "companion/config";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub min_companion_version: Version,
-    /// Below it, a waiting update nudges the Player (pagle-backend#287).
+    /// Below it, a waiting update nudges the Player (DST-R67).
     pub recommended_companion_version: Version,
     /// Served as it is, and compared byte for byte (CMP-R12).
     pub forever_product_uid: String,
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn the_recommended_version_is_read_beside_the_minimum() {
-        // pagle-backend#287: the config also returns
+        // DST-R63, DST-R67: the config also returns
         // recommendedCompanionVersion, MAJOR.MINOR.PATCH
         let config = parse(
             br#"{ "minCompanionVersion": "1.0.0", "recommendedCompanionVersion": "1.3.0",
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn a_missing_recommended_version_is_0_0_0() {
-        // pagle-backend#287: a missing field means 0.0.0, so an older backend
+        // DST-R67: a missing field means 0.0.0, so an older backend
         // doesn't break the Companion; a value that isn't MAJOR.MINOR.PATCH
         // loses only the nudge, never the minimum or the uid
         for body in [

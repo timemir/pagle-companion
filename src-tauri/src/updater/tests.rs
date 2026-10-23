@@ -834,7 +834,7 @@ fn restart_to_update_runs_the_verified_installer_passive_with_the_same_arguments
 
 #[test]
 fn an_install_the_player_didnt_choose_runs_the_verified_installer_quietly() {
-    // pagle-backend#287: the idle and forced installs run the installer
+    // DST-R76: the idle and forced installs run the installer
     // quietly (NSIS /S) with the running process's arguments, verified again
     // first as any install (DST-R54)
     let world = World::new();
@@ -1001,7 +1001,7 @@ fn restart_to_update_on_linux_starts_the_replaced_appimage_with_the_same_argumen
     );
     assert_eq!(fs::read(&appimage).unwrap(), bytes);
 
-    // pagle-backend#287: the idle install restarts into the same AppImage;
+    // DST-R76: the idle install restarts into the same AppImage;
     // quiet has nothing to hide on Linux.
     assert_eq!(
         updater.install(&recorder, install::Ui::Quiet, &args(&["--autostart"])),

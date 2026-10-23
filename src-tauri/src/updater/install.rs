@@ -6,7 +6,7 @@
 //!   update: `plugins.updater.windows.installMode`'s arguments (`/P`,
 //!   passive: a progress bar, no questions; [`Ui::Passive`]) or, for an
 //!   install the Player didn't choose, quiet mode's (`/S`: no progress bar,
-//!   no window; [`Ui::Quiet`], pagle-backend#287), `/UPDATE`, then `/R
+//!   no window; [`Ui::Quiet`], DST-R76), `/UPDATE`, then `/R
 //!   /ARGS` and this process's arguments, so that the installer starts the
 //!   new version with them once it is installed (DST-R13); then the configured
 //!   `installerArgs` (none). `/UPDATE` is how the installer and
@@ -35,7 +35,7 @@ pub enum Ui {
     Passive,
     /// NSIS `/S`: no progress bar, no window and so no notification. The
     /// installs the Player didn't choose: the idle install and the forced
-    /// one under update required (pagle-backend#287).
+    /// one under update required (DST-R76, DST-R56).
     Quiet,
 }
 
@@ -99,6 +99,13 @@ fn raw_arg(_command: &mut Command, _line: &str) -> io::Result<()> {
 
 /// NSIS's silent option, which the updater plugin's `quiet` install mode
 /// passes in place of passive's `/P`.
+///
+/// A plain `/S` install starts nothing afterwards (DST-R10). With `/R`, Tauri's
+/// installer template (tauri-cli 2.12, `.onInstSuccess`) starts the installed
+/// Companion with the `/ARGS` value for `${Silent}` as for passive mode, so
+/// the quiet update keeps `/R /ARGS` and restarts with the old arguments as
+/// DST-R13's passive one does (DST-R76). `/UPDATE` still sets `$UpdateMode`,
+/// which skips the reinstall page and keeps local state (DST-R14).
 pub const QUIET: &str = "/S";
 
 /// The kept installer, run as an update shown as `ui` with `args`, this
@@ -213,7 +220,7 @@ mod tests {
 
     #[test]
     fn a_quiet_install_runs_silent_as_an_update_and_restarts_with_the_same_arguments() {
-        // pagle-backend#287: the idle install runs the installer quietly
+        // DST-R76: the idle install runs the installer quietly
         // (NSIS /S) with the start arguments of the running process, as the
         // passive install passes them: /S in place of /P, the rest the same
         let installer = Path::new(r"C:\state\pagle-companion_1.2.0_x64-setup.exe");
@@ -329,7 +336,7 @@ mod tests {
         let recorded = read_when_written(&tmp.path().join("args.txt"));
         assert_eq!(recorded.trim_end(), "/P /UPDATE /R /ARGS --autostart");
 
-        // pagle-backend#287: the quiet install's too.
+        // DST-R76: the quiet install's too.
         std::fs::remove_file(tmp.path().join("args.txt")).unwrap();
         let launch = installer_launch(&fake, &config, Ui::Quiet, &args(&["--autostart"]));
         SystemLauncher.launch(&launch).unwrap();

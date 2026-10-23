@@ -7,7 +7,7 @@
 //! when its hooks decide to ([`Updater::install`], [`install`]). It shows
 //! nothing itself: what the Player sees of a waiting update, and when it
 //! installs without being asked, is `update_policy`'s and
-//! `update_required`'s (pagle-backend#287).
+//! `update_required`'s (DST-R56, DST-R76, DST-R78).
 //!
 //! It runs in the process that holds the watcher lock, tray or headless
 //! ([`start`], from `companion::start_watching`; DST-R51, CMP-R2), and needs
@@ -284,7 +284,7 @@ impl Updater {
     /// Installs the waiting update (DST-R54): on Windows verifies the kept
     /// installer again against the public key, then runs it, shown as `ui`
     /// (passive, or quiet for an install the Player didn't choose,
-    /// pagle-backend#287), as an update that starts the new version with
+    /// DST-R76), as an update that starts the new version with
     /// `args` (DST-R13); on Linux starts the replaced AppImage with `args`.
     /// `args` are this process's arguments without the program. On
     /// [`Installed::Started`] the caller exits.
