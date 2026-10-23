@@ -12,6 +12,7 @@
     <script src="linking.js" defer></script>
     <script src="catch-logs.js" defer></script>
     <script src="settings.js" defer></script>
+    <script src="update.js" defer></script>
     <script src="first-run.js" defer></script>
   </head>
   <body>
@@ -78,6 +79,7 @@
         </div>
         <p id="needs-you" class="notice act" hidden><span id="needs-you-text"></span> <button id="needs-you-show" type="button" class="link">Show</button></p>
         <p id="stop-message" class="notice stop" role="status" hidden></p>
+        <p id="update-ready" class="notice info" role="status" hidden><span id="update-ready-text"></span> <button id="update-restart" type="button" class="small">Restart to update</button></p>
         <p id="keyring-locked" class="notice act" hidden>Pagle Companion can't open your keyring. Unlock it to keep uploading.</p>
         <div id="unlink-confirm" class="confirm" role="alertdialog" aria-labelledby="unlink-question" hidden>
           <p id="unlink-question">Unlink this Companion? Pagle keeps your Catch logs; this computer stops uploading.</p>
@@ -118,6 +120,7 @@
         <h2 id="settings-heading">Settings</h2>
         <div class="settings-list">
         <label class="switch"><input id="start-at-login" type="checkbox" role="switch" disabled /><span>Start at login</span></label>
+        <label class="switch"><input id="install-updates-automatically" type="checkbox" role="switch" disabled /><span>Install updates automatically</span></label>
         <div id="game-mode-setting" hidden>
           <label class="switch"><input id="game-mode" type="checkbox" role="switch" disabled /><span>Keep uploading in Game Mode (experimental)</span></label>
           <p class="muted"><button id="steam-deck-report" type="button" class="link">Report how it works on your Steam Deck</button></p>

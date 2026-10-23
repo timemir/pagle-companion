@@ -132,6 +132,15 @@ impl Linking {
         self.lock().view.clone()
     }
 
+    /// Whether a device flow is starting or waiting for approval
+    /// (DST-R76: the idle install waits for it).
+    pub fn under_way(&self) -> bool {
+        matches!(
+            self.lock().view,
+            LinkingView::Starting | LinkingView::Waiting { .. }
+        )
+    }
+
     /// The page to open while waiting.
     pub fn page(&self) -> Option<String> {
         self.lock().page.clone()
@@ -404,6 +413,23 @@ mod tests {
         assert!(!linking.is_current(attempt));
         assert!(!linking.show(attempt, waiting(), None));
         assert_eq!(linking.view(), LinkingView::Idle);
+    }
+
+    #[test]
+    fn linking_is_under_way_while_starting_or_waiting() {
+        // DST-R76: idle means no linking in progress; an attempt
+        // that has ended, with its outcome showing, is no longer under way
+        let linking = Linking::default();
+        assert!(!linking.under_way());
+        let (attempt, _ended) = linking.begin();
+        assert!(linking.under_way());
+        linking.show(attempt, waiting(), None);
+        assert!(linking.under_way());
+        linking.end_with("Linking failed.".into(), OutcomeKind::Act);
+        assert!(!linking.under_way());
+        linking.begin();
+        linking.cancel();
+        assert!(!linking.under_way());
     }
 
     #[test]

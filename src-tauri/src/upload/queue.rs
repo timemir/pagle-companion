@@ -188,6 +188,13 @@ impl Queue {
             .count()
     }
 
+    /// Whether an upload run is in progress or queued to start: the idle
+    /// install waits for both (DST-R76). In-game downloads don't
+    /// count.
+    pub fn has_runs(&self) -> bool {
+        self.running.is_some() || self.items.iter().any(|item| item.run().is_some())
+    }
+
     /// Drops the queued runs of `log_id` (CMP-R41). Returns whether its run
     /// is in progress, which stops after its current request.
     pub fn drop_runs(&mut self, log_id: &str) -> bool {
@@ -248,6 +255,24 @@ mod tests {
         // Downloads aren't runs.
         assert_eq!(queue.post_link_runs(), 0);
         assert!(!queue.is_empty());
+    }
+
+    #[test]
+    fn a_run_queued_or_in_progress_keeps_the_companion_busy() {
+        // DST-R76: idle means no upload run in progress; a queued
+        // run is about to be, and an in-game download is no upload run
+        let mut queue = Queue::default();
+        assert!(!queue.has_runs());
+        queue.push_download(DataFile::Following);
+        assert!(!queue.has_runs());
+        queue.push(A, Trigger::Change);
+        assert!(queue.has_runs());
+        assert_eq!(run(queue.pop()).log_id, A);
+        assert!(queue.has_runs(), "in progress");
+        queue.done();
+        assert!(!queue.has_runs());
+        queue.pop();
+        assert!(!queue.has_runs(), "a download in progress");
     }
 
     #[test]

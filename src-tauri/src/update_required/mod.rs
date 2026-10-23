@@ -1,10 +1,12 @@
 //! Update required (DST-R56 to DST-R58) and the config reads that drive it.
 //! After every update check comes one config read ([`config`], DST-R51,
-//! DST-R63). Its Forever product uid is kept in local state (CMP-R12), and
-//! its `minCompanionVersion` enters or leaves update required. While update
-//! required, config is read every required-state config interval too, and
-//! each check picks DST-R57's text, shown as the stop message and raised as
-//! the notification once per run.
+//! DST-R63). Its Forever product uid is kept in local state (CMP-R12), its
+//! `recommendedCompanionVersion` goes to `update_policy` (DST-R67), and its
+//! `minCompanionVersion` enters or leaves update required. While update
+//! required, config is read every required-state config interval too, a
+//! waiting update installs at once after each check (DST-R56), and a check
+//! with nothing it could install picks DST-R57's text, shown as the stop
+//! message and raised as the notification once per run.
 //!
 //! [`Enforcer`] makes the decisions and acts through an [`Env`]; `window` is
 //! its glue in tray and headless mode. The updater's hooks call it after each
@@ -100,9 +102,12 @@ pub trait Env {
     fn check_soon(&self);
     /// Stops device-flow polling under way (CMP-R60).
     fn stop_linking(&self);
-    /// Headless: exits with status 0 so the unit starts the new version
-    /// (DST-R58). Tray mode does nothing: **Restart to update** shows.
-    fn exit_for_update(&self);
+    /// Installs the waiting update at once, whatever the setting or idle
+    /// state (DST-R56): tray mode runs the installer quietly (DST-R76) or
+    /// starts the new AppImage, and exits; headless exits with status 0 so
+    /// the unit starts the new version (DST-R58). Returns whether the
+    /// process is exiting for it.
+    fn install_now(&self) -> bool;
 }
 
 /// The process's update-required decisions.
@@ -136,8 +141,10 @@ impl Enforcer {
     }
 
     /// After every update check (DST-R51): reads config, then, while update
-    /// required, shows the text this check picks (DST-R57), and exits headless
-    /// once an update is waiting (DST-R58).
+    /// required, installs a waiting update at once (DST-R56, DST-R58), and
+    /// with nothing it could install shows the text this check picks
+    /// (DST-R57). An install that couldn't start, or whose installer failed
+    /// its second verification, picks a text too.
     pub fn after_check<E: Env>(&self, env: &E, checked: &Checked, now: SystemTime) {
         {
             let mut inner = self.lock();
@@ -149,12 +156,12 @@ impl Enforcer {
         if !env.update_required() {
             return;
         }
+        if env.update_waiting() && env.install_now() {
+            return;
+        }
         let waiting = env.update_waiting();
         if let Some(text) = pick(checked, waiting, env.failed_verifications()) {
             env.show(text);
-        }
-        if waiting {
-            env.exit_for_update();
         }
     }
 

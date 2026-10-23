@@ -345,6 +345,12 @@ impl Uploads {
         log::info!("cancelled the upload queue");
     }
 
+    /// Whether an upload run is in progress or queued (DST-R76:
+    /// the idle install waits for it).
+    pub fn run_under_way(&self) -> bool {
+        self.lock().queue.has_runs()
+    }
+
     /// Waits for the next item and marks it in progress. Pass it to
     /// [`Uploads::run_item`].
     pub async fn next(&self) -> Item {

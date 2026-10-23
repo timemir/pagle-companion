@@ -18,7 +18,10 @@
 //! `updater`, `update_required`, started with the other parts): on Linux the
 //! AppImage is replaced as soon as an update verifies (DST-R54). While update
 //! required, once the new file is in place, it releases the lock and exits 0,
-//! so that its unit (`Restart=always`) starts the new version (DST-R58). No
+//! so that its unit (`Restart=always`) starts the new version (DST-R58). It
+//! exits the same way under the idle rule when "Install updates
+//! automatically" is on, which it reads from local state (DST-R76,
+//! DST-R77): with no window, idle is no upload run and no linking. No
 //! notification shows.
 
 use std::error::Error;
@@ -29,7 +32,8 @@ use crate::host::{Host, Parts};
 use crate::linking;
 use crate::notify::Silent;
 use crate::state_dir::StateDir;
-use crate::update_required::window::Required;
+use crate::update_policy::Policy;
+use crate::updater::{Installed, Updater};
 
 /// The exit status of `--headless` where headless mode doesn't exist, on
 /// Windows (CMP Contracts, Command line).
@@ -44,8 +48,8 @@ pub const LOCK_HELD: i32 = 3;
 pub enum Outcome {
     /// Stopped by a signal, the lock released.
     Stopped,
-    /// Update required, with the new AppImage in place: the unit starts it
-    /// (DST-R58).
+    /// The new AppImage is in place, and update required or the idle rule
+    /// installs it: the unit starts it (DST-R58, DST-R76).
     Updated,
     /// Another process holds the watcher lock (CMP-R2).
     LockHeld,
@@ -75,7 +79,8 @@ pub enum Start {
 pub enum Ending {
     /// One of the stopping signals.
     Signal(i32),
-    /// DST-R58's exit for the new version.
+    /// DST-R58's exit for the new version, under update required or the
+    /// idle rule (DST-R76).
     Updated,
 }
 
@@ -125,9 +130,16 @@ pub fn start(state_dir: StateDir, version: &str) -> Result<Start, Box<dyn Error>
         Box::new(Silent),
     )?;
     let (endings, ended) = mpsc::channel();
+    // DST-R58, DST-R76: installing is exiting; the unit starts the new
+    // AppImage, already in place (DST-R54).
     let updated = endings.clone();
-    parts.state::<Required>().exit_with(move || {
+    let installing = parts.clone();
+    parts.state::<Policy>().install_with(move || {
+        let Some(waiting) = installing.state::<Updater>().waiting() else {
+            return Installed::NothingWaiting;
+        };
         let _ = updated.send(Ending::Updated);
+        Installed::Started(waiting.version)
     });
     parts.state::<Companion>().hold_watcher(lock);
     log::info!("took the watcher lock");
@@ -182,7 +194,7 @@ pub fn run() -> i32 {
                     Outcome::Stopped
                 }
                 Ending::Updated => {
-                    log::info!("update required and the new version is in place: exiting");
+                    log::info!("the new version is in place: exiting for it");
                     Outcome::Updated
                 }
             };

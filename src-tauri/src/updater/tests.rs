@@ -792,7 +792,10 @@ fn nothing_waiting_installs_nothing() {
     let updater = world.updater("1.0.0");
     updater.tick(t0());
     let recorder = Recorder::default();
-    assert_eq!(updater.install(&recorder, &[]), Installed::NothingWaiting);
+    assert_eq!(
+        updater.install(&recorder, install::Ui::Passive, &[]),
+        Installed::NothingWaiting
+    );
     assert!(recorder.launches().is_empty());
 }
 
@@ -808,7 +811,7 @@ fn restart_to_update_runs_the_verified_installer_passive_with_the_same_arguments
     let recorder = Recorder::default();
 
     assert_eq!(
-        updater.install(&recorder, &args(&["--autostart"])),
+        updater.install(&recorder, install::Ui::Passive, &args(&["--autostart"])),
         Installed::Started(v("1.2.0"))
     );
     assert_eq!(
@@ -830,6 +833,43 @@ fn restart_to_update_runs_the_verified_installer_passive_with_the_same_arguments
 }
 
 #[test]
+fn an_install_the_player_didnt_choose_runs_the_verified_installer_quietly() {
+    // DST-R76: the idle and forced installs run the installer quietly (NSIS
+    // /S) with the running process's arguments plus --autostart, verified
+    // again first as any install (DST-R54)
+    let world = World::new();
+    world.publish("1.2.0");
+    let updater = world.updater("1.0.0");
+    updater.tick(t0());
+    let recorder = Recorder::default();
+
+    assert_eq!(
+        updater.install(&recorder, install::Ui::Quiet, &[]),
+        Installed::Started(v("1.2.0"))
+    );
+    assert_eq!(
+        recorder.launches(),
+        [installer_run(
+            &world,
+            "1.2.0",
+            "/S /UPDATE /R /ARGS --autostart"
+        )]
+    );
+
+    // A tampered one is refused quietly too.
+    let world = World::new();
+    world.publish("1.2.0");
+    let updater = world.updater("1.0.0");
+    updater.tick(t0());
+    fs::write(updater.waiting().unwrap().file, b"MZ tampered").unwrap();
+    assert_eq!(
+        updater.install(&recorder, install::Ui::Quiet, &[]),
+        Installed::NotVerified { in_a_row: 1 }
+    );
+    assert_eq!(recorder.launches().len(), 1);
+}
+
+#[test]
 fn a_tampered_installer_is_refused_deleted_counted_and_fetched_again() {
     // DST-R54, DST-R53, DST-R57: a kept installer changed after download
     // fails its second verification, never runs, is deleted and counted in
@@ -842,7 +882,7 @@ fn a_tampered_installer_is_refused_deleted_counted_and_fetched_again() {
     let recorder = Recorder::default();
 
     assert_eq!(
-        updater.install(&recorder, &[]),
+        updater.install(&recorder, install::Ui::Passive, &[]),
         Installed::NotVerified { in_a_row: 1 }
     );
     assert!(recorder.launches().is_empty());
@@ -922,7 +962,7 @@ fn an_installer_that_cant_start_stays_waiting() {
     updater.tick(t0());
 
     assert_eq!(
-        updater.install(&Recorder::failing(), &[]),
+        updater.install(&Recorder::failing(), install::Ui::Passive, &[]),
         Installed::CouldntStart
     );
     let waiting = updater.waiting().unwrap();
@@ -949,7 +989,7 @@ fn restart_to_update_on_linux_starts_the_replaced_appimage_with_the_same_argumen
     let recorder = Recorder::default();
 
     assert_eq!(
-        updater.install(&recorder, &args(&["--autostart"])),
+        updater.install(&recorder, install::Ui::Passive, &args(&["--autostart"])),
         Installed::Started(v("1.2.0"))
     );
     assert_eq!(
@@ -960,6 +1000,20 @@ fn restart_to_update_on_linux_starts_the_replaced_appimage_with_the_same_argumen
         }]
     );
     assert_eq!(fs::read(&appimage).unwrap(), bytes);
+
+    // DST-R76: the idle and forced installs restart into the same AppImage,
+    // with --autostart added so it comes back in the tray with no window.
+    assert_eq!(
+        updater.install(&recorder, install::Ui::Quiet, &[]),
+        Installed::Started(v("1.2.0"))
+    );
+    assert_eq!(
+        recorder.launches()[1],
+        install::Launch {
+            program: appimage.clone(),
+            command_line: install::CommandLine::Args(vec!["--autostart".into()]),
+        }
+    );
 }
 
 #[test]

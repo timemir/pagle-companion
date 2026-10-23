@@ -20,6 +20,7 @@ use crate::notify::{Notifications, Notifier};
 use crate::readings::{self, Readings};
 use crate::state::{self, Loaded, State, Store};
 use crate::state_dir::{StateDir, WatcherLock};
+use crate::update_policy::{self, Policy};
 use crate::update_required::{self, window::Required};
 use crate::updater::{self, Updater};
 use crate::upload::{self, Uploads, queue::Trigger};
@@ -173,22 +174,29 @@ pub fn manage<H: Host>(
     };
     let updater_hooks = updater::Hooks {
         // Restart to update shows while an update waits (DST-R54); then the
-        // config read that follows each check (DST-R51).
+        // config read that follows each check (DST-R51), and under update
+        // required the install at once (DST-R56).
         after_check: {
             let host = host.clone();
             Box::new(move |checked| {
                 host.show_waiting_update();
                 update_required::window::after_check(&host, checked);
+                update_policy::window::checked(&host);
             })
         },
-        // DST-R56: the required-state config reads, by the update tick.
+        // DST-R56: the required-state config reads, by the update tick; then
+        // the idle install (DST-R76) and the update texts (DST-R78).
         ticked: {
             let host = host.clone();
-            Box::new(move |now| update_required::window::tick(&host, now))
+            Box::new(move |now| {
+                update_required::window::tick(&host, now);
+                update_policy::window::tick(&host);
+            })
         },
     };
     host.manage(Updater::new(&state_dir, &version, updater_hooks).map_err(api::ApiError::Client)?);
     host.manage(Required::new(&version));
+    host.manage(Policy::new(&version));
     host.manage(Companion {
         api: Api::new(&version, api::base_url())?,
         notifications: Notifications::new(notifier),

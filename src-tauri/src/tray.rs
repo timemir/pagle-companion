@@ -3,9 +3,11 @@
 //! shares with headless mode are `companion`'s.
 //!
 //! It installs a waiting update (DST-R54) from **Restart to update**, shown
-//! while one waits, and at start once it holds the watcher lock, before
-//! anything is watched (`updater::Updater::install`); either way it then
-//! exits, without starting the Game Mode unit (CMP-R92).
+//! while one waits, in the tray menu and the window (DST-R78), and at start
+//! once it holds the watcher lock, before anything is watched, both passive
+//! (`updater::Updater::install`, DST-R13); and quietly when idle or while
+//! update required (DST-R76, DST-R56: `update_policy`, `update_required`).
+//! Each way it then exits, without starting the Game Mode unit (CMP-R92).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +30,8 @@ use crate::local_log::Logger;
 use crate::os_notify::OsNotifier;
 use crate::state::State;
 use crate::state_dir::{self, StateDir};
-use crate::updater::install::{CommandLine, Launch, Launcher, SystemLauncher};
+use crate::update_policy::{self, Policy};
+use crate::updater::install::{CommandLine, Launch, Launcher, SystemLauncher, Ui};
 use crate::updater::{Installed, Updater};
 use crate::upload::{self, queue::Trigger};
 use crate::{
@@ -138,6 +141,10 @@ pub fn run(mode: Mode) {
             game_mode::window::game_mode,
             game_mode::window::set_game_mode,
             game_mode::window::open_steam_deck_report,
+            update_policy::window::update_view,
+            update_policy::window::restart_to_update,
+            update_policy::window::install_updates_automatically,
+            update_policy::window::set_install_updates_automatically,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -243,6 +250,11 @@ fn start(
         state,
         Box::new(OsNotifier::new(app.clone())),
     )?;
+    // DST-R76, DST-R56: the installs the Player didn't choose run quietly.
+    app.state::<Policy>().install_with({
+        let app = app.clone();
+        move || install_quietly(&app)
+    });
     // CMP-R100: before anything is watched, so nothing notifies while the
     // first-run window is open.
     first_run::window::manage(app, first_run);
@@ -494,21 +506,36 @@ pub fn show_waiting_update(app: &AppHandle) {
     }
 }
 
-/// **Restart to update** (DST-R54): installs the waiting update and exits,
+/// **Restart to update** (DST-R54), from the tray menu or the window
+/// (DST-R78): installs the waiting update passive (DST-R13) and exits,
 /// abandoning an Upload in flight, which the next start resumes from the
 /// server's cursor (DST-R100). An installer that fails its second
-/// verification is deleted and the item goes away.
-fn restart_to_update(app: &AppHandle) {
+/// verification is deleted and the item and the window's notice go away.
+pub fn restart_to_update(app: &AppHandle) {
     let app = app.clone();
     // Off the main thread: verifying reads the whole installer.
     std::thread::spawn(move || {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let installed = app
-            .state::<Updater>()
-            .install(&TrayLauncher(app.clone()), &args);
+        let installed =
+            app.state::<Updater>()
+                .install(&TrayLauncher(app.clone()), Ui::Passive, &args);
         exit_if_started(&app, &installed);
         show_waiting_update(&app);
+        update_policy::window::refresh(&app);
     });
+}
+
+/// The idle install and the install at once under update required (DST-R76,
+/// DST-R56): the waiting update, installed quietly with this process's
+/// arguments plus `--autostart`, then exit. Called on the updater's thread.
+fn install_quietly(app: &AppHandle) -> Installed {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let installed = app
+        .state::<Updater>()
+        .install(&TrayLauncher(app.clone()), Ui::Quiet, &args);
+    exit_if_started(app, &installed);
+    show_waiting_update(app);
+    installed
 }
 
 /// DST-R54, DST-R100: at start, before anything is scanned or uploaded, a
@@ -549,16 +576,20 @@ impl Launcher for TrayLauncher {
 }
 
 /// The tray's status line (CMP UI, tray menu): during a stop its stop
-/// message, else "Not linked", or the window's "Last uploaded {relative
-/// time}" ("Nothing uploaded yet" before anything is).
+/// message, else DST-R78's `update` line when it applies, else "Not
+/// linked", or the window's "Last uploaded {relative time}" ("Nothing
+/// uploaded yet" before anything is).
 pub fn tray_status_line(
     linked: bool,
     stop: Option<&str>,
+    update: Option<&str>,
     last_uploaded: Option<i64>,
     now: i64,
 ) -> String {
     if let Some(stop) = stop {
         stop.to_owned()
+    } else if let Some(update) = update {
+        update.to_owned()
     } else if linked {
         upload::window::last_uploaded_text(last_uploaded, now)
     } else {
@@ -595,6 +626,7 @@ pub fn show_tray_status(app: &AppHandle) {
     let line = tray_status_line(
         items.linked.load(Ordering::SeqCst),
         stop.as_deref(),
+        update_policy::window::tray_line(app),
         last,
         upload::window::now(),
     );
@@ -675,6 +707,14 @@ pub fn show_main_window(app: &AppHandle) {
     if let Err(e) = built {
         log::error!("couldn't open the window: {e}");
     }
+}
+
+/// Whether the window is open, minimized included: shown, and not closed to
+/// the tray (DST-R76). A window whose state can't be read counts as open,
+/// so nothing installs under the Player.
+pub fn window_open(app: &AppHandle) -> bool {
+    app.get_webview_window(MAIN_WINDOW)
+        .is_some_and(|window| window.is_visible().unwrap_or(true))
 }
 
 /// Whether `url` is a page of `dev_url`'s server, which `tauri dev` serves
@@ -831,10 +871,13 @@ mod tests {
     fn the_tray_says_not_linked_until_linked() {
         // CMP UI, tray menu: the status line reads "Not linked" while not
         // linked
-        assert_eq!(tray_status_line(false, None, None, 0), "Not linked");
-        assert_eq!(tray_status_line(false, None, Some(0), 600), "Not linked");
+        assert_eq!(tray_status_line(false, None, None, None, 0), "Not linked");
         assert_eq!(
-            tray_status_line(true, None, None, 0),
+            tray_status_line(false, None, None, Some(0), 600),
+            "Not linked"
+        );
+        assert_eq!(
+            tray_status_line(true, None, None, None, 0),
             "Nothing uploaded yet"
         );
     }
@@ -844,17 +887,36 @@ mod tests {
         // CMP UI, tray menu: a status line "Last uploaded â€¦", "Not linked",
         // or the stop message (CMP-R50)
         let stop = "This Player is suspended. Contact support@pagle.app.";
-        assert_eq!(tray_status_line(true, Some(stop), Some(0), 600), stop);
-        assert_eq!(tray_status_line(false, Some(stop), None, 0), stop);
+        assert_eq!(tray_status_line(true, Some(stop), None, Some(0), 600), stop);
+        assert_eq!(tray_status_line(false, Some(stop), None, None, 0), stop);
     }
 
     #[test]
     fn the_tray_shows_last_uploaded_once_there_is_one() {
         // CMP UI, tray menu: a status line "Last uploaded {relative time}"
         assert_eq!(
-            tray_status_line(true, None, Some(1_000), 1_000 + 2 * 3_600),
+            tray_status_line(true, None, None, Some(1_000), 1_000 + 2 * 3_600),
             "Last uploaded 2 hours ago"
         );
+    }
+
+    #[test]
+    fn the_update_line_takes_the_place_of_last_uploaded_but_never_of_a_stop() {
+        // DST-R78: the tray status line shows "Update ready: restart to
+        // update" in place of "Last uploaded …" or "Not linked", never over
+        // a stop message (CMP-R50)
+        let update = Some(update_policy::TRAY_LINE);
+        assert_eq!(update, Some("Update ready: restart to update"));
+        assert_eq!(
+            tray_status_line(true, None, update, Some(1_000), 2_000),
+            "Update ready: restart to update"
+        );
+        assert_eq!(
+            tray_status_line(false, None, update, None, 0),
+            "Update ready: restart to update"
+        );
+        let stop = "This Player is suspended. Contact support@pagle.app.";
+        assert_eq!(tray_status_line(true, Some(stop), update, None, 0), stop);
     }
 
     #[test]

@@ -3,7 +3,6 @@
 //! in this process. "Every mode" (DST-R51) is the process that holds the
 //! watcher lock: the updater, and so these hooks, run only there (CMP-R2).
 
-use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use super::{Config, Enforcer, Env, Text, config};
@@ -15,26 +14,20 @@ use crate::link::Stop;
 use crate::linking;
 use crate::notify::Cause;
 use crate::state::ConfigRead;
+use crate::update_policy;
 use crate::updater::{Checked, Updater};
 use crate::upload::{self, queue::Trigger};
 
 /// The process's update-required part.
 pub struct Required {
     enforcer: Enforcer,
-    exit: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Required {
     pub fn new(version: &str) -> Self {
         Self {
             enforcer: Enforcer::new(version),
-            exit: OnceLock::new(),
         }
-    }
-
-    /// Headless mode: what DST-R58's exit does. Tray mode sets none.
-    pub fn exit_with(&self, exit: impl Fn() + Send + Sync + 'static) {
-        let _ = self.exit.set(Box::new(exit));
     }
 }
 
@@ -99,6 +92,8 @@ impl<H: Host> Env for AppEnv<'_, H> {
         if let Err(e) = kept {
             log::error!("couldn't write state.json: {e}");
         }
+        // DST-R67: kept in memory; a failed read keeps it (DST-R99).
+        update_policy::window::recommend(self.0, &config.recommended_companion_version);
         if before != uid {
             log::info!("the Forever product uid is now {uid:?}; scanning");
             if let Some(scanner) = self.0.try_state::<Scanner>() {
@@ -151,9 +146,7 @@ impl<H: Host> Env for AppEnv<'_, H> {
         linking::stop_for_update_required(self.0);
     }
 
-    fn exit_for_update(&self) {
-        if let Some(exit) = self.0.try_state::<Required>().and_then(|r| r.exit.get()) {
-            exit();
-        }
+    fn install_now(&self) -> bool {
+        update_policy::window::install_now(self.0)
     }
 }

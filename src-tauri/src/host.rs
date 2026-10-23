@@ -58,6 +58,10 @@ pub trait Host: Clone + Send + Sync + 'static {
     /// Shows **Restart to update** in the tray while an update waits
     /// (DST-R54). Without a tray it does nothing.
     fn show_waiting_update(&self);
+
+    /// Whether the window is open, for the idle install (DST-R76). Without a
+    /// window it never is.
+    fn window_open(&self) -> bool;
 }
 
 impl Host for AppHandle {
@@ -89,6 +93,10 @@ impl Host for AppHandle {
 
     fn show_waiting_update(&self) {
         tray::show_waiting_update(self);
+    }
+
+    fn window_open(&self) -> bool {
+        tray::window_open(self)
     }
 }
 
@@ -125,6 +133,10 @@ impl Host for Parts {
     fn show_catch_logs(&self, _view: &catch_logs::View) {}
 
     fn show_waiting_update(&self) {}
+
+    fn window_open(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -148,7 +160,9 @@ mod tests {
 
     #[test]
     fn headless_mode_shows_nothing() {
-        // CMP-R1: no window in headless mode; showing a change does nothing
+        // CMP-R1: no window in headless mode; showing a change does nothing,
+        // and the window is never open (DST-R76)
         Parts::default().emit("status", "anything");
+        assert!(!Parts::default().window_open());
     }
 }

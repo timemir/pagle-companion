@@ -3,9 +3,11 @@
 //! ([`release`]) in the background at once, verifies it against the embedded
 //! public key, and keeps it **waiting** ([`keep`]). It counts failed
 //! verifications in `updater.json` ([`record`]). It installs the waiting
-//! update when asked, from **Restart to update** or at the next start
-//! ([`Updater::install`], [`install`]). It shows nothing: no notification and
-//! no setting for an ordinary update (DST-R55).
+//! update when asked, from **Restart to update** or at the next start, or
+//! when its hooks decide to ([`Updater::install`], [`install`]). It shows
+//! nothing itself: what the Player sees of a waiting update, and when it
+//! installs without being asked, is `update_policy`'s and
+//! `update_required`'s (DST-R56, DST-R76, DST-R78).
 //!
 //! It runs in the process that holds the watcher lock, tray or headless
 //! ([`start`], from `companion::start_watching`; DST-R51, CMP-R2), and needs
@@ -14,14 +16,15 @@
 //! Its seams:
 //! - [`Hooks::after_check`] hears the outcome of every check, [`Checked`]:
 //!   the config read that follows each check (DST-R51, DST-R63), DST-R57's
-//!   notification and DST-R58's headless exit hang off it
-//!   (`update_required`); [`Hooks::ticked`] hears every update tick, for the
-//!   required-state config reads (DST-R56);
+//!   notification and the forced install hang off it (`update_required`);
+//!   [`Hooks::ticked`] hears every update tick, for the required-state config
+//!   reads (DST-R56) and the idle install and the nudge (`update_policy`);
 //! - [`Updater::check_soon`] checks at the next tick, whenever the last check
 //!   was (DST-R56's check at once);
 //! - [`Updater::install`] and [`Updater::install_at_start`] install the
-//!   waiting update through an [`install::Launcher`], and say whether the
-//!   process must now exit (DST-R54, DST-R13).
+//!   waiting update through an [`install::Launcher`], passive or quiet
+//!   ([`install::Ui`]), and say whether the process must now exit (DST-R54,
+//!   DST-R13).
 //!
 //! An update check sends no credential, no Player data and no device
 //! identifier (DST-R50, CMP-R6): its own client, without the backend's
@@ -46,7 +49,7 @@ use semver::Version;
 use crate::api::{self, CONNECT_TIMEOUT, REQUEST_TIMEOUT};
 use crate::host::Host;
 use crate::state_dir::StateDir;
-use install::Launcher;
+use install::{Launcher, Ui};
 use keep::{Keeper, Waiting};
 use record::Failures;
 use release::{Latest, VerifyError};
@@ -279,15 +282,16 @@ impl Updater {
     }
 
     /// Installs the waiting update (DST-R54): on Windows verifies the kept
-    /// installer again against the public key, then runs it passive as an
-    /// update that starts the new version with `args` (DST-R13); on Linux
-    /// starts the replaced AppImage with `args`. `args` are this process's
-    /// arguments without the program. On [`Installed::Started`] the caller
-    /// exits.
+    /// installer again against the public key, then runs it, shown as `ui`
+    /// (passive, or quiet for an install the Player didn't choose,
+    /// DST-R76), as an update that starts the new version with
+    /// `args` (DST-R13); on Linux starts the replaced AppImage with `args`.
+    /// `args` are this process's arguments without the program. On
+    /// [`Installed::Started`] the caller exits.
     ///
     /// A running installer can't be deleted: the new version's start deletes
     /// it, as an installer not above the running version (DST-R53).
-    pub fn install(&self, launcher: &dyn Launcher, args: &[String]) -> Installed {
+    pub fn install(&self, launcher: &dyn Launcher, ui: Ui, args: &[String]) -> Installed {
         let Some(waiting) = self.waiting() else {
             return Installed::NothingWaiting;
         };
@@ -303,10 +307,10 @@ impl Updater {
                     self.discard_waiting();
                     return Installed::NotVerified { in_a_row };
                 }
-                install::installer_launch(&waiting.file, &release::plugin_config(), args)
+                install::installer_launch(&waiting.file, &release::plugin_config(), ui, args)
             }
             // Replaced in place once verified: the file every start runs.
-            Keeper::AppImage { .. } => install::appimage_launch(&waiting.file, args),
+            Keeper::AppImage { .. } => install::appimage_launch(&waiting.file, ui, args),
         };
         log::info!(
             "installing update {}: {}",
@@ -325,12 +329,13 @@ impl Updater {
     /// At start, before anything is scanned or uploaded: installs an update
     /// an earlier run kept (DST-R54, DST-R100). Only for the process that
     /// holds the watcher lock, as [`Updater::find_waiting`]. On Linux nothing
-    /// waits across a restart: the replaced AppImage is what runs.
+    /// waits across a restart: the replaced AppImage is what runs. Passive,
+    /// as ever (DST-R13).
     pub fn install_at_start(&self, launcher: &dyn Launcher, args: &[String]) -> Installed {
         if self.find_waiting().is_none() {
             return Installed::NothingWaiting;
         }
-        self.install(launcher, args)
+        self.install(launcher, Ui::Passive, args)
     }
 
     /// The failed-verification count in `updater.json` (DST-R57).

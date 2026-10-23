@@ -10,8 +10,9 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-/// Why the Companion needs the Player (CMP-R111), and the update-required
-/// notification, `companion/distribution.md`'s (DST-R57).
+/// Why the Companion needs the Player (CMP-R111), and the updater's two
+/// notifications, `companion/distribution.md`'s: update required (DST-R57)
+/// and the nudge (DST-R78).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cause {
     /// A `logId` awaiting an answer (CMP-R40). `characters` is CMP-R40's list.
@@ -32,7 +33,15 @@ pub enum Cause {
     /// shows at most once per process run, however often the state is left
     /// and entered (DST-R57, DST-R96).
     UpdateRequired { text: String },
+    /// The running version is below `recommendedCompanionVersion` and an
+    /// update is waiting: the nudge (DST-R78). Never cleared, so it
+    /// shows at most once per process run.
+    UpdateRecommended,
 }
+
+/// The nudge's notification (DST-R78).
+pub const UPDATE_RECOMMENDED_TEXT: &str =
+    "An important update for Pagle Companion is ready. Choose Restart to update in its tray menu.";
 
 /// What makes two raises the same cause: the kind, and the `logId` for causes
 /// that belong to one.
@@ -46,6 +55,7 @@ pub enum CauseKey {
     CredentialInvalid,
     Suspended,
     UpdateRequired,
+    UpdateRecommended,
 }
 
 impl Cause {
@@ -59,6 +69,7 @@ impl Cause {
             Cause::CredentialInvalid => CauseKey::CredentialInvalid,
             Cause::Suspended { .. } => CauseKey::Suspended,
             Cause::UpdateRequired { .. } => CauseKey::UpdateRequired,
+            Cause::UpdateRecommended => CauseKey::UpdateRecommended,
         }
     }
 
@@ -77,6 +88,7 @@ impl Cause {
             }
             Cause::LogCap { message } | Cause::Suspended { message } => message.clone(),
             Cause::UpdateRequired { text } => text.clone(),
+            Cause::UpdateRecommended => UPDATE_RECOMMENDED_TEXT.into(),
             Cause::CredentialInvalid => "This Companion is no longer linked. Link it again.".into(),
         }
     }
@@ -354,5 +366,26 @@ mod tests {
             text: "Choose Restart to update.".into(),
         }));
         assert_eq!(recorder.shown(), ["Download the latest version."]);
+    }
+
+    #[test]
+    fn the_nudge_notifies_once_per_run_with_its_text() {
+        // DST-R78: once per process run, "An important update for
+        // Pagle Companion is ready. Choose Restart to update in its tray
+        // menu."; a cause of its own beside DST-R57's
+        let recorder = Recorder::default();
+        let notifications = Notifications::new(recorder.clone());
+        assert!(notifications.raise(&Cause::UpdateRequired {
+            text: "Download the latest version.".into(),
+        }));
+        assert!(notifications.raise(&Cause::UpdateRecommended));
+        assert!(!notifications.raise(&Cause::UpdateRecommended));
+        assert_eq!(
+            recorder.shown(),
+            [
+                "Download the latest version.",
+                "An important update for Pagle Companion is ready. Choose Restart to update in its tray menu."
+            ]
+        );
     }
 }
