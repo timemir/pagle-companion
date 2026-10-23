@@ -45,7 +45,9 @@ jobs:
             artifact: src-tauri/target/release/bundle/appimage/*.AppImage
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
@@ -53,34 +55,39 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: lts/*
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
+      # The version reaches the script through the environment, never pasted
+      # into it, and jq writes the JSON.
       - name: Write the tester overlay
         shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p ci
-          cat > ci/test-build.conf.json <<JSON
-          {
-            "version": "${{ needs.version.outputs.version }}",
-            "bundle": { "createUpdaterArtifacts": false }
-          }
-          JSON
+          jq -n --arg version "$VERSION" \
+            '{version: $version, bundle: {createUpdaterArtifacts: false}}' > ci/test-build.conf.json
 
       - name: Build
-        run: npx tauri build --config ci/test-build.conf.json --bundles ${{ matrix.bundle }}
+        env:
+          BUNDLE: ${{ matrix.bundle }}
+        shell: bash
+        run: npx tauri build --config ci/test-build.conf.json --bundles "$BUNDLE"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pagle-companion-${{ needs.version.outputs.version }}-${{ matrix.bundle }}
           path: ${{ matrix.artifact }}

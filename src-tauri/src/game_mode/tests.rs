@@ -200,6 +200,24 @@ fn an_unusual_xdg_config_home_survives_systemds_parsing() {
 }
 
 #[test]
+fn a_line_break_in_xdg_config_home_never_starts_a_directive() {
+    // CMP Contracts, Game Mode unit: the unit is read line by line, so a
+    // control character is written as a C escape inside the quotes
+    let unit = unit_text(APPIMAGE, Some("/home/deck/x\nExecStartPre=/bin/sh -c evil"));
+    assert!(
+        unit.contains(
+            "\nEnvironment=\"XDG_CONFIG_HOME=/home/deck/x\\x0aExecStartPre=/bin/sh -c evil\"\n"
+        ),
+        "{unit}"
+    );
+    assert!(!unit.lines().any(|line| line.starts_with("ExecStartPre")));
+    assert_eq!(
+        unit.lines().filter(|l| l.starts_with("ExecStart")).count(),
+        1
+    );
+}
+
+#[test]
 fn execstart_quotes_the_appimage_as_dst_r31_quotes_exec() {
     // CMP Contracts, Game Mode unit: <$APPIMAGE> is quoted as DST-R31 quotes
     // Exec

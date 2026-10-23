@@ -20,6 +20,24 @@ pub mod secret_service;
 #[cfg(windows)]
 pub mod windows;
 
+/// The most bytes of a credential the Companion keeps. ACC-R50's is 47.
+pub const CREDENTIAL_LENGTH: usize = 512;
+
+/// Whether `credential`, as the backend sent it in a token answer or a
+/// `Pagle-New-Credential` header, may be kept and sent: a Bearer token
+/// (RFC 6750's `b64token`, which ACC-R50's `pgc_` and base64url fit) of at
+/// most [`CREDENTIAL_LENGTH`] bytes. Anything else, such as a line break or
+/// a space, could split the credential file's one line or the
+/// `Authorization` header, and is never stored.
+pub fn is_well_formed(credential: &str) -> bool {
+    let token = credential.trim_end_matches('=');
+    !token.is_empty()
+        && credential.len() <= CREDENTIAL_LENGTH
+        && token.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'+' | b'/')
+        })
+}
+
 /// One place a credential can be kept.
 pub trait CredentialStore: Send + Sync {
     /// How CMP-R61's text names this store: "Windows Credential Manager",
@@ -370,6 +388,33 @@ mod tests {
 
     fn locked() -> StoreError {
         StoreError::Unavailable("locked".into())
+    }
+
+    #[test]
+    fn a_bearer_token_is_a_well_formed_credential() {
+        // ACC-R50: pgc_ and 32 bytes of base64url; RFC 6750's b64token
+        assert!(is_well_formed(CREDENTIAL));
+        assert!(is_well_formed("pgc_abc-_~.+/=="));
+        assert!(is_well_formed(&"a".repeat(CREDENTIAL_LENGTH)));
+    }
+
+    #[test]
+    fn a_credential_that_could_split_a_line_or_header_is_refused() {
+        // CMP Contracts, Credential store entries: the credential and one LF
+        for bad in [
+            "",
+            "==",
+            "pgc_abc\npgc_other",
+            "pgc_abc\r",
+            "pgc abc",
+            "pgc_abc\tx",
+            "pgc_\u{e9}",
+            "pgc_abc=x",
+            "pgc_\"abc\"",
+        ] {
+            assert!(!is_well_formed(bad), "{bad:?}");
+        }
+        assert!(!is_well_formed(&"a".repeat(CREDENTIAL_LENGTH + 1)));
     }
 
     #[test]

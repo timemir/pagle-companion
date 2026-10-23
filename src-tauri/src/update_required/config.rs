@@ -9,7 +9,7 @@ use reqwest::header::{ACCEPT, HeaderValue};
 use semver::Version;
 use serde::Deserialize;
 
-use crate::api::Api;
+use crate::api::{self, Api};
 
 /// The endpoint, under `/api/v1/`.
 pub const PATH: &str = "companion/config";
@@ -40,7 +40,9 @@ pub async fn read(api: &Api) -> Result<Config, String> {
     if reply.status() != reqwest::StatusCode::OK {
         return Err(format!("status {}", reply.status()));
     }
-    let body = reply.bytes().await.map_err(|e| e.to_string())?;
+    let body = api::read_capped(reply, api::REPLY_CAP)
+        .await
+        .map_err(|e| e.to_string())?;
     parse(&body).ok_or_else(|| "a bad config body".into())
 }
 

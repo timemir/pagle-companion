@@ -1,10 +1,46 @@
 //! Path rules for finding installs: case-tolerant lookup of fixed path
 //! components and canonical path strings (CMP-R17), where Battle.net's
-//! `product.db`s live (CMP-R10), and how a Windows location maps into a Wine
-//! or Proton prefix (CMP-R11).
+//! `product.db`s live (CMP-R10), how a Windows location maps into a Wine
+//! or Proton prefix (CMP-R11), and how the files found there are read.
 
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+
+/// Reads a file the game, Battle.net or the Player keeps, whole: a regular
+/// file of at most `cap` bytes, or an error. Install folders may be
+/// writable by other OS users (CMP-R132), so whatever sits at `path` is
+/// untrusted: a FIFO or device fails at once instead of blocking the read
+/// forever, and a file past `cap` fails instead of filling memory.
+pub fn read_file(path: &Path, cap: u64) -> io::Result<Vec<u8>> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Opening a FIFO blocks until something writes to it; this doesn't.
+        // Reads of a regular file ignore the flag.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let too_large = || io::Error::new(io::ErrorKind::InvalidData, format!("over {cap} bytes"));
+    if meta.len() > cap {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
 
 /// Looks `name` up in `dir`: with its exact case first, then without regard
 /// to case among the folder's existing entries, whose own case is kept
@@ -197,6 +233,43 @@ mod tests {
         let dir = base.join(rel);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_file_up_to_the_cap_is_read_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("product.db");
+        fs::write(&path, b"0123456789").unwrap();
+        assert_eq!(read_file(&path, 10).unwrap(), b"0123456789");
+    }
+
+    #[test]
+    fn a_file_past_the_cap_or_not_a_file_isnt_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("product.db");
+        fs::write(&path, b"0123456789!").unwrap();
+        assert_eq!(
+            read_file(&path, 10).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(read_file(tmp.path(), 10).is_err());
+        assert!(read_file(&tmp.path().join("missing"), 10).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fifo_fails_at_once_instead_of_blocking() {
+        // A folder another OS user can write to could hold a FIFO named like
+        // a game file
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("Pagle.toc");
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            read_file(&path, 10).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]

@@ -62,6 +62,28 @@ pub fn platform() -> String {
     tauri_plugin_updater::target().unwrap_or_default()
 }
 
+/// Whether `url` names a file of this Companion's Releases: one under the
+/// folder of `endpoint`, the URL that serves `latest.json`. On GitHub that
+/// folder is the repository's `releases/`, which serves `latest.json` at
+/// `releases/latest/download/latest.json` and each file at
+/// `releases/download/<tag>/<file>`. Both are compared as parsed URLs, with
+/// `.` and `..` segments resolved, on the same scheme, host and port and
+/// without a user name, so `latest.json` can't point the download anywhere
+/// else. The signature (DST-R53) is what makes a file trusted; this only
+/// keeps the updater from fetching what no Release holds.
+pub fn is_release_file(endpoint: &str, url: &str) -> bool {
+    let (Ok(endpoint), Ok(url)) = (reqwest::Url::parse(endpoint), reqwest::Url::parse(url)) else {
+        return false;
+    };
+    if !url.username().is_empty() || url.password().is_some() || url.origin() != endpoint.origin() {
+        return false;
+    }
+    let path = endpoint.path();
+    let folder = &path[..path.rfind('/').map_or(0, |i| i + 1)];
+    let folder = folder.strip_suffix("latest/download/").unwrap_or(folder);
+    url.path().len() > folder.len() && url.path().starts_with(folder)
+}
+
 /// What `latest.json` says about the latest Release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Latest {
@@ -108,9 +130,15 @@ pub enum VerifyError {
     Malformed(String),
     /// The signature isn't the key's over these bytes.
     BadSignature(String),
-    /// Signed for another version than `latest.json` announced, as the
-    /// plugin refuses it: an old Release offered as a new one.
+    /// Signed for another version than `latest.json` announced: an old
+    /// Release offered as a new one (DST-R52).
     OtherVersion { signed: String },
+    /// Signed as another platform's bundle: the other OS's file of the same
+    /// Release, which would leave a Companion that can't start.
+    OtherBundle { signed: String },
+    /// The signed trusted comment names no file, so the file could be any
+    /// Release's, for either platform.
+    NoFile,
 }
 
 impl std::fmt::Display for VerifyError {
@@ -119,19 +147,33 @@ impl std::fmt::Display for VerifyError {
             VerifyError::Malformed(e) => write!(f, "unreadable key or signature: {e}"),
             VerifyError::BadSignature(e) => write!(f, "bad signature: {e}"),
             VerifyError::OtherVersion { signed } => write!(f, "signed for version {signed}"),
+            VerifyError::OtherBundle { signed } => write!(f, "signed as the file {signed:?}"),
+            VerifyError::NoFile => write!(f, "the signature names no file"),
         }
     }
 }
 
 /// Verifies `data` against the base64 public key from `plugins.updater
 /// .pubkey` and the base64 signature from `latest.json` (DST-R53), as the
-/// plugin does: minisign, legacy signatures allowed, then the version in the
-/// signed trusted comment, when there is one, must be `announced`.
+/// plugin does: minisign, legacy signatures allowed. Then the signature must
+/// be for `announced`, and for this platform's bundle, whose names end in
+/// `bundle` ([`Keeper::bundle_suffix`](super::keep::Keeper::bundle_suffix)).
+/// `latest.json` itself isn't signed: without this, an old Release's file,
+/// validly signed, could be offered as a new version and installed over a
+/// fixed one, which DST-R52 forbids; or the other OS's file of a Release
+/// could replace the AppImage, which then can't start or update again.
+///
+/// Both come from the signed trusted comment, which is only trusted once the
+/// signature has verified. `tauri signer` writes
+/// `timestamp:<t>\tfile:<bundle name>`, and the bundle's name carries its
+/// version ([`file_version`]) and ends like its platform's bundles. A
+/// `version:` field, which other signers write, must be `announced` too.
 pub fn verify(
     pubkey: &str,
     data: &[u8],
     signature: &str,
     announced: &Version,
+    bundle: &str,
 ) -> Result<(), VerifyError> {
     let public_key = PublicKey::decode(&base64_text(pubkey)?)
         .map_err(|e| VerifyError::Malformed(e.to_string()))?;
@@ -140,20 +182,45 @@ pub fn verify(
     public_key
         .verify(data, &signature, true)
         .map_err(|e| VerifyError::BadSignature(e.to_string()))?;
-    // The trusted comment is only trusted once the signature has verified.
-    let signed = signature
-        .trusted_comment()
-        .split('\t')
-        .find_map(|field| field.strip_prefix("version:"));
-    match signed {
-        None => Ok(()),
-        Some(signed) => match Version::parse(signed.trim_start_matches('v')) {
-            Ok(version) if version == *announced => Ok(()),
-            _ => Err(VerifyError::OtherVersion {
-                signed: signed.to_owned(),
-            }),
-        },
+    let is_announced = |signed: &str| Version::parse(signed).is_ok_and(|v| v == *announced);
+    let mut file = None;
+    for field in signature.trusted_comment().split('\t') {
+        if let Some(version) = field.strip_prefix("version:") {
+            let version = version.trim_start_matches('v');
+            if !is_announced(version) {
+                return Err(VerifyError::OtherVersion {
+                    signed: version.to_owned(),
+                });
+            }
+        } else if let Some(name) = field.strip_prefix("file:") {
+            file = Some(name);
+        }
     }
+    let file = file.ok_or(VerifyError::NoFile)?;
+    let version = file_version(file).unwrap_or(file);
+    if !is_announced(version) {
+        return Err(VerifyError::OtherVersion {
+            signed: version.to_owned(),
+        });
+    }
+    if !file.ends_with(bundle) {
+        return Err(VerifyError::OtherBundle {
+            signed: file.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// The version in a bundle's file name as Tauri names it,
+/// `<product>_<version>_<arch and suffix>`: `Pagle Companion_1.4.2_x64-setup.exe`
+/// or `Pagle Companion_1.4.2_amd64.AppImage` (DST Contracts, "Release
+/// assets"). Neither the architecture nor the suffix holds a `_`.
+pub fn file_version(file: &str) -> Option<&str> {
+    let mut parts = file.rsplitn(3, '_');
+    let _arch = parts.next()?;
+    let version = parts.next()?;
+    let _product = parts.next()?;
+    Some(version)
 }
 
 fn base64_text(encoded: &str) -> Result<String, VerifyError> {
@@ -290,6 +357,63 @@ mod tests {
         assert!(!is_above(&v("1.1.9"), &v("1.2.0")));
         // Build metadata doesn't count in precedence.
         assert!(!is_above(&v("1.2.0+build.2"), &v("1.2.0")));
+    }
+
+    const ENDPOINT: &str =
+        "https://github.com/timemir/pagle-companion/releases/latest/download/latest.json";
+
+    #[test]
+    fn a_releases_file_is_downloaded() {
+        // DST Contracts, "Release assets": latest.json names files of the
+        // Release, which publish writes from the assets attached (DST-R46)
+        assert!(is_release_file(
+            ENDPOINT,
+            "https://github.com/timemir/pagle-companion/releases/download/v1.4.2/Pagle.Companion_1.4.2_x64-setup.exe"
+        ));
+        // A test server's latest.json and files share its root.
+        assert!(is_release_file(
+            "http://127.0.0.1:9/latest.json",
+            "http://127.0.0.1:9/download/v1.4.2/Pagle.Companion_1.4.2_x64-setup.exe"
+        ));
+    }
+
+    #[test]
+    fn a_file_outside_the_releases_is_never_downloaded() {
+        // DST-R50: the single endpoint; latest.json can't point elsewhere
+        for url in [
+            "https://evil.example/Pagle.Companion_1.4.2_x64-setup.exe",
+            "http://github.com/timemir/pagle-companion/releases/download/v1.4.2/a.exe",
+            "https://github.com:8443/timemir/pagle-companion/releases/download/v1.4.2/a.exe",
+            "https://github.com/someone/else/releases/download/v1.4.2/a.exe",
+            "https://github.com/timemir/pagle-companion/releases/download/../../../../someone/else/releases/download/v1/a.exe",
+            "https://github.com/timemir/pagle-companion/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/someone/a.exe",
+            "https://github.com/timemir/pagle-companion-evil/releases/download/v1.4.2/a.exe",
+            "https://user:pass@github.com/timemir/pagle-companion/releases/download/v1.4.2/a.exe",
+            "https://github.com/timemir/pagle-companion/releases/",
+            "file:///C:/Windows/System32/calc.exe",
+            "not a url",
+        ] {
+            assert!(!is_release_file(ENDPOINT, url), "{url}");
+        }
+    }
+
+    #[test]
+    fn a_bundles_file_name_carries_its_version() {
+        // DST Contracts, "Release assets": <product>_<version>_<arch…>
+        assert_eq!(
+            file_version("Pagle Companion_1.4.2_x64-setup.exe"),
+            Some("1.4.2")
+        );
+        assert_eq!(
+            file_version("Pagle.Companion_1.4.2_amd64.AppImage"),
+            Some("1.4.2")
+        );
+        assert_eq!(
+            file_version("Pagle_Companion_0.0.1-test.7_amd64.AppImage"),
+            Some("0.0.1-test.7")
+        );
+        assert_eq!(file_version("installer.exe"), None);
+        assert_eq!(file_version("1.4.2_x64-setup.exe"), None);
     }
 
     #[test]

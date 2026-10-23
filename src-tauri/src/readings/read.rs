@@ -20,6 +20,11 @@ pub const READ_ATTEMPTS: u32 = 3;
 /// The wait between two read attempts (CMP Tunables, CMP-R30).
 pub const READ_RETRY_DELAY: Duration = Duration::from_secs(2);
 
+/// The most bytes of a `Pagle.lua` read: far above any Catch log the
+/// entry cap allows, so a file past it is a broken one, never read whole
+/// into memory.
+pub const PAGLE_LUA_CAP: u64 = 256 * 1024 * 1024;
+
 /// The watched file's modification time, to the millisecond, and size: what
 /// a read is compared by (CMP-R21) and what a run records (CMP Data,
 /// `fileMtimeMs` and `fileSize`).
@@ -181,7 +186,8 @@ fn try_once(account_folder: &Path, during: &mut dyn FnMut()) -> Result<Reading, 
     };
     during();
     // The open may fail: on Windows the game may hold the file.
-    let bytes = fs::read(&file).map_err(|e| format!("can't open it: {e}"))?;
+    let bytes =
+        paths::read_file(&file, PAGLE_LUA_CAP).map_err(|e| format!("can't open it: {e}"))?;
     let after = fs::metadata(&file).map_err(|e| format!("can't look at it: {e}"))?;
     let unchanged = before.len() == after.len()
         && before.modified().ok() == after.modified().ok()

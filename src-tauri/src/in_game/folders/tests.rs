@@ -883,3 +883,188 @@ fn the_message_uses_the_os_path_form() {
         format!("Couldn't write the in-game files to {shown}.")
     );
 }
+
+/// Makes `link` a link to the folder `target`: a junction on Windows, which
+/// any user can make without privilege, a symlink on Linux.
+fn link_folder(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    {
+        // cmd reads a `/` as the start of an option.
+        let backslashed = |path: &Path| path.to_string_lossy().replace('/', "\\");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(backslashed(link))
+            .arg(backslashed(target))
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    }
+    #[cfg(target_os = "linux")]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn a_link_where_a_data_addon_folder_belongs_is_never_written_through() {
+    // CMP-R4, CMP-R83, CMP-R132: another OS user who can write to a shared
+    // install puts a junction or symlink where Pagle_Anglers belongs, aimed
+    // at the Player's own files. Writing through it, then deleting every
+    // other file in the folder, would delete them; instead the install
+    // fails as a write failure and the files are untouched.
+    let tmp = tempfile::tempdir().unwrap();
+    let a = install(tmp.path(), "WoW/_classic_beta_", Some(TOC_LINES));
+    let precious = tmp.path().join("Documents");
+    fs::create_dir_all(precious.join("photos")).unwrap();
+    fs::write(precious.join("thesis.docx"), "years of work").unwrap();
+    fs::write(precious.join("photos/cat.jpg"), "cat").unwrap();
+    let dir = folder(&a, DataFile::Anglers);
+    link_folder(&dir, &precious);
+
+    let writer = Writer::new();
+    assert_eq!(
+        writer.qualifying(std::slice::from_ref(&a)).lacking_anglers,
+        std::slice::from_ref(&a)
+    );
+    let report = writer.write(std::slice::from_ref(&a), DataFile::Anglers, BODY);
+    assert_eq!(report.failed, std::slice::from_ref(&a));
+    assert!(!report.succeeded());
+    assert_eq!(entries(&precious), ["photos", "thesis.docx"]);
+    assert_eq!(fs::read(precious.join("photos/cat.jpg")).unwrap(), b"cat");
+    assert_eq!(writer.failures().len(), 1);
+
+    // Nor does the start sweep or the TOC refresh go through it, or the
+    // hash that decides If-None-Match read through it.
+    fs::write(precious.join(".keep.tmp"), "mine").unwrap();
+    fs::write(precious.join("Anglers.lua"), "mine").unwrap();
+    fs::write(precious.join("Pagle_Anglers.toc"), "mine").unwrap();
+    writer.start(std::slice::from_ref(&a));
+    assert_eq!(
+        entries(&precious),
+        [
+            ".keep.tmp",
+            "Anglers.lua",
+            "Pagle_Anglers.toc",
+            "photos",
+            "thesis.docx"
+        ]
+    );
+    assert_eq!(
+        fs::read(precious.join("Pagle_Anglers.toc")).unwrap(),
+        b"mine"
+    );
+    assert_eq!(
+        writer.data_file_hashes(std::slice::from_ref(&a), DataFile::Anglers),
+        [(a.clone(), None)]
+    );
+
+    // Deleting the folders removes the link, never what it points at.
+    writer.delete_folders(std::slice::from_ref(&a));
+    assert!(fs::symlink_metadata(&dir).is_err());
+    assert_eq!(
+        fs::read(precious.join("thesis.docx")).unwrap(),
+        b"years of work"
+    );
+}
+
+#[test]
+fn a_link_put_at_a_temporary_files_name_is_never_written_through() {
+    // CMP-R83: the .tmp is always a new file. A hard link someone put at its
+    // name, sharing another file's data, is deleted, not written through.
+    let tmp = tempfile::tempdir().unwrap();
+    let a = install(tmp.path(), "WoW/_classic_beta_", Some(TOC_LINES));
+    let dir = folder(&a, DataFile::Anglers);
+    fs::create_dir_all(&dir).unwrap();
+    let precious = tmp.path().join("precious.txt");
+    fs::write(&precious, "years of work").unwrap();
+    fs::hard_link(&precious, dir.join(".Anglers.lua.tmp")).unwrap();
+    #[cfg(target_os = "linux")]
+    std::os::unix::fs::symlink(&precious, dir.join(".Pagle_Anglers.toc.tmp")).unwrap();
+
+    let report = Writer::new().write(std::slice::from_ref(&a), DataFile::Anglers, BODY);
+    assert!(report.succeeded());
+    assert_eq!(fs::read(&precious).unwrap(), b"years of work");
+    assert_eq!(fs::read(dir.join("Anglers.lua")).unwrap(), BODY);
+    assert_eq!(entries(&dir), ["Anglers.lua", "Pagle_Anglers.toc"]);
+}
+
+#[test]
+fn a_pinned_folder_cant_be_swapped_for_a_link_unseen() {
+    // CMP-R83, CMP-R132: between the check and the writes and deletes, the
+    // folder can't be replaced by a link without the writer noticing
+    let tmp = tempfile::tempdir().unwrap();
+    let addons = tmp.path().join("AddOns");
+    let dir = addons.join("Pagle_Anglers");
+    fs::create_dir_all(&dir).unwrap();
+    let pinned = Pinned::open(&dir).unwrap().unwrap();
+    pinned.check().unwrap();
+
+    if cfg!(windows) {
+        // Held open without delete sharing, neither it nor a folder above
+        // it can be moved.
+        assert!(fs::rename(&dir, tmp.path().join("moved")).is_err());
+        assert!(fs::rename(&addons, tmp.path().join("moved")).is_err());
+        pinned.check().unwrap();
+    } else {
+        fs::rename(&dir, tmp.path().join("moved")).unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        link_folder(&dir, &elsewhere);
+        assert!(pinned.check().is_err());
+    }
+}
+
+#[test]
+fn a_link_is_never_pinned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("target");
+    fs::create_dir(&target).unwrap();
+    let link = tmp.path().join("link");
+    link_folder(&link, &target);
+    assert!(Pinned::open(&link).is_err());
+    let file = tmp.path().join("file");
+    fs::write(&file, "x").unwrap();
+    assert!(Pinned::open(&file).is_err());
+    assert!(Pinned::open(&tmp.path().join("missing")).unwrap().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_folder_swapped_for_a_link_after_pinning_is_still_the_one_written() {
+    // CMP-R83, CMP-R132: on Linux an open folder can still be renamed, and
+    // another OS user can swap a link in at its path between a check and a
+    // write; every listing, write and delete goes through the pinned
+    // folder's descriptor, so the link is never followed
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("Pagle_Anglers");
+    fs::create_dir_all(dir.join("Documents")).unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(home.join("Documents")).unwrap();
+    fs::write(home.join("Documents/thesis.docx"), "years of work").unwrap();
+    fs::write(home.join("Anglers.lua"), "mine").unwrap();
+
+    let pinned = Pinned::open(&dir).unwrap().unwrap();
+    fs::rename(&dir, tmp.path().join("moved")).unwrap();
+    link_folder(&dir, &home);
+
+    assert_eq!(fs::read_dir(pinned.anchor()).unwrap().count(), 1);
+    RealFs.remove_dir_all(&pinned.target("Documents")).unwrap();
+    RealFs
+        .write_synced(&pinned.target(".Anglers.lua.tmp"), b"body")
+        .unwrap();
+    RealFs
+        .rename(
+            &pinned.target(".Anglers.lua.tmp"),
+            &pinned.target("Anglers.lua"),
+        )
+        .unwrap();
+
+    assert_eq!(
+        fs::read(home.join("Documents/thesis.docx")).unwrap(),
+        b"years of work"
+    );
+    assert_eq!(fs::read(home.join("Anglers.lua")).unwrap(), b"mine");
+    assert_eq!(
+        fs::read(tmp.path().join("moved/Anglers.lua")).unwrap(),
+        b"body"
+    );
+    assert!(!tmp.path().join("moved/Documents").exists());
+}

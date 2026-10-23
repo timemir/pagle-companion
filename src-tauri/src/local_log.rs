@@ -157,13 +157,55 @@ impl log::Log for Logger {
             "{} {:<5} {}",
             humantime::format_rfc3339_seconds(SystemTime::now()),
             record.level(),
-            record.args()
+            one_line(&record.args().to_string())
         );
         // Nowhere to report a failure to write the log itself.
         let _ = self.file.write_line(&line);
     }
 
     fn flush(&self) {}
+}
+
+/// Whether `c` breaks a line or reorders text without being a control
+/// character: the line and paragraph separators, and the bidirectional
+/// marks, embeddings, overrides and isolates.
+fn is_layout_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2028}'
+            | '\u{2029}'
+            | '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// The most characters of one record's message in the local log file.
+pub const MAX_MESSAGE_CHARS: usize = 4096;
+
+/// A record's message as one line of the local log file: every control
+/// character, line or paragraph separator and bidirectional control escaped
+/// (`\n`, `\u{1b}`, `\u{2028}`, `\u{202e}`), so text a server or a file
+/// supplied, such as a refusal's message, can't add lines that look like the
+/// Companion's own or reorder how a line reads; and cut to
+/// [`MAX_MESSAGE_CHARS`], so it can't push the rest of the log out
+/// (CMP-R112).
+pub fn one_line(message: &str) -> String {
+    let mut line = String::with_capacity(message.len().min(MAX_MESSAGE_CHARS));
+    for (n, c) in message.chars().enumerate() {
+        if n == MAX_MESSAGE_CHARS {
+            line.push('…');
+            break;
+        }
+        if c.is_control() || is_layout_control(c) {
+            line.extend(c.escape_default());
+        } else {
+            line.push(c);
+        }
+    }
+    line
 }
 
 #[cfg(test)]
@@ -190,6 +232,34 @@ mod tests {
         log.write_line("a").unwrap(); // would pass 100: rotates first
         assert_eq!(fs::read_to_string(&path).unwrap(), "a\n");
         assert_eq!(fs::metadata(numbered(&path, 1)).unwrap().len(), 100);
+    }
+
+    #[test]
+    fn a_message_is_one_line_however_it_was_made() {
+        // CMP-R112: a refusal's message is the server's text; it can't add a
+        // line of its own
+        assert_eq!(
+            one_line("refused: bad\n2026-10-23T00:00:00Z INFO  linked\r\u{1b}[2J"),
+            r"refused: bad\n2026-10-23T00:00:00Z INFO  linked\r\u{1b}[2J"
+        );
+        assert_eq!(one_line("tabs\tstay readable"), r"tabs\tstay readable");
+        assert_eq!(
+            one_line("fake\u{2028}line \u{202e}desrever"),
+            r"fake\u{2028}line \u{202e}desrever"
+        );
+        assert_eq!(one_line("plain é text"), "plain é text");
+    }
+
+    #[test]
+    fn a_long_message_is_cut() {
+        // CMP-R112: one message can't push the rest of the log out
+        let line = one_line(&"x".repeat(MAX_MESSAGE_CHARS + 10));
+        assert_eq!(line.chars().count(), MAX_MESSAGE_CHARS + 1);
+        assert!(line.ends_with('…'));
+        assert_eq!(
+            one_line(&"x".repeat(MAX_MESSAGE_CHARS)),
+            "x".repeat(MAX_MESSAGE_CHARS)
+        );
     }
 
     #[test]

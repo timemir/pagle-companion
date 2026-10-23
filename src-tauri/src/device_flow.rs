@@ -13,7 +13,8 @@ use std::time::Duration;
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
 
-use crate::api::Api;
+use crate::api::{self, Api};
+use crate::credential_store;
 
 /// Device name length (CMP Tunables, ACC Tunables), in code points.
 pub const DEVICE_NAME_LENGTH: usize = 64;
@@ -167,7 +168,7 @@ struct DeviceError {
 
 impl DeviceError {
     async fn read(reply: reqwest::Response) -> Self {
-        reply.json().await.unwrap_or_default()
+        read_json(reply).await.unwrap_or_default()
     }
 
     fn update_required(&self) -> Option<Failure> {
@@ -180,6 +181,25 @@ impl DeviceError {
             )
         })
     }
+}
+
+/// A reply's JSON body, read up to the reply cap. The error is for the log.
+async fn read_json<T: serde::de::DeserializeOwned>(reply: reqwest::Response) -> Result<T, String> {
+    let body = api::read_capped(reply, api::REPLY_CAP)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
+}
+
+/// Whether `uri` is a page of the site at `base_url`. ACC Contracts send
+/// `<base>/link` and `<base>/link?code=<user code>`; a verification URI on
+/// another site, or with a user name in it, is never shown or opened, so
+/// a reply can't send the Player to a page that only looks like Pagle's.
+pub fn is_on_site(base_url: &str, uri: &str) -> bool {
+    let (Ok(base), Ok(uri)) = (reqwest::Url::parse(base_url), reqwest::Url::parse(uri)) else {
+        return false;
+    };
+    uri.origin() == base.origin() && uri.username().is_empty() && uri.password().is_none()
 }
 
 /// What one poll found.
@@ -222,10 +242,17 @@ pub async fn start(api: &Api, device_name: &str) -> Result<DeviceCode, Failure> 
         return Err(Failure::Unreachable);
     }
     if status == StatusCode::OK {
-        return reply.json().await.map_err(|e| {
+        let code: DeviceCode = read_json(reply).await.map_err(|e| {
             log::warn!("the device request's answer can't be read: {e}");
             Failure::Failed
-        });
+        })?;
+        if !is_on_site(api.base_url(), &code.verification_uri)
+            || !is_on_site(api.base_url(), &code.verification_uri_complete)
+        {
+            log::warn!("the device request's answer names a verification page on another site");
+            return Err(Failure::Failed);
+        }
+        return Ok(code);
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         log::info!("the device request was rate limited");
@@ -255,8 +282,14 @@ async fn poll_once(api: &Api, device_code: &str) -> Poll {
         return Poll::Unreachable;
     }
     if status == StatusCode::OK {
-        return match reply.json().await {
-            Ok(approval) => Poll::Approved(approval),
+        return match read_json::<Approval>(reply).await {
+            Ok(approval) if credential_store::is_well_formed(&approval.credential) => {
+                Poll::Approved(approval)
+            }
+            Ok(_) => {
+                log::warn!("the token answer's credential isn't a Bearer token");
+                Poll::Ended(Failure::Failed)
+            }
             Err(e) => {
                 log::warn!("the token answer can't be read: {e}");
                 Poll::Ended(Failure::Failed)
@@ -290,17 +323,18 @@ where
     let mut interval = Duration::from_secs(code.interval);
     let lifetime = Duration::from_secs(code.expires_in);
     // Time is counted in waits, so the schedule doesn't depend on how long
-    // each poll took.
+    // each poll took. The server's numbers may be any size, so the sums
+    // saturate instead of overflowing.
     let mut waited = Duration::ZERO;
     loop {
-        let pause = interval + POLL_MARGIN;
+        let pause = interval.saturating_add(POLL_MARGIN);
         if !wait(pause).await {
             return End::Cancelled;
         }
-        waited += pause;
+        waited = waited.saturating_add(pause);
         match poll_once(api, &code.device_code).await {
             Poll::Pending => {}
-            Poll::SlowDown => interval += SLOW_DOWN_STEP,
+            Poll::SlowDown => interval = interval.saturating_add(SLOW_DOWN_STEP),
             Poll::Approved(approval) => return End::Approved(approval),
             Poll::Unreachable if waited >= lifetime => {
                 return End::Failed(Failure::Unreachable);
@@ -412,23 +446,24 @@ mod tests {
         // CMP-R60: device_name and platform; CMP-R49: the device-flow
         // requests carry no Authorization
         let server = stub_server::start().await;
+        let site = server.uri();
         stub_server::script(
             &server,
             "POST",
             "companion/device",
-            vec![ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "device_code": "dc_secret",
-                "user_code": "BCDF-GHJK",
-                "verification_uri": "https://pagle.app/link",
-                "verification_uri_complete": "https://pagle.app/link?code=BCDF-GHJK",
-                "expires_in": 900,
-                "interval": 5
-            }))],
+            vec![device_code_reply(&site, &site)],
         )
         .await;
 
         let started = start(&stub_server::api(&server), "ADA-PC").await.unwrap();
-        assert_eq!(started, code(900, 5));
+        assert_eq!(
+            started,
+            DeviceCode {
+                verification_uri: format!("{site}/link"),
+                verification_uri_complete: format!("{site}/link?code=BCDF-GHJK"),
+                ..code(900, 5)
+            }
+        );
 
         let sent = stub_server::requests(&server, "companion/device").await;
         assert_eq!(sent.len(), 1);
@@ -448,6 +483,111 @@ mod tests {
     fn the_platform_is_windows_or_linux() {
         // CMP-R60: platform = windows or linux
         assert_eq!(PLATFORM, if cfg!(windows) { "windows" } else { "linux" });
+    }
+
+    /// A `200` to the device request whose verification pages are on the
+    /// sites `site` and `complete_site`.
+    fn device_code_reply(site: &str, complete_site: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "device_code": "dc_secret",
+            "user_code": "BCDF-GHJK",
+            "verification_uri": format!("{site}/link"),
+            "verification_uri_complete": format!("{complete_site}/link?code=BCDF-GHJK"),
+            "expires_in": 900,
+            "interval": 5
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_verification_page_on_another_site_is_refused() {
+        // ACC Contracts: verification_uri is <base>/link; CMP-R60 shows it
+        // and opens it in the browser, so a page elsewhere is refused
+        for elsewhere in [
+            "https://pagle.app.evil.example",
+            "file:///C:/Windows/System32/calc.exe#",
+        ] {
+            for own_site_first in [true, false] {
+                let server = stub_server::start().await;
+                let own = server.uri();
+                let (site, complete_site) = if own_site_first {
+                    (own.as_str(), elsewhere)
+                } else {
+                    (elsewhere, own.as_str())
+                };
+                stub_server::script(
+                    &server,
+                    "POST",
+                    "companion/device",
+                    vec![device_code_reply(site, complete_site)],
+                )
+                .await;
+                assert_eq!(
+                    start(&stub_server::api(&server), "ADA-PC").await,
+                    Err(Failure::Failed),
+                    "{site} {complete_site}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_page_of_the_base_urls_site_is_on_it() {
+        assert!(is_on_site("https://pagle.app", "https://pagle.app/link"));
+        assert!(is_on_site(
+            "https://pagle.app",
+            "https://pagle.app/link?code=BCDF-GHJK"
+        ));
+        for other in [
+            "http://pagle.app/link",
+            "https://pagle.app:8443/link",
+            "https://pagle.app.evil.example/link",
+            "https://evil.example/https://pagle.app/link",
+            "https://user@pagle.app/link",
+            "javascript:alert(1)",
+            "",
+        ] {
+            assert!(!is_on_site("https://pagle.app", other), "{other}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_credential_that_isnt_a_bearer_token_fails_linking() {
+        // CMP-R61: the credential is stored and sent as a Bearer token; one
+        // that would split the credential file's line or the header isn't
+        let server = stub_server::start().await;
+        stub_server::script(
+            &server,
+            "POST",
+            "companion/token",
+            vec![approved("pgc_abc\nInjected: yes", "Ada#1234")],
+        )
+        .await;
+        let (_, wait) = recorder();
+        assert_eq!(
+            poll(&stub_server::api(&server), &code(900, 5), wait).await,
+            End::Failed(Failure::Failed)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_interval_too_large_for_the_clock_doesnt_crash_the_poll() {
+        // CMP-R60: polls every interval plus the poll margin, whatever the
+        // server sends
+        let server = stub_server::start().await;
+        stub_server::script(
+            &server,
+            "POST",
+            "companion/token",
+            vec![
+                device_error(400, "slow_down"),
+                approved("pgc_ok", "Ada#1234"),
+            ],
+        )
+        .await;
+        let (waits, wait) = recorder();
+        let end = poll(&stub_server::api(&server), &code(u64::MAX, u64::MAX), wait).await;
+        assert!(matches!(end, End::Approved(_)), "{end:?}");
+        assert!(waits.lock().unwrap().iter().all(|d| *d == Duration::MAX));
     }
 
     async fn start_with(reply: ResponseTemplate) -> Result<DeviceCode, Failure> {

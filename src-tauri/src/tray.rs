@@ -14,7 +14,10 @@ use std::time::Duration;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::webview::NewWindowResponse;
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
 
 use crate::autostart;
 use crate::cli::{self, Mode};
@@ -652,14 +655,42 @@ pub fn show_main_window(app: &AppHandle) {
     let Some(companion) = app.try_state::<Companion>() else {
         return;
     };
+    // `tauri dev` serves the pages from its own server instead; no other
+    // build has a dev URL.
+    let dev_url = if cfg!(dev) {
+        app.config().build.dev_url.clone()
+    } else {
+        None
+    };
     let built = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
         .title("Pagle Companion")
         .inner_size(460.0, 560.0)
         .min_inner_size(360.0, 400.0)
         .data_directory(companion.state_dir.webview_dir())
+        // The window can call the Companion's commands, so it shows only the
+        // Companion's own pages; Pagle's open in the browser (CMP-R60).
+        .on_navigation(move |url| is_own_page(url) || is_dev_page(dev_url.as_ref(), url))
+        .on_new_window(|_, _| NewWindowResponse::Deny)
         .build();
     if let Err(e) = built {
         log::error!("couldn't open the window: {e}");
+    }
+}
+
+/// Whether `url` is a page of `dev_url`'s server, which `tauri dev` serves
+/// the window from.
+fn is_dev_page(dev_url: Option<&Url>, url: &Url) -> bool {
+    dev_url.is_some_and(|dev| dev.origin() == url.origin())
+}
+
+/// Whether `url` is one of the Companion's own pages, as Tauri serves them:
+/// `tauri://localhost` on Linux, `http://tauri.localhost` (or `https`) on
+/// Windows. A page from anywhere else never shows in the window.
+pub fn is_own_page(url: &Url) -> bool {
+    match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "http" | "https" => url.host_str() == Some("tauri.localhost") && url.port().is_none(),
+        _ => false,
     }
 }
 
@@ -707,6 +738,42 @@ fn take_watcher_lock(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_shows_only_the_companions_own_pages() {
+        let own = |url: &str| is_own_page(&Url::parse(url).unwrap());
+        assert!(own("tauri://localhost/index.html"));
+        assert!(own("http://tauri.localhost/index.html"));
+        assert!(own("https://tauri.localhost/index.html#catch-logs"));
+        for other in [
+            "https://pagle.app/link",
+            "http://tauri.localhost.evil.example/",
+            "http://tauri.localhost:8080/",
+            "http://localhost/",
+            "file:///C:/Windows/System32/calc.exe",
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "about:blank",
+        ] {
+            assert!(!own(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn tauri_dev_shows_only_its_own_servers_pages() {
+        let dev = Url::parse("http://127.0.0.1:1430").unwrap();
+        let page = |url: &str| Url::parse(url).unwrap();
+        assert!(is_dev_page(
+            Some(&dev),
+            &page("http://127.0.0.1:1430/index.html")
+        ));
+        assert!(!is_dev_page(Some(&dev), &page("http://127.0.0.1:1431/")));
+        assert!(!is_dev_page(Some(&dev), &page("https://pagle.app/")));
+        assert!(!is_dev_page(
+            None,
+            &page("http://127.0.0.1:1430/index.html")
+        ));
+    }
 
     fn argv(args: &[&str]) -> Vec<String> {
         std::iter::once("pagle-companion")

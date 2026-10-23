@@ -15,7 +15,7 @@
 //! Both are plain file code, compiled and tested on every OS; [`Keeper::
 //! platform`] picks this OS's.
 
-use std::fs::{self, File};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -65,6 +65,16 @@ impl Keeper {
                     .filter(|path| !path.is_empty())
                     .map(PathBuf::from),
             }
+        }
+    }
+
+    /// How the names of this keeper's bundles end (DST Contracts, "Release
+    /// assets"): the NSIS installer, or the AppImage. An update must be
+    /// signed as one ([`super::release::verify`]).
+    pub fn bundle_suffix(&self) -> &'static str {
+        match self {
+            Keeper::Installer { .. } => "-setup.exe",
+            Keeper::AppImage { .. } => ".AppImage",
         }
     }
 
@@ -223,8 +233,15 @@ fn write_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
+/// Writes `bytes` to a new file at `path`, flushed. Whatever is at `path`
+/// first, a leftover of a run killed mid-write or a link someone put there,
+/// is deleted, never written through.
 fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = File::create(path)?;
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -241,7 +258,7 @@ fn replace(target: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Writes the new AppImage beside `target`, with its permissions, and
 /// returns where. Until it is renamed over `target`, `target` is untouched;
-/// a file left by a run killed here is overwritten by the next.
+/// a file left by a run killed here is replaced by the next.
 fn stage(target: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     let name = target
         .file_name()
@@ -292,6 +309,45 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn a_link_at_a_file_being_written_is_never_written_through() {
+        // DST-R54: the partial installer and the staged AppImage are new
+        // files; a hard link someone put at their names, sharing another
+        // file's data, is deleted, not overwritten
+        let tmp = tempfile::tempdir().unwrap();
+        let precious = tmp.path().join("precious");
+        fs::write(&precious, b"mine").unwrap();
+
+        let state = tmp.path().join("state");
+        fs::create_dir(&state).unwrap();
+        fs::hard_link(
+            &precious,
+            state.join("pagle-companion_1.2.0_x64-setup.exe.partial"),
+        )
+        .unwrap();
+        Keeper::Installer { dir: state.clone() }
+            .keep(&v("1.2.0"), b"MZ installer 1.2.0", "sig")
+            .unwrap();
+        assert_eq!(
+            fs::read(state.join("pagle-companion_1.2.0_x64-setup.exe")).unwrap(),
+            b"MZ installer 1.2.0"
+        );
+
+        let apps = tmp.path().join("Applications");
+        fs::create_dir(&apps).unwrap();
+        let appimage = apps.join("pagle-companion.AppImage");
+        fs::write(&appimage, b"AppImage v1").unwrap();
+        fs::hard_link(&precious, apps.join(".pagle-companion.AppImage.update")).unwrap();
+        Keeper::AppImage {
+            path: Some(appimage.clone()),
+        }
+        .keep(&v("1.2.0"), b"AppImage v2", "sig")
+        .unwrap();
+        assert_eq!(fs::read(&appimage).unwrap(), b"AppImage v2");
+
+        assert_eq!(fs::read(&precious).unwrap(), b"mine");
     }
 
     #[test]

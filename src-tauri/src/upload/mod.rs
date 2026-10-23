@@ -709,7 +709,7 @@ impl Uploads {
             return Reply::Retry(status.to_string());
         }
         let retry_after = retry_after(reply.headers());
-        let body = match reply.bytes().await {
+        let body = match crate::api::read_capped(reply, crate::api::REPLY_CAP).await {
             Ok(body) => body,
             Err(e) => return Reply::Retry(e.to_string()),
         };
