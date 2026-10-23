@@ -2,7 +2,10 @@
 //! `GET /api/v1/companion/config`, with the version header and no
 //! credential. A reply that isn't `200` JSON with a valid `MAJOR.MINOR.PATCH`
 //! `minCompanionVersion` and a non-blank `foreverProductUid` is a failed
-//! read (#18).
+//! read (#18). Beside them, `recommendedCompanionVersion` (pagle-backend#287)
+//! is `0.0.0` when missing, so a backend from before it breaks nothing; one
+//! that isn't `MAJOR.MINOR.PATCH` reads as `0.0.0` too, since only the
+//! nudge hangs off it (`update_policy`).
 
 use reqwest::Method;
 use reqwest::header::{ACCEPT, HeaderValue};
@@ -18,6 +21,8 @@ pub const PATH: &str = "companion/config";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub min_companion_version: Version,
+    /// Below it, a waiting update nudges the Player (pagle-backend#287).
+    pub recommended_companion_version: Version,
     /// Served as it is, and compared byte for byte (CMP-R12).
     pub forever_product_uid: String,
 }
@@ -26,6 +31,8 @@ pub struct Config {
 #[serde(rename_all = "camelCase")]
 struct Body {
     min_companion_version: String,
+    #[serde(default)]
+    recommended_companion_version: Option<serde_json::Value>,
     forever_product_uid: String,
 }
 
@@ -49,17 +56,29 @@ pub async fn read(api: &Api) -> Result<Config, String> {
 /// A `200` body, if it is a valid config.
 pub fn parse(body: &[u8]) -> Option<Config> {
     let body: Body = serde_json::from_slice(body).ok()?;
-    // MAJOR.MINOR.PATCH with no suffix (DST-R64).
-    let min = Version::parse(&body.min_companion_version)
-        .ok()
-        .filter(|v| v.pre.is_empty() && v.build.is_empty())?;
+    let min = release_version(&body.min_companion_version)?;
     if body.forever_product_uid.trim().is_empty() {
         return None;
     }
+    let recommended = match &body.recommended_companion_version {
+        None => Version::new(0, 0, 0),
+        Some(value) => value.as_str().and_then(release_version).unwrap_or_else(|| {
+            log::warn!("recommendedCompanionVersion {value} isn't a version; taking it as 0.0.0");
+            Version::new(0, 0, 0)
+        }),
+    };
     Some(Config {
         min_companion_version: min,
+        recommended_companion_version: recommended,
         forever_product_uid: body.forever_product_uid,
     })
+}
+
+/// `MAJOR.MINOR.PATCH` with no suffix (DST-R64).
+fn release_version(text: &str) -> Option<Version> {
+    Version::parse(text)
+        .ok()
+        .filter(|v| v.pre.is_empty() && v.build.is_empty())
 }
 
 #[cfg(test)]
@@ -92,6 +111,7 @@ mod tests {
             config,
             Config {
                 min_companion_version: Version::new(1, 2, 0),
+                recommended_companion_version: Version::new(0, 0, 0),
                 forever_product_uid: "wow_forever".into(),
             }
         );
@@ -150,5 +170,45 @@ mod tests {
             parse(br#"{ "minCompanionVersion": "0.0.0", "foreverProductUid": " wow_x " }"#)
                 .unwrap();
         assert_eq!(config.forever_product_uid, " wow_x ");
+    }
+
+    #[test]
+    fn the_recommended_version_is_read_beside_the_minimum() {
+        // pagle-backend#287: the config also returns
+        // recommendedCompanionVersion, MAJOR.MINOR.PATCH
+        let config = parse(
+            br#"{ "minCompanionVersion": "1.0.0", "recommendedCompanionVersion": "1.3.0",
+                  "foreverProductUid": "wow_forever" }"#,
+        )
+        .unwrap();
+        assert_eq!(config.min_companion_version, Version::new(1, 0, 0));
+        assert_eq!(config.recommended_companion_version, Version::new(1, 3, 0));
+    }
+
+    #[test]
+    fn a_missing_recommended_version_is_0_0_0() {
+        // pagle-backend#287: a missing field means 0.0.0, so an older backend
+        // doesn't break the Companion; a value that isn't MAJOR.MINOR.PATCH
+        // loses only the nudge, never the minimum or the uid
+        for body in [
+            r#"{ "minCompanionVersion": "1.2.0", "foreverProductUid": "x" }"#,
+            r#"{ "minCompanionVersion": "1.2.0", "recommendedCompanionVersion": null, "foreverProductUid": "x" }"#,
+            r#"{ "minCompanionVersion": "1.2.0", "recommendedCompanionVersion": "1.3", "foreverProductUid": "x" }"#,
+            r#"{ "minCompanionVersion": "1.2.0", "recommendedCompanionVersion": "1.3.0-rc.1", "foreverProductUid": "x" }"#,
+            r#"{ "minCompanionVersion": "1.2.0", "recommendedCompanionVersion": 13, "foreverProductUid": "x" }"#,
+        ] {
+            let config = parse(body.as_bytes()).unwrap_or_else(|| panic!("{body}"));
+            assert_eq!(
+                config.recommended_companion_version,
+                Version::new(0, 0, 0),
+                "{body}"
+            );
+            assert_eq!(
+                config.min_companion_version,
+                Version::new(1, 2, 0),
+                "{body}"
+            );
+            assert_eq!(config.forever_product_uid, "x", "{body}");
+        }
     }
 }

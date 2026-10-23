@@ -134,6 +134,7 @@ impl Env for Fake {
 fn config(min: &str, uid: &str) -> Config {
     Config {
         min_companion_version: Version::parse(min).unwrap(),
+        recommended_companion_version: Version::new(0, 0, 0),
         forever_product_uid: uid.into(),
     }
 }
