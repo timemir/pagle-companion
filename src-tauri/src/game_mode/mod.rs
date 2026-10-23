@@ -99,12 +99,30 @@ pub fn unit_text(appimage: &str, xdg_config_home: Option<&str>) -> String {
 
 /// `Environment=XDG_CONFIG_HOME=<value>`. systemd expands `%` specifiers
 /// there, so `%` is written `%%`; and it splits assignments at whitespace,
-/// so a value with whitespace, quotes or backslashes is put in double quotes
-/// with `"` and `\` escaped. A plain path is written as it is.
+/// so a value with whitespace, quotes, backslashes or control characters is
+/// put in double quotes with `"` and `\` escaped, and each control
+/// character written as C escapes (`\x0a`), which systemd reads back: a raw
+/// line break would end the line and start a directive of its own. A plain
+/// path is written as it is.
 fn environment_line(value: &str) -> String {
     let assignment = format!("XDG_CONFIG_HOME={}", value.replace('%', "%%"));
-    if assignment.contains(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '\\')) {
-        let escaped = assignment.replace('\\', "\\\\").replace('"', "\\\"");
+    if assignment
+        .contains(|c: char| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\'))
+    {
+        let mut escaped = String::with_capacity(assignment.len() + 8);
+        for c in assignment.chars() {
+            match c {
+                '\\' => escaped.push_str("\\\\"),
+                '"' => escaped.push_str("\\\""),
+                c if c.is_control() => {
+                    let mut utf8 = [0; 4];
+                    for byte in c.encode_utf8(&mut utf8).bytes() {
+                        escaped.push_str(&format!("\\x{byte:02x}"));
+                    }
+                }
+                c => escaped.push(c),
+            }
+        }
         format!("Environment=\"{escaped}\"")
     } else {
         format!("Environment={assignment}")

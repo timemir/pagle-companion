@@ -76,9 +76,16 @@ pub fn menu_icon_path(data_home: &Path) -> PathBuf {
 /// `$APPIMAGE`: the AppImage this process runs from. `None` for a
 /// development run or `--appimage-extract-and-run`, and on Windows.
 pub fn appimage() -> Option<String> {
-    std::env::var("APPIMAGE")
-        .ok()
-        .filter(|path| !path.is_empty())
+    usable_appimage(std::env::var("APPIMAGE").ok())
+}
+
+/// `$APPIMAGE`'s value when it can be written into an entry: not empty, and
+/// without a control character. A file name may hold a line break, which
+/// in a desktop entry, the autostart entry or the Game Mode unit would start
+/// a line of its own, such as an `ExecStartPre=`; such a path counts as no
+/// AppImage, so nothing is written with it.
+pub fn usable_appimage(value: Option<String>) -> Option<String> {
+    value.filter(|path| !path.is_empty() && !path.chars().any(char::is_control))
 }
 
 /// `path` quoted for an `Exec` key as DST-R31 says: inside double quotes,
@@ -197,6 +204,27 @@ mod tests {
             r#""/home/u/My \"Apps\"/p.AppImage""#
         );
         assert_eq!(quote_exec(r"/a`b$c\d"), r#""/a\`b\$c\\d""#);
+    }
+
+    #[test]
+    fn an_appimage_path_with_a_control_character_is_never_used() {
+        // DST-R31, CMP Contracts "Game Mode unit": the path goes into
+        // entries line by line
+        assert_eq!(
+            usable_appimage(Some("/home/u/Applications/p.AppImage".into())),
+            Some("/home/u/Applications/p.AppImage".into())
+        );
+        assert_eq!(usable_appimage(None), None);
+        assert_eq!(usable_appimage(Some(String::new())), None);
+        assert_eq!(
+            usable_appimage(Some("/home/u/x\nExecStartPre=/bin/sh -c evil".into())),
+            None
+        );
+        assert_eq!(usable_appimage(Some("/home/u/x\r.AppImage".into())), None);
+        assert_eq!(
+            usable_appimage(Some("/home/u/x\u{85}.AppImage".into())),
+            None
+        );
     }
 
     #[test]
