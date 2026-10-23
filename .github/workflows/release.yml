@@ -12,8 +12,12 @@ on:
   push:
     tags: ['v*.*.*']
 
+# Each job asks for what it needs. Every action is pinned to a commit: the
+# build jobs hold the updater signing key, which signs what every Companion
+# installs (DST-R47), so no tag of someone else's repository can change
+# what runs beside it.
 permissions:
-  contents: write
+  contents: read
 
 # Two tags never build at once, and a run is never cancelled (DST-R44).
 concurrency:
@@ -23,10 +27,15 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Listing draft Releases needs write access (DST-R44).
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       # actions/checkout can make an annotated tag look lightweight, so the
       # tag object is fetched explicitly before it is tested (DST-R44).
@@ -47,10 +56,14 @@ jobs:
   draft:
     needs: check
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       id: ${{ steps.draft.outputs.id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fetch the tag
         run: git fetch --no-tags --depth=1 origin "+refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
@@ -74,17 +87,24 @@ jobs:
     needs: draft
     runs-on: windows-latest
     environment: release
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
-      - uses: actions/setup-node@v4
+      # No dependency cache in a job that holds the signing key: a cache
+      # another workflow run wrote could change what is built.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: lts/*
-          cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # Uploads only the NSIS installer and its .sig (DST-R43). tauri-action
       # 1.0 renamed the spec's includeUpdaterJson to uploadUpdaterJson.
@@ -117,22 +137,29 @@ jobs:
     # ubuntu-22.04 is the Linux build runner and floor (DST-R30, DST Tunables).
     runs-on: ubuntu-22.04
     environment: release
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
-      - uses: actions/setup-node@v4
+      # No dependency cache in a job that holds the signing key: a cache
+      # another workflow run wrote could change what is built.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: lts/*
-          cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # Uploads only the AppImage and its .sig (DST-R43).
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
@@ -150,13 +177,17 @@ jobs:
   publish:
     needs: [check, draft, build-windows, build-linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.check.outputs.version }}
       RELEASE_ID: ${{ needs.draft.outputs.id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Fetch the tag
         run: git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
@@ -193,7 +224,7 @@ jobs:
           done
           pubkey=$(git show "refs/tags/$TAG:src-tauri/tauri.conf.json" | jq -er '.plugins.updater.pubkey')
           for name in "$INSTALLER" "$APPIMAGE"; do
-            bash ci/verify-sig.sh "$pubkey" "$RUNNER_TEMP/assets/$name" "$RUNNER_TEMP/assets/$name.sig"
+            bash ci/verify-sig.sh "$pubkey" "$RUNNER_TEMP/assets/$name" "$RUNNER_TEMP/assets/$name.sig" "$VERSION"
           done
 
       - name: 3. Write and attach latest.json
@@ -240,7 +271,9 @@ jobs:
     runs-on: windows-latest
     environment: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - id: installer
         name: Read the installer URL from the published latest.json
@@ -252,13 +285,25 @@ jobs:
           gh release download "$GITHUB_REF_NAME" --pattern latest.json --dir "$RUNNER_TEMP" --clobber
           bash ci/winget-args.sh "$RUNNER_TEMP/latest.json" "$VERSION" >> "$GITHUB_OUTPUT"
 
+      # wingetcreate runs with WINGET_TOKEN, which can write to the
+      # developer's public repositories, this one included: it is a pinned
+      # release, checked against its SHA-256 before it runs. Update both
+      # together.
       - name: Open the winget-pkgs pull request
         shell: pwsh
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
           URL: ${{ steps.installer.outputs.url }}
           VERSION: ${{ steps.installer.outputs.version }}
+          WINGETCREATE_URL: https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe
+          WINGETCREATE_SHA256: 24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea
         run: |
-          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile "$env:RUNNER_TEMP/wingetcreate.exe"
-          & "$env:RUNNER_TEMP/wingetcreate.exe" update timemir.PagleCompanion --urls $env:URL --version $env:VERSION --submit --token $env:WINGET_TOKEN
+          $exe = "$env:RUNNER_TEMP/wingetcreate.exe"
+          Invoke-WebRequest $env:WINGETCREATE_URL -OutFile $exe
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          if ($hash -ne $env:WINGETCREATE_SHA256) {
+            Write-Output "::error::wingetcreate.exe has SHA-256 $hash, not the pinned $env:WINGETCREATE_SHA256"
+            exit 1
+          }
+          & $exe update timemir.PagleCompanion --urls $env:URL --version $env:VERSION --submit --token $env:WINGET_TOKEN
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

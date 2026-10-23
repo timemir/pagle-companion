@@ -1,0 +1,49 @@
+# Checks the locked dependencies against the RustSec and npm advisory
+# databases: on every change to them, and weekly, since an advisory can be
+# published for a version already locked.
+name: Audit
+
+on:
+  pull_request:
+    paths: ['src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'package-lock.json', '.github/workflows/audit.yml']
+  push:
+    branches: [main]
+    paths: ['src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'package-lock.json', '.github/workflows/audit.yml']
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      # Fails on a vulnerability. Unmaintained and unsound crates, which come
+      # with Tauri's GTK stack, are listed as warnings.
+      - name: Audit Cargo.lock
+        working-directory: src-tauri
+        run: cargo audit
+
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The Tauri CLI builds every Release, so its dependencies count too.
+      - name: Audit package-lock.json
+        run: npm audit --audit-level=moderate

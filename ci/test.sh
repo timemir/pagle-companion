@@ -218,22 +218,47 @@ minisign -G -W -p "$keys/b.pub" -s "$keys/b.key" > /dev/null
 printf 'installer bytes\n' > "$keys/$exe"
 cp "$keys/$exe" "$keys/tampered.exe"
 printf 'one more byte' >> "$keys/tampered.exe"
-minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/a.minisig" -t "file:$exe" > /dev/null
+# `tauri signer` signs this trusted comment, with the bundle's local name.
+minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/a.minisig" \
+  -t "timestamp:1800000000"$'\t'"file:Pagle Companion_1.2.4_x64-setup.exe" > /dev/null
 minisign -S -s "$keys/b.key" -m "$keys/$exe" -x "$keys/b.minisig" -t "file:$exe" > /dev/null
+minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/old.minisig" \
+  -t "timestamp:1800000000"$'\t'"file:Pagle Companion_1.2.3_x64-setup.exe" > /dev/null
+minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/nameless.minisig" -t "timestamp:1800000000" > /dev/null
+minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/odd-name.minisig" -t "file:installer.exe" > /dev/null
+minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/both.minisig" \
+  -t "file:$exe"$'\t'"version:1.2.3" > /dev/null
+minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/version-only.minisig" -t "version:1.2.4" > /dev/null
+minisign -S -s "$keys/a.key" -m "$keys/$exe" -x "$keys/appimage.minisig" \
+  -t "timestamp:1800000000"$'\t'"file:Pagle Companion_1.2.4_amd64.AppImage" > /dev/null
 # Tauri wraps the minisign files in base64, the public key in tauri.conf.json too.
-base64 -w0 < "$keys/a.minisig" > "$keys/a.sig"
-base64 -w0 < "$keys/b.minisig" > "$keys/b.sig"
+for name in a b old nameless odd-name both version-only appimage; do
+  base64 -w0 < "$keys/$name.minisig" > "$keys/$name.sig"
+done
 pubkey=$(base64 -w0 < "$keys/a.pub")
 printf '!!! not base64 !!!' > "$keys/garbage.sig"
 
 verify() { bash "$ci/verify-sig.sh" "$@"; }
-expect_ok "DST-R25: a .sig made with the updater key verifies" verify "$pubkey" "$keys/$exe" "$keys/a.sig"
-expect_fail "DST-R25: a .sig made with another key fails" "doesn't verify" verify "$pubkey" "$keys/$exe" "$keys/b.sig"
-expect_fail "DST-R25: a changed file fails" "doesn't verify" verify "$pubkey" "$keys/tampered.exe" "$keys/a.sig"
-expect_fail "DST-R25: a .sig that isn't base64 fails" "isn't base64" verify "$pubkey" "$keys/$exe" "$keys/garbage.sig"
-expect_fail "DST-R25: a missing .sig fails" "doesn't exist" verify "$pubkey" "$keys/$exe" "$keys/none.sig"
+expect_ok "DST-R25: a .sig made with the updater key verifies" verify "$pubkey" "$keys/$exe" "$keys/a.sig" 1.2.4
+expect_fail "DST-R25: a .sig made with another key fails" "doesn't verify" verify "$pubkey" "$keys/$exe" "$keys/b.sig" 1.2.4
+expect_fail "DST-R25: a changed file fails" "doesn't verify" verify "$pubkey" "$keys/tampered.exe" "$keys/a.sig" 1.2.4
+expect_fail "DST-R25: a .sig that isn't base64 fails" "isn't base64" verify "$pubkey" "$keys/$exe" "$keys/garbage.sig" 1.2.4
+expect_fail "DST-R25: a missing .sig fails" "doesn't exist" verify "$pubkey" "$keys/$exe" "$keys/none.sig" 1.2.4
 expect_fail "DST-R25: another public key fails" "doesn't verify" \
-  verify "$(base64 -w0 < "$keys/b.pub")" "$keys/$exe" "$keys/a.sig"
+  verify "$(base64 -w0 < "$keys/b.pub")" "$keys/$exe" "$keys/a.sig" 1.2.4
+expect_fail "DST-R52: a .sig signed for an older Release's file fails" "signed for version '1.2.3', not 1.2.4" \
+  verify "$pubkey" "$keys/$exe" "$keys/old.sig" 1.2.4
+expect_fail "DST-R52: a .sig whose trusted comment names no file fails" "names no file" \
+  verify "$pubkey" "$keys/$exe" "$keys/nameless.sig" 1.2.4
+expect_fail "DST-R52: a .sig naming only a version fails" "names no file" \
+  verify "$pubkey" "$keys/$exe" "$keys/version-only.sig" 1.2.4
+expect_fail "DST-R53: a .sig signed as the other platform's bundle fails" "another kind of bundle than $exe" \
+  verify "$pubkey" "$keys/$exe" "$keys/appimage.sig" 1.2.4
+expect_fail "DST-R52: a .sig for a file name without a version fails" "a name without a version" \
+  verify "$pubkey" "$keys/$exe" "$keys/odd-name.sig" 1.2.4
+expect_fail "DST-R52: a .sig whose version: field differs fails" "signed for version '1.2.3', not 1.2.4" \
+  verify "$pubkey" "$keys/$exe" "$keys/both.sig" 1.2.4
+expect_fail "DST-R25: the version is required" "usage" verify "$pubkey" "$keys/$exe" "$keys/a.sig"
 
 real_pubkey=$(jq -r .plugins.updater.pubkey "$ci/../src-tauri/tauri.conf.json" | tr -d '\r')
 expect_eq "DST-R47: tauri.conf.json's pubkey is a base64 minisign public key" \
