@@ -34,6 +34,32 @@ fn the_installer_is_per_user() {
 }
 
 #[test]
+fn the_window_runs_only_its_own_scripts() {
+    // The window can call the Companion's commands: its content security
+    // policy lets it load scripts from the app alone, and no plugin, base
+    // URL, form target or frame from anywhere
+    let csp = conf()["app"]["security"]["csp"]
+        .as_str()
+        .expect("a content security policy")
+        .to_owned();
+    let directives: Vec<&str> = csp.split(';').map(str::trim).collect();
+    for wanted in [
+        "default-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'none'",
+        "frame-src 'none'",
+    ] {
+        assert!(directives.contains(&wanted), "{wanted} in {csp}");
+    }
+    assert!(
+        !directives.iter().any(|d| d.starts_with("script-src")),
+        "{csp}"
+    );
+    assert!(!csp.contains("unsafe-eval"), "{csp}");
+}
+
+#[test]
 fn the_publisher_is_pagle() {
     // DST-R10: the Installed apps entry's publisher (bundle.publisher)
     assert_eq!(conf()["bundle"]["publisher"], "Pagle");
