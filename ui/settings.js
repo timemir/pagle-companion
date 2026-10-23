@@ -1,6 +1,7 @@
 // The window's Settings (CMP UI): "Start at login" (CMP-R3), on by default.
 // Turning it off deletes the autostart entry; the Companion keeps the setting
-// and says when it couldn't change the entry. On SteamOS as an AppImage,
+// and says when it couldn't change the entry. "Install updates
+// automatically" (DST-R77), on by default. On SteamOS as an AppImage,
 // "Keep uploading in Game Mode (experimental)" (CMP-R90), off by default,
 // with the Steam Deck report link (DST-R71). Quit, and on Linux Remove Pagle
 // Companion (CMP-R71).
@@ -38,6 +39,42 @@
         busy = false;
         render();
       });
+  });
+
+  // Install updates automatically (DST-R77), on by default: kept in local
+  // state, so turning it on or off only writes it. Off, a waiting update
+  // installs through Restart to update or at the next start (DST-R54).
+  const autoUpdate = document.getElementById("install-updates-automatically");
+  let autoUpdateKnown = false;
+  let autoUpdateBusy = false;
+
+  function renderAutoUpdate() {
+    autoUpdate.disabled = readOnly || !autoUpdateKnown || autoUpdateBusy;
+  }
+
+  autoUpdate.addEventListener("change", () => {
+    const on = autoUpdate.checked;
+    autoUpdateBusy = true;
+    error.hidden = true;
+    renderAutoUpdate();
+    invoke("set_install_updates_automatically", { on })
+      .then((now) => {
+        autoUpdate.checked = now;
+      })
+      .catch((message) => {
+        autoUpdate.checked = !on;
+        error.textContent = String(message);
+        error.hidden = false;
+      })
+      .finally(() => {
+        autoUpdateBusy = false;
+        renderAutoUpdate();
+      });
+  });
+  invoke("install_updates_automatically").then((on) => {
+    autoUpdate.checked = on;
+    autoUpdateKnown = true;
+    renderAutoUpdate();
   });
 
   // Keep uploading in Game Mode (CMP-R90): turning it on or off runs
@@ -123,12 +160,14 @@
     readOnly = status.readOnly;
     showRemove(status);
     render();
+    renderAutoUpdate();
     renderGameMode();
   });
   listen("status", (event) => {
     readOnly = event.payload.readOnly;
     showRemove(event.payload);
     render();
+    renderAutoUpdate();
     renderGameMode();
   });
 })();

@@ -24,7 +24,7 @@ enum Event {
     Shown(Text),
     CheckSoon,
     StopLinking,
-    Exit,
+    Install,
 }
 
 /// A Companion whose backend answers `config`.
@@ -34,6 +34,8 @@ struct Fake {
     required: Cell<bool>,
     waiting: Cell<bool>,
     failed_verifications: Cell<u32>,
+    /// Whether the install at once starts the new version.
+    installs: Cell<bool>,
     events: RefCell<Vec<Event>>,
 }
 
@@ -45,6 +47,7 @@ impl Fake {
             required: Cell::new(false),
             waiting: Cell::new(false),
             failed_verifications: Cell::new(0),
+            installs: Cell::new(true),
             events: RefCell::default(),
         }
     }
@@ -126,8 +129,9 @@ impl Env for Fake {
         self.push(Event::StopLinking);
     }
 
-    fn exit_for_update(&self) {
-        self.push(Event::Exit);
+    fn install_now(&self) -> bool {
+        self.push(Event::Install);
+        self.installs.get()
     }
 }
 
@@ -352,28 +356,48 @@ fn a_text_is_shown_after_each_check_only_while_update_required() {
     fake.after_check(Checked::UpToDate, t0() + MINUTE);
     assert_eq!(fake.take().last(), Some(&Event::Shown(Text::Download)));
 
-    // It moves to the first text once an update becomes waiting.
+    // It moves to the first text once an update is waiting that the
+    // install at once couldn't start (DST-R56).
     fake.waiting.set(true);
+    fake.installs.set(false);
     fake.after_check(Checked::Waiting(Version::new(9, 0, 0)), t0() + 2 * MINUTE);
-    assert!(fake.take().contains(&Event::Shown(Text::RestartToUpdate)));
+    let events = fake.take();
+    assert!(events.contains(&Event::Install));
+    assert_eq!(events.last(), Some(&Event::Shown(Text::RestartToUpdate)));
 }
 
 #[test]
-fn headless_exits_once_the_new_version_is_in_place_while_update_required() {
-    // DST-R58: while update required, once the new file is in place, the
-    // headless process exits with status 0 (tray mode's exit does nothing)
+fn a_waiting_update_installs_at_once_while_update_required() {
+    // DST-R56: while update required, a waiting update installs at once,
+    // whatever the setting or idle state (Enforcer asks neither); headless,
+    // that is DST-R58's exit with status 0. DST-R59: with something it can
+    // install, DST-R57's text isn't shown
     let fake = Fake::new();
     fake.answers("9.0.0");
     fake.waiting.set(true);
     fake.after_check(Checked::Waiting(Version::new(9, 0, 0)), t0());
-    assert_eq!(fake.take().last(), Some(&Event::Exit));
+    let events = fake.take();
+    assert_eq!(events.last(), Some(&Event::Install));
+    assert!(!events.iter().any(|e| matches!(e, Event::Shown(_))));
 
-    // Not while the version is allowed: the update installs at the next start.
+    // Nothing waiting: nothing to install, and DST-R57's download text.
+    let fake = Fake::new();
+    fake.answers("9.0.0");
+    fake.after_check(Checked::UpToDate, t0());
+    let events = fake.take();
+    assert!(!events.contains(&Event::Install));
+    assert_eq!(events.last(), Some(&Event::Shown(Text::Download)));
+}
+
+#[test]
+fn outside_update_required_a_waiting_update_doesnt_install_after_the_check() {
+    // DST-R54: while the version is allowed, a waiting update installs from
+    // Restart to update, the idle install (update_policy) or the next start
     let fake = Fake::new();
     fake.answers("0.0.0");
     fake.waiting.set(true);
     fake.after_check(Checked::Waiting(Version::new(2, 0, 0)), t0());
-    assert!(!fake.take().contains(&Event::Exit));
+    assert!(!fake.take().contains(&Event::Install));
 }
 
 #[test]

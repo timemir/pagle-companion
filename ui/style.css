@@ -365,6 +365,10 @@ button.quiet-danger:hover { border-color: var(--pc-fail-edge); background: var(-
 #status[data-health="stopped"] .status-card { border-color: var(--pc-fail-edge); }
 #status[data-health="attention"] .status-card { border-color: var(--pc-act-edge); }
 #needs-you button.link { min-height: 0; padding: 0 2px; font-size: inherit; }
+/* The update line (DST-R78): its text, then Restart to update at the end. */
+#update-ready:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+#update-ready::before { top: 50%; margin-top: -8px; }
+#update-restart { min-height: 30px; --btn-glyph: url(icons/restart.svg); }
 #stop-message { font-size: var(--pc-fs-md); font-weight: 600; border-left-width: 4px; padding-left: 38px; }
 #stop-message::before { top: 12px; left: 13px; }
 
