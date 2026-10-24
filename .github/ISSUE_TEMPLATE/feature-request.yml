@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest something the Pagle Companion should do.
+title: "Feature: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for the **Pagle Companion** (the desktop app). Ideas for the in-game addon go in [pagle-addon](https://github.com/timemir/pagle-addon/issues/new/choose).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the Companion makes hard or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How would you like it to work? Optional.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Workarounds or other things you've considered. Optional.
+    validations:
+      required: false
