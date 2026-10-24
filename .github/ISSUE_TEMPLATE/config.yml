@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Problem with the in-game addon
+    url: https://github.com/timemir/pagle-addon/issues/new/choose
+    about: Bugs and ideas for the Pagle addon go in the pagle-addon repository.

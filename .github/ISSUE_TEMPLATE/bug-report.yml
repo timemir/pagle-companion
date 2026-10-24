@@ -1,0 +1,90 @@
+# The bug report form. The Steam Deck report is its own form (steam-deck-report.yml).
+name: Bug report
+description: Something in the Pagle Companion doesn't work the way it should.
+title: "Bug: "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. This form is for the **Pagle Companion** (the desktop app).
+        - On a Steam Deck? Please use the [Steam Deck report](https://github.com/timemir/pagle-companion/issues/new?template=steam-deck-report.yml) instead.
+        - A problem with the in-game addon? Report it in [pagle-addon](https://github.com/timemir/pagle-addon/issues/new/choose).
+        - A security problem? Don't open a public issue; see [SECURITY.md](https://github.com/timemir/pagle-companion/blob/main/SECURITY.md).
+
+  - type: input
+    id: companion-version
+    attributes:
+      label: Pagle Companion version
+      description: Shown at the bottom of the Companion's window, e.g. "Version 1.2.3".
+      placeholder: "1.2.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (AppImage)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-details
+    attributes:
+      label: Operating system details
+      description: Linux distribution and desktop, or the Windows build, if you know it. Optional.
+      placeholder: "Fedora 42, KDE Plasma"
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see? Include the exact text of any error message.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, in order, from starting the Companion. If it only happens sometimes, say so.
+      placeholder: |
+        1. Start the Companion
+        2. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it go wrong?
+      description: Pick the closest. Optional.
+      options:
+        - Linking to Pagle
+        - Uploading a Catch log
+        - Finding the WoW folder
+        - Updating
+        - Autostart or the tray icon
+        - Something else
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: Screenshots, or anything you've already tried. Optional. Don't paste tokens or link codes.
+    validations:
+      required: false
