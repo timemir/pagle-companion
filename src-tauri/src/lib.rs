@@ -19,6 +19,7 @@ pub mod host;
 mod hostile_input;
 pub mod in_game;
 pub mod installs;
+pub mod integrity;
 pub mod link;
 pub mod linking;
 pub mod local_log;
