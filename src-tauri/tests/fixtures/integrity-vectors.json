@@ -58,11 +58,6 @@
       "valid": true
     },
     {
-      "name": "module-envelope",
-      "entry": "A1|1|1791735090|0|Pagle_Ledger|title|fish.master",
-      "valid": true
-    },
-    {
       "name": "zero-skill",
       "entry": "S1|1|0|0|0|0|0",
       "valid": true
@@ -249,12 +244,12 @@
     },
     {
       "name": "unicode-module-limit",
-      "entry": "A1|1|1|0|Pagle_Ledger|title|éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "entry": "A1|1|1|0|Hunts|def|p_x|1/1|éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
       "valid": true
     },
     {
       "name": "unicode-module-overflow",
-      "entry": "A1|1|1|0|Pagle_Ledger|title|ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "entry": "A1|1|1|0|Hunts|def|p_x|1/1|ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
       "valid": false
     },
     {
@@ -266,6 +261,121 @@
       "name": "bounds-are-findings",
       "entry": "S1|1|1791735090|0|301|300|0",
       "valid": true
+    },
+    {
+      "name": "ledger-title",
+      "entry": "A1|1|1792422000|0|Ledger|title|title:level1",
+      "valid": true
+    },
+    {
+      "name": "ledger-title-auto",
+      "entry": "A1|1|1792422000|0|Ledger|title|",
+      "valid": true
+    },
+    {
+      "name": "ledger-crest",
+      "entry": "A1|1|1792422000|0|Ledger|crest|core.crest.plain",
+      "valid": true
+    },
+    {
+      "name": "board-start",
+      "entry": "A1|1|1792422000|0|TackleBoard|start|1792422000;1792422000",
+      "valid": true
+    },
+    {
+      "name": "board-issue",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;30;20;148",
+      "valid": true
+    },
+    {
+      "name": "board-reroll",
+      "entry": "A1|1|1792422000|0|TackleBoard|reroll|Player-4618-0A1B2C3D-1792422000-0;n;quality;1;30;3;2",
+      "valid": true
+    },
+    {
+      "name": "hunt-run",
+      "entry": "A1|1|1792422000|0|Hunts|run|darkshore|1792422000|1792681200|r",
+      "valid": true
+    },
+    {
+      "name": "hunt-def",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|1/2|{kind=\"huntEvent\",",
+      "valid": true
+    },
+    {
+      "name": "unknown-module",
+      "entry": "A1|1|1792422000|0|Other|pay|999",
+      "valid": false
+    },
+    {
+      "name": "unknown-subtype",
+      "entry": "A1|1|1792422000|0|TackleBoard|pay|999",
+      "valid": false
+    },
+    {
+      "name": "wrong-module-name",
+      "entry": "A1|1|1792422000|0|Pagle_Ledger|title|fish.master",
+      "valid": false
+    },
+    {
+      "name": "extra-board-fields",
+      "entry": "A1|1|1792422000|0|TackleBoard|start|1;2;3",
+      "valid": false
+    },
+    {
+      "name": "board-leading-zero",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;01;30;20;148",
+      "valid": false
+    },
+    {
+      "name": "board-big-pay",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;9007199254740992;20;148",
+      "valid": false
+    },
+    {
+      "name": "board-plus-pay",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;+30;20;148",
+      "valid": false
+    },
+    {
+      "name": "board-zero-need",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;30;0;148",
+      "valid": false
+    },
+    {
+      "name": "board-extra-target",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;lure;1;30;20;148",
+      "valid": false
+    },
+    {
+      "name": "expedition-species-order",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;variety;0;100;2;148:6358,6303",
+      "valid": false
+    },
+    {
+      "name": "expedition-variety",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;variety;0;100;2;148:6303,6358",
+      "valid": true
+    },
+    {
+      "name": "hunt-source",
+      "entry": "A1|1|1792422000|0|Hunts|run|darkshore|1|2|x",
+      "valid": false
+    },
+    {
+      "name": "hunt-part-leading-zero",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|01/2|text",
+      "valid": false
+    },
+    {
+      "name": "hunt-extra-source",
+      "entry": "A1|1|1792422000|0|Hunts|run|darkshore|1|2|r|more",
+      "valid": false
+    },
+    {
+      "name": "ledger-title-extra-field",
+      "entry": "A1|1|1792422000|0|Ledger|title|title:level1|extra",
+      "valid": false
     }
   ],
   "initialVariants": [
