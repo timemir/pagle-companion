@@ -125,7 +125,7 @@ fn board_payload(kind: &[u8], text: &[u8]) -> bool {
             if goal_type == b"n" {
                 target.is_empty()
             } else {
-                number(target, 1, false).is_some()
+                number(target, 0, false).is_some()
             }
         }
         b"variety" => {

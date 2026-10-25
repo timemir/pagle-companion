@@ -386,6 +386,11 @@
       "name": "build-invalid-rules",
       "entry": "B1|1|1791735090|0|12345|1.0.0|bad/rules",
       "valid": false
+    },
+    {
+      "name": "eastern-kingdoms-wanderer",
+      "entry": "A1|1|1791735090|0|TackleBoard|issue|e;wanderer;0;60;5;0",
+      "valid": true
     }
   ],
   "initialVariants": [
