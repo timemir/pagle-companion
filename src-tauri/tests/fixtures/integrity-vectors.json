@@ -1,29 +1,29 @@
 {
   "version": 1,
   "logId": "3f9a2c1e7b0d4a65",
-  "format": 2,
-  "initial": "b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c",
+  "format": 3,
+  "initial": "c9025f45ec197905862011e464f64b2ab5e446cb4c3a1006b4f50aa052289ca0",
   "steps": [
     {
       "sequence": 1,
       "guid": "Player-4618-0A1B2C3D",
       "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
-      "digest": "dc8593bbd4763cfb7117d60277aac792285dd5fce36424f3e2d1582a0aa76306",
-      "frame": "PGL-ENTRY|1|b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c|1|20|Player-4618-0A1B2C3D|71|C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1\n"
+      "digest": "de3acb6b7e2f0273a936bd13cae40f219c673184e01e26c608080c871ea0a3c0",
+      "frame": "PGL-ENTRY|1|c9025f45ec197905862011e464f64b2ab5e446cb4c3a1006b4f50aa052289ca0|1|20|Player-4618-0A1B2C3D|71|C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1\n"
     },
     {
       "sequence": 2,
       "guid": "Player-4618-0A1B2C3D",
       "entry": "S1|1|1791735090|0|87|150|-5",
-      "digest": "36599260f10ea6545c2d42b8c089183526fff51c53864a9dc371f10f7ce2a36e",
-      "frame": "PGL-ENTRY|1|dc8593bbd4763cfb7117d60277aac792285dd5fce36424f3e2d1582a0aa76306|2|20|Player-4618-0A1B2C3D|27|S1|1|1791735090|0|87|150|-5\n"
+      "digest": "5b837e70f2595660a0e587206a935f73f28db528bca3ca310e5522884700fa69",
+      "frame": "PGL-ENTRY|1|de3acb6b7e2f0273a936bd13cae40f219c673184e01e26c608080c871ea0a3c0|2|20|Player-4618-0A1B2C3D|27|S1|1|1791735090|0|87|150|-5\n"
     },
     {
       "sequence": 3,
       "guid": "Player-4618-0B000000",
-      "entry": "B1|2|1791735091|0|12345|pêche",
-      "digest": "12a5bca7b6176eab962d959a7a7e25846875d7ec9a4d514dca0afc132424592d",
-      "frame": "PGL-ENTRY|1|36599260f10ea6545c2d42b8c089183526fff51c53864a9dc371f10f7ce2a36e|3|20|Player-4618-0B000000|30|B1|2|1791735091|0|12345|pêche\n"
+      "entry": "B1|2|1791735091|0|12345|pêche|pagle-2026a",
+      "digest": "77429b49dc0b97c68cae671e169169de87ec84060ac10026d9549c41b6f4a421",
+      "frame": "PGL-ENTRY|1|5b837e70f2595660a0e587206a935f73f28db528bca3ca310e5522884700fa69|3|20|Player-4618-0B000000|42|B1|2|1791735091|0|12345|pêche|pagle-2026a\n"
     }
   ],
   "records": [
@@ -39,7 +39,7 @@
     },
     {
       "name": "build",
-      "entry": "B1|1|1791735090|0|12345|1.0.0",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|pagle-2026a",
       "valid": true
     },
     {
@@ -239,7 +239,7 @@
     },
     {
       "name": "unicode-build",
-      "entry": "B1|1|1|0|1|pêche",
+      "entry": "B1|1|1|0|1|pêche|pagle-2026a",
       "valid": true
     },
     {
@@ -254,7 +254,7 @@
     },
     {
       "name": "carriage-return-build",
-      "entry": "B1|1|1|0|1|two\rlines",
+      "entry": "B1|1|1|0|1|two\rlines|pagle-2026a",
       "valid": true
     },
     {
@@ -375,6 +375,16 @@
     {
       "name": "ledger-title-extra-field",
       "entry": "A1|1|1792422000|0|Ledger|title|title:level1|extra",
+      "valid": false
+    },
+    {
+      "name": "build-missing-rules",
+      "entry": "B1|1|1791735090|0|12345|1.0.0",
+      "valid": false
+    },
+    {
+      "name": "build-invalid-rules",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|bad/rules",
       "valid": false
     }
   ],
