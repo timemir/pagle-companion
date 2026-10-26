@@ -416,7 +416,7 @@ pub enum Note {
     Pending { text: &'static str },
     /// Held characters (ACC-R33), with a **Sign in** link to `/signin`.
     HeldCharacters { text: &'static str },
-    /// Left off Leaderboards and Region firsts, with a link to My Anglers.
+    /// Left off Leaderboards and First reported, with a link to My Anglers.
     LeftOff { text: &'static str },
 }
 
@@ -446,8 +446,9 @@ pub const UPDATE_COMPANION: &str = "Update Pagle Companion.";
 /// CMP-R53, ACC-R33; also its notification (CMP-R111).
 pub const HELD_CHARACTERS: &str = "A new character needs verifying. Sign in again to verify it.";
 /// CMP-R53, for `flagged` and `excluded` alike.
+pub const CHECKING: &str = "Competition is waiting for checks of your latest Upload. Your last checked Angler page stays available.";
 pub const LEFT_OFF: &str =
-    "This Angler is left off Leaderboards and Region firsts. Your Angler page says why.";
+    "This Angler is left off Leaderboards and First reported. Your Angler page says why.";
 
 /// The text of a Pending reason (accounts.md UI, Pending reasons); `None`
 /// for one this Companion doesn't know.
@@ -501,7 +502,17 @@ pub fn catch_log_notes(catch_log: &CatchLogState) -> Vec<Note> {
         .as_ref()
         .is_some_and(|left_off| !left_off.is_null())
     {
-        notes.push(Note::LeftOff { text: LEFT_OFF });
+        let text = if catch_log
+            .left_off
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            == Some("checking")
+        {
+            CHECKING
+        } else {
+            LEFT_OFF
+        };
+        notes.push(Note::LeftOff { text });
     }
     notes
 }
@@ -1671,7 +1682,7 @@ mod tests {
         );
         assert_eq!(
             LEFT_OFF,
-            "This Angler is left off Leaderboards and Region firsts. Your Angler page says why."
+            "This Angler is left off Leaderboards and First reported. Your Angler page says why."
         );
         let state = catch_log("verified", None, 2, true);
         let failed = ran(RunResult::Failed, Some("entry_cap"), Some(state.clone()));

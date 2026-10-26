@@ -53,7 +53,7 @@ const FOREVER_API: &str = "Battle.net doesn't list WoW Forever characters yet. Y
                            is safe here and will be verified once it does.";
 const HELD: &str = "A new character needs verifying. Sign in again to verify it.";
 const LEFT_OFF: &str =
-    "This Angler is left off Leaderboards and Region firsts. Your Angler page says why.";
+    "This Angler is left off Leaderboards and First reported. Your Angler page says why.";
 
 /// What runs work with in tests: real reads of the fixture's files, a
 /// backoff that records its waits instead of waiting, and a fixed clock.
@@ -1307,9 +1307,27 @@ async fn held_characters_ask_to_sign_in_and_notify_until_they_clear() {
 }
 
 #[tokio::test]
+async fn current_upload_waiting_for_validation_shows_a_neutral_note_without_notification() {
+    let h = Harness::new(15).await;
+    h.pagle.set_catch_log(json!({ "verification": "verified",
+        "pendingReason": null, "heldCharacters": 0, "leftOff": "checking" }));
+    h.run(Trigger::UploadNow).await;
+    let Some(Line::Uploaded { notes, .. } | Line::UpToDate { notes, .. }) = h.line() else {
+        panic!("not uploaded: {:?}", h.line());
+    };
+    assert_eq!(
+        notes,
+        [Note::LeftOff {
+            text: "Competition is waiting for checks of your latest Upload. Your last checked Angler page stays available."
+        }]
+    );
+    assert!(h.shown().is_empty());
+}
+
+#[tokio::test]
 async fn a_left_off_angler_shows_the_my_anglers_line_without_a_notification() {
     // CMP-R53: leftOff not null shows "This Angler is left off Leaderboards
-    // and Region firsts. Your Angler page says why." with a link to My
+    // and First reported. Your Angler page says why." with a link to My
     // Anglers, for flagged and excluded alike, and no notification;
     // CMP-R124; CMP UI: CMP-R53's lines in order, all that apply
     let h = Harness::new(15).await;
