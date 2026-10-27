@@ -995,6 +995,25 @@ pub(crate) mod fixture {
 
     use super::*;
 
+    /// Makes `link` a link to the folder `target`: a junction on Windows, which
+    /// any user can make without privilege, a symlink on Linux.
+    pub fn link_folder(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            // cmd reads a `/` as the start of an option.
+            let backslashed = |path: &Path| path.to_string_lossy().replace('/', "\\");
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(backslashed(link))
+                .arg(backslashed(target))
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+        #[cfg(target_os = "linux")]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
     /// A flavor folder at `base/rel` with `Interface/AddOns/`, and
     /// `Pagle/Pagle.toc` holding `pagle_toc` if given. Canonical (CMP-R17).
     pub fn install(base: &Path, rel: &str, pagle_toc: Option<&[u8]>) -> String {
