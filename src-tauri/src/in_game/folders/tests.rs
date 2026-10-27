@@ -884,25 +884,6 @@ fn the_message_uses_the_os_path_form() {
     );
 }
 
-/// Makes `link` a link to the folder `target`: a junction on Windows, which
-/// any user can make without privilege, a symlink on Linux.
-fn link_folder(link: &Path, target: &Path) {
-    #[cfg(windows)]
-    {
-        // cmd reads a `/` as the start of an option.
-        let backslashed = |path: &Path| path.to_string_lossy().replace('/', "\\");
-        let made = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(backslashed(link))
-            .arg(backslashed(target))
-            .output()
-            .unwrap();
-        assert!(made.status.success(), "{made:?}");
-    }
-    #[cfg(target_os = "linux")]
-    std::os::unix::fs::symlink(target, link).unwrap();
-}
-
 #[test]
 fn a_link_where_a_data_addon_folder_belongs_is_never_written_through() {
     // CMP-R4, CMP-R83, CMP-R132: another OS user who can write to a shared

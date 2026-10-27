@@ -1,6 +1,7 @@
 //! Recovery through the queue's authenticated HTTP boundary, real
 //! SavedVariables reads and the production owned-folder writer.
 use super::*;
+use crate::in_game::folders::fixture::link_folder;
 use crate::readings::fixture::LOG_B;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -151,19 +152,7 @@ async fn a_recovery_folder_link_cannot_write_outside_the_selected_install() {
     let h = recovery_harness().await;
     let outside = h.tmp.path().join("outside");
     std::fs::create_dir(&outside).unwrap();
-    #[cfg(target_os = "linux")]
-    std::os::unix::fs::symlink(&outside, staged_folder(&h)).unwrap();
-    #[cfg(windows)]
-    assert!(
-        std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(staged_folder(&h))
-            .arg(&outside)
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
+    link_folder(&staged_folder(&h), &outside);
     serve(&h, fixture()["signed"].clone()).await;
     assert!(recover(&h).await.is_err());
     assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
@@ -469,19 +458,7 @@ async fn cleanup_cannot_follow_an_interface_directory_link_outside_the_install()
     let precious = outside.join("AddOns/Pagle_Recovery/precious.txt");
     std::fs::create_dir_all(precious.parent().unwrap()).unwrap();
     std::fs::write(&precious, b"keep this").unwrap();
-    #[cfg(target_os = "linux")]
-    std::os::unix::fs::symlink(&outside, &interface).unwrap();
-    #[cfg(windows)]
-    assert!(
-        std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(&interface)
-            .arg(&outside)
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
+    link_folder(&interface, &outside);
     crate::in_game::folders::delete_data_addon_folders(&[flavor.to_string_lossy().into_owned()]);
     assert_eq!(std::fs::read(&precious).unwrap(), b"keep this");
 }
