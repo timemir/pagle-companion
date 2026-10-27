@@ -206,11 +206,13 @@ impl<H: Host> Env for AppEnv<H> {
 
     fn stage_recovery(
         &self,
+        log_id: &str,
         folder: &str,
         lua: Vec<u8>,
     ) -> impl Future<Output = Result<bool, String>> + Send {
         let app = self.0.clone();
         let folder = folder.to_owned();
+        let log_id = log_id.to_owned();
         async move {
             tauri::async_runtime::spawn_blocking(move || {
                 app.state::<folders::Writer>()
@@ -219,6 +221,14 @@ impl<H: Host> Env for AppEnv<H> {
                         companion.account().is_linked()
                             && !companion.account().is_stopped()
                             && !app.state::<Uploads>().stopping()
+                            && companion.state.read(|s| {
+                                s.logs.get(&log_id).is_some_and(|log| {
+                                    log.answer == Some(crate::state::Answer::Upload)
+                                        && paths::same_folder_key(
+                                            log.folder.as_deref().unwrap_or(&log.last_folder),
+                                        ) == paths::same_folder_key(&folder)
+                                })
+                            })
                     })
                     .map_err(|e| format!("Couldn't stage Recovery: {e}"))
             })
@@ -236,6 +246,133 @@ impl<H: Host> Env for AppEnv<H> {
 mod tests {
     use super::*;
     use crate::state::LogState;
+
+    #[tokio::test]
+    async fn cmp_r80_changing_selection_while_the_writer_is_busy_cannot_stage_into_the_old_install()
+    {
+        use std::sync::mpsc;
+        use std::task::Poll;
+
+        use crate::host::Parts;
+        use crate::readings::{FolderReading, Snapshot, read};
+        use crate::state::State;
+        use crate::state_dir::StateDir;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let log_id = crate::readings::fixture::LOG_A;
+        let mut snapshot = Snapshot::default();
+        for install in ["one", "two"] {
+            let flavor = tmp.path().join(install);
+            let folder = flavor.join("WTF/Account/ADA#1");
+            crate::readings::fixture::save(
+                &folder,
+                &crate::readings::fixture::pagle_lua_text(log_id, 1),
+            );
+            let addon = flavor.join("Interface/AddOns/Pagle");
+            std::fs::create_dir_all(&addon).unwrap();
+            std::fs::write(addon.join("Pagle.toc"), b"## Interface: 16001\n").unwrap();
+            snapshot.folders.push(FolderReading {
+                flavor: flavor.to_string_lossy().into_owned(),
+                name: "ADA#1".into(),
+                path: folder.to_string_lossy().into_owned(),
+                polled: false,
+                reading: read::read(&folder),
+                last_log_id: Some(log_id.into()),
+            });
+        }
+        let host = Parts::default();
+        crate::companion::manage(
+            &host,
+            StateDir::open(tmp.path().join("state")).unwrap(),
+            "1.0.0".into(),
+            State {
+                battle_tag: Some("Ada#1234".into()),
+                ..State::default()
+            },
+            Box::new(crate::notify::Silent),
+        )
+        .unwrap();
+        let companion = host.state::<Companion>();
+        let logs = host.state::<CatchLogs>();
+        logs.refresh(&companion.state, &companion.notifications, &snapshot);
+        logs.answer(
+            &companion.state,
+            &companion.notifications,
+            Some(&snapshot),
+            log_id,
+            true,
+        )
+        .unwrap();
+        logs.pick(
+            &companion.state,
+            &companion.notifications,
+            &snapshot,
+            log_id,
+            &snapshot.folders[0].path,
+        )
+        .unwrap();
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let blocking_host = host.clone();
+        let blocker = std::thread::spawn(move || {
+            blocking_host
+                .state::<folders::Writer>()
+                .stage_recovery("unused", b"", || {
+                    held_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    false
+                })
+        });
+        held_rx.await.unwrap();
+        let env = AppEnv(host.clone());
+        let stage = env.stage_recovery(
+            log_id,
+            &snapshot.folders[0].path,
+            b"private package".to_vec(),
+        );
+        tokio::pin!(stage);
+        std::future::poll_fn(|cx| {
+            assert!(stage.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        logs.pick(
+            &companion.state,
+            &companion.notifications,
+            &snapshot,
+            log_id,
+            &snapshot.folders[1].path,
+        )
+        .unwrap();
+        release_tx.send(()).unwrap();
+        assert!(blocker.join().unwrap().is_err());
+        assert!(stage.await.is_err());
+        for folder in &snapshot.folders {
+            assert!(
+                !std::path::Path::new(&folder.flavor)
+                    .join("Interface/AddOns/Pagle_Recovery")
+                    .exists()
+            );
+        }
+        assert!(
+            env.stage_recovery(
+                log_id,
+                &snapshot.folders[1].path,
+                b"private package".to_vec(),
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            std::fs::read(
+                std::path::Path::new(&snapshot.folders[1].flavor)
+                    .join("Interface/AddOns/Pagle_Recovery/Recovery.lua"),
+            )
+            .unwrap(),
+            b"private package"
+        );
+    }
 
     #[test]
     fn the_status_says_nothing_uploaded_until_something_is() {
