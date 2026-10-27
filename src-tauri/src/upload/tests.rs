@@ -1,5 +1,5 @@
 //! Upload runs end to end, against a stub backend that keeps a cursor
-//! ([`FakePagle`]): the queue, the cursor, the pages, the whole-send flag,
+//! ([`FakePagle`]): the queue, the cursor, the pages, exact checkpoints,
 //! the backoff, every reply of CMP-R50 with the row it leaves and the
 //! notifications it raises, and what local state records. The pure mapping
 //! of refusals is at the end.
@@ -189,7 +189,10 @@ impl Harness {
                 folder: None,
                 characters: "Ada Brook".into(),
                 last_folder: folder_text.clone(),
-                whole_send_pending: false,
+                uploaded_snapshot: None,
+                observed_snapshot: None,
+                recovery: None,
+                recovery_notice: None,
                 last_run: None,
                 last_uploaded_at: None,
             },
@@ -315,7 +318,11 @@ fn seen(from: u64, count: u64, total: u64, anchor: &str, as_of: u64) -> Seen {
         as_of,
         total,
         from,
-        anchor: anchor.into(),
+        anchor: if anchor.is_empty() {
+            crate::integrity::checkpoint_initial(LOG_A, 1).unwrap()
+        } else {
+            anchor.into()
+        },
         count,
     }
 }
@@ -323,7 +330,7 @@ fn seen(from: u64, count: u64, total: u64, anchor: &str, as_of: u64) -> Seen {
 fn applied() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({
         "result": "applied", "reason": null, "message": null, "logId": LOG_A,
-        "end": { "seq": 1, "entryId": "x" }, "newestAsOf": 1, "catchLog": null }))
+        "end": { "seq": 1, "entryId": "x", "digest": "0000000000000000000000000000000000000000000000000000000000000000", "revision": 1 }, "newestAsOf": 1, "catchLog": null }))
 }
 
 async fn until(what: impl Fn() -> bool) {
@@ -353,10 +360,16 @@ async fn a_first_upload_sends_45000_entries_in_three_pages() {
                 20_001,
                 20_000,
                 45_000,
-                &log.entry_id(20_000).unwrap(),
+                &log.checkpoint(20_000).unwrap(),
                 as_of
             ),
-            seen(40_001, 5_000, 45_000, &log.entry_id(40_000).unwrap(), as_of),
+            seen(
+                40_001,
+                5_000,
+                45_000,
+                &log.checkpoint(40_000).unwrap(),
+                as_of
+            ),
         ]
     );
     assert_eq!(h.pagle.end(LOG_A), 45_000);
@@ -387,7 +400,7 @@ async fn a_finished_run_records_last_run_and_last_uploaded() {
     assert_eq!(catch_log.verification, "pending");
     assert_eq!(catch_log.pending_reason.as_deref(), Some("forever-api"));
     assert_eq!(log.last_uploaded_at, Some(NOW));
-    assert!(!log.whole_send_pending);
+
     assert!(h.env.changed.load(Ordering::SeqCst) > 0);
 }
 
@@ -405,38 +418,34 @@ async fn a_cursor_behind_the_disk_sends_the_rest_with_its_anchor() {
     );
     assert_eq!(
         h.pagle.pages(),
-        [seen(13, 3, 15, &log.entry_id(12).unwrap(), h.as_of())]
+        [seen(13, 3, 15, &log.checkpoint(12).unwrap(), h.as_of())]
     );
-    assert!(!h.log().whole_send_pending);
 }
 
 #[tokio::test]
-async fn a_cursor_at_the_end_is_up_to_date_except_right_after_linking() {
-    // CMP-R47: with E = L the run ends up to date and sends no Upload;
-    // CMP-R101: right after linking it sends from = L, count = 1, anchored
-    // at L − 1
+async fn a_cursor_at_the_end_checks_metadata_and_post_link_retries_the_last_entry() {
     let h = Harness::new(15).await;
     let log = local(15);
     h.hold(&log, 15);
-
     assert_eq!(
         h.run(Trigger::Start).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    assert_eq!(
+        h.run(Trigger::Scan).await,
         [RunEnd::Recorded(RunResult::UpToDate)]
     );
-    assert!(h.pagle.pages().is_empty());
-    assert_eq!(h.pagle.cursor_reads(), 1);
-    assert_eq!(h.log().last_uploaded_at, None);
-
     assert_eq!(
         h.run(Trigger::PostLink).await,
         [RunEnd::Recorded(RunResult::Uploaded)]
     );
     assert_eq!(
         h.pagle.pages(),
-        [seen(15, 1, 15, &log.entry_id(14).unwrap(), h.as_of())]
+        [
+            seen(15, 1, 15, &log.checkpoint(14).unwrap(), h.as_of()),
+            seen(15, 1, 15, &log.checkpoint(14).unwrap(), h.as_of())
+        ]
     );
-    // Linking sets no whole-send flag.
-    assert!(!h.log().whole_send_pending);
 }
 
 #[tokio::test]
@@ -452,25 +461,22 @@ async fn up_to_date_keeps_the_catch_log_of_the_last_reply() {
 }
 
 #[tokio::test]
-async fn a_server_ahead_of_the_disk_gets_the_whole_log() {
-    // CMP-R47: with E > L the run sends the whole log from 1 (ADR 0001)
+async fn a_server_ahead_of_the_disk_requires_recovery() {
+    // A shorter complete local backup cannot truncate Accepted history.
     let h = Harness::new(15).await;
     h.hold(&local(20), 20);
 
     assert_eq!(
         h.run(Trigger::Start).await,
-        [RunEnd::Recorded(RunResult::Uploaded)]
+        [RunEnd::Recorded(RunResult::Divergence)]
     );
-    assert_eq!(h.pagle.pages(), [seen(1, 15, 15, "", h.as_of())]);
-    assert_eq!(h.pagle.end(LOG_A), 15);
-    assert!(!h.log().whole_send_pending);
+    assert!(h.pagle.pages().is_empty());
+    assert_eq!(h.pagle.end(LOG_A), 20);
 }
 
 #[tokio::test]
-async fn a_whole_send_cut_off_after_page_1_starts_again_from_seq_1() {
-    // CMP-R48, CMP-R106: the whole-send flag is set when a whole send
-    // starts and kept in state.json, so a whole send cut off between pages
-    // starts again from seq 1 at the next run
+async fn an_interrupted_upload_resumes_after_the_exact_accepted_prefix() {
+    // A restart checks the complete accepted prefix and resumes its suffix.
     let h = Harness::new(45_000).await;
     h.pagle.script_uploads(vec![
         None,
@@ -485,7 +491,7 @@ async fn a_whole_send_cut_off_after_page_1_starts_again_from_seq_1() {
     assert_eq!(h.pagle.end(LOG_A), 20_000);
 
     let h = h.restart();
-    assert!(h.log().whole_send_pending);
+
     let before = h.pagle.pages().len();
     assert_eq!(
         h.run(Trigger::Start).await,
@@ -495,8 +501,8 @@ async fn a_whole_send_cut_off_after_page_1_starts_again_from_seq_1() {
         .iter()
         .map(|p| (p.from, p.count))
         .collect();
-    assert_eq!(pages, [(1, 20_000), (20_001, 20_000), (40_001, 5_000)]);
-    assert!(!h.log().whole_send_pending);
+    assert_eq!(pages, [(20_001, 20_000), (40_001, 5_000)]);
+
     assert_eq!(h.pagle.end(LOG_A), 45_000);
 }
 
@@ -599,8 +605,7 @@ async fn switching_off_drops_the_queued_run_and_stops_the_running_one() {
     assert_eq!(h.pagle.pages().len(), 1);
     let log = h.log();
     assert_eq!(log.last_run, None);
-    // The whole send isn't finished: the next run starts from seq 1.
-    assert!(log.whole_send_pending);
+    // Accepted pages remain available to the next checkpoint comparison.
 }
 
 #[tokio::test]
@@ -628,7 +633,7 @@ async fn a_divergence_is_held_back_until_upload_now() {
 }
 
 #[tokio::test]
-async fn a_later_scan_skips_a_file_unchanged_since_its_upload() {
+async fn a_later_scan_compares_fresh_contents_even_after_an_unchanged_upload() {
     // CMP-R45: after each later scan, except one whose last run ended
     // uploaded or up to date and whose file is still that run's; CMP-R46:
     // every run reads its file when it starts
@@ -636,9 +641,9 @@ async fn a_later_scan_skips_a_file_unchanged_since_its_upload() {
     h.run(Trigger::Start).await;
     assert_eq!(
         h.run(Trigger::Scan).await,
-        [RunEnd::NotStarted("unchanged since its last run")]
+        [RunEnd::Recorded(RunResult::UpToDate)]
     );
-    assert_eq!(h.pagle.cursor_reads(), 1);
+    assert_eq!(h.pagle.cursor_reads(), 2);
 
     h.uploads.trigger(LOG_A, Trigger::Scan);
     h.save(17);
@@ -763,47 +768,38 @@ async fn a_first_gap_reads_the_cursor_again_and_restarts() {
 }
 
 #[tokio::test]
-async fn a_second_gap_ends_the_run_failed_and_not_held_back() {
-    // CMP-R50: a second gap in the same run ends it failed, not held back,
-    // so the next trigger tries again; CMP UI: "Upload failed. Pagle
-    // Companion tries again later."; CMP Tunables: 1 gap restart per run
+async fn a_second_gap_requires_recovery_after_rechecking_the_checkpoint() {
     let h = Harness::new(15).await;
     h.pagle
         .script_uploads(vec![Some(refusal(409, "gap")), Some(refusal(409, "gap"))]);
     assert_eq!(
         h.run(Trigger::Start).await,
-        [RunEnd::Recorded(RunResult::Failed)]
+        [RunEnd::Recorded(RunResult::Divergence)]
     );
     assert_eq!(h.pagle.cursor_reads(), 2);
-    let run = h.log().last_run.unwrap();
-    assert_eq!(run.code.as_deref(), Some("gap"));
     assert_eq!(
-        h.line(),
-        Some(Line::Failed {
-            text: "Upload failed. Pagle Companion tries again later."
-        })
+        h.log().last_run.unwrap().code.as_deref(),
+        Some("recovery_required")
     );
-    // Not held back: the same file runs again at the next trigger.
     assert_eq!(
-        h.run(Trigger::Start).await,
-        [RunEnd::Recorded(RunResult::Uploaded)]
+        h.run(Trigger::Scan).await,
+        [RunEnd::NotStarted("held back")]
     );
 }
 
 #[tokio::test]
-async fn a_divergence_is_held_back_notifies_once_and_offers_replace() {
+async fn a_divergence_is_held_back_notifies_once_and_offers_recovery() {
     // CMP-R52: the logId is held back, its row says "This Catch log differs
     // from the copy on Pagle.", a notification is raised (CMP-R111), and the
-    // row offers Replace with its question; Upload now finds it again
+    // row offers Recovery with its explanation; Upload now finds it again
     let h = Harness::new(15).await;
     h.hold(&fork(12), 12);
     h.run(Trigger::Start).await;
     assert_eq!(
         h.line(),
         Some(Line::Divergence {
-            text: DIFFERS,
-            question: "Pagle will hold this computer's copy of this Catch log. Entries only \
-                       Pagle's copy has will be dropped from Pagle.",
+            text: DIFFERS.into(),
+            question: catch_logs::RECOVERY_EXPLANATION,
         })
     );
     assert_eq!(h.shown(), [DIFFERS]);
@@ -830,95 +826,6 @@ async fn a_page_refused_as_divergence_ends_as_a_divergence() {
         h.run(Trigger::Change).await,
         [RunEnd::NotStarted("held back")]
     );
-    assert_eq!(h.shown(), [DIFFERS]);
-}
-
-#[tokio::test]
-async fn replace_sends_the_whole_log_from_seq_1() {
-    // CMP-R52: Replace sets the whole-send flag (CMP-R48), lifts the hold
-    // and starts a run, which sends the whole log (ADR 0001); CMP-R110: the
-    // divergence clears, so a new one notifies again
-    let h = Harness::new(15).await;
-    h.hold(&fork(12), 12);
-    h.run(Trigger::Start).await;
-
-    Uploads::replace(&h.state, LOG_A).unwrap();
-    assert!(h.log().whole_send_pending);
-    // The hold lifts with the divergence's lastRun.
-    assert_eq!(h.log().last_run, None);
-    assert_eq!(h.line(), None);
-    assert_eq!(
-        h.run(Trigger::Replace).await,
-        [RunEnd::Recorded(RunResult::Uploaded)]
-    );
-    assert_eq!(h.pagle.pages(), [seen(1, 15, 15, "", h.as_of())]);
-    assert!(!h.log().whole_send_pending);
-    assert_eq!(h.pagle.end(LOG_A), 15);
-
-    h.hold_at(&fork(12), 12, h.as_of());
-    h.save(16);
-    assert_eq!(
-        h.run(Trigger::Change).await,
-        [RunEnd::Recorded(RunResult::Divergence)]
-    );
-    assert_eq!(h.shown(), [DIFFERS, DIFFERS]);
-}
-
-#[tokio::test]
-async fn a_replace_cut_off_sends_the_whole_log_at_the_next_run() {
-    // CMP-R52: Replace sets the whole-send flag and lifts the hold, both kept
-    // in state.json (CMP-R48, CMP-R106), so a Replace whose run never ran
-    // still replaces at the next start
-    let h = Harness::new(15).await;
-    h.hold(&fork(12), 12);
-    h.run(Trigger::Start).await;
-    Uploads::replace(&h.state, LOG_A).unwrap();
-
-    let h = h.restart();
-    assert_eq!(
-        h.run(Trigger::Start).await,
-        [RunEnd::Recorded(RunResult::Uploaded)]
-    );
-    assert_eq!(h.pagle.pages(), [seen(1, 15, 15, "", h.as_of())]);
-}
-
-#[tokio::test]
-async fn only_a_divergence_can_be_replaced() {
-    // CMP-R52: the row offers Replace after a divergence only
-    let h = Harness::new(15).await;
-    assert!(Uploads::replace(&h.state, LOG_A).is_err());
-    h.run(Trigger::Start).await;
-    assert!(Uploads::replace(&h.state, LOG_A).is_err());
-    assert!(!h.log().whole_send_pending);
-}
-
-#[tokio::test]
-async fn replace_over_a_newer_copy_on_pagle_ends_stale_and_isnt_held_back() {
-    // CMP-R52: the server applies it unless its as-of is older than Pagle's
-    // newest (UPL-R35), in which case the run ends stale; CMP-R50: stale is
-    // not held back; CMP-R134: the Companion shows the state and tries again
-    // on the next trigger
-    let h = Harness::new(15).await;
-    h.hold_at(&fork(12), 12, h.as_of() + 100);
-    h.run(Trigger::Start).await;
-    Uploads::replace(&h.state, LOG_A).unwrap();
-    assert_eq!(
-        h.run(Trigger::Replace).await,
-        [RunEnd::Recorded(RunResult::Stale)]
-    );
-    assert_eq!(
-        h.line(),
-        Some(Line::Stale {
-            text: "Pagle already has a newer copy of this Catch log. Nothing changed."
-        })
-    );
-    let reads = h.pagle.cursor_reads();
-    assert_eq!(
-        h.run(Trigger::Change).await,
-        [RunEnd::Recorded(RunResult::Stale)]
-    );
-    assert_eq!(h.pagle.cursor_reads(), reads + 1);
-    // Stale raises nothing; the divergence's cause has cleared.
     assert_eq!(h.shown(), [DIFFERS]);
 }
 
@@ -1532,4 +1439,118 @@ async fn post_link_runs_count_until_each_has_ended() {
     h.uploads.trigger(LOG_A, Trigger::PostLink);
     h.uploads.cancel();
     assert_eq!(*count.borrow(), 0);
+}
+
+#[tokio::test]
+async fn unchanged_tail_identity_cannot_hide_an_edited_prefix() {
+    let h = Harness::new(3).await;
+    h.hold(&local(3), 3);
+    let original = pagle_lua_text(LOG_A, 3);
+    let edited = original.replacen("S1|1|1791735051|0|", "S1|1|1791735051|0|999|", 1);
+    assert_ne!(edited, original);
+    save(&h.folder, &edited);
+    assert_eq!(
+        h.run(Trigger::UploadNow).await,
+        [RunEnd::Recorded(RunResult::Divergence)]
+    );
+    assert!(h.pagle.pages().is_empty());
+}
+
+#[tokio::test]
+async fn a_shorter_complete_backup_requires_recovery_without_uploading() {
+    let h = Harness::new(3).await;
+    h.hold(&local(5), 5);
+    assert_eq!(
+        h.run(Trigger::UploadNow).await,
+        [RunEnd::Recorded(RunResult::Divergence)]
+    );
+    assert!(h.pagle.pages().is_empty());
+}
+
+#[path = "recovery_tests.rs"]
+mod recovery_journeys;
+
+#[tokio::test]
+async fn every_uploaded_document_matches_the_independent_version_2_vector() {
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("../../fixtures/document-v2.json")).unwrap();
+    for format in [1, 2, 3] {
+        let pages = vectors[format!("format{format}")].as_array().unwrap();
+        let first = pages[0]["document"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        let characters=first[1..3].iter().map(|line| {
+            let f=line.split('|').collect::<Vec<_>>();
+            let hardcore=match f[7] {"0"=>"false","1"=>"true",_=>"nil"};
+            format!("{{guid={:?},name={:?},surname={:?},classID={},raceID={},faction={:?},realmID={},hardcore={hardcore},firstSeen={},lastSeen={}}}",f[0],f[1],f[2],f[3],f[4],f[5],f[6],f[8],f[9])
+        }).collect::<Vec<_>>().join(",");
+        let entries = pages
+            .iter()
+            .flat_map(|page| page["document"].as_str().unwrap().lines().skip(3))
+            .map(|entry| format!("{entry:?}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let h = Harness::new(9).await;
+        save(
+            &h.folder,
+            &format!(
+                "PagleLog={{format={format},logId={LOG_A:?},characters={{{characters}}},entries={{{entries}}}}}"
+            ),
+        );
+        assert_eq!(
+            h.run(Trigger::Start).await,
+            [RunEnd::Recorded(RunResult::Uploaded)]
+        );
+        let document = h.pagle.documents().pop().unwrap();
+        // The uploader's default page size fits the full vector. Compare its
+        // header's anchor and exact body to the independently generated parts.
+        let text = std::str::from_utf8(&document).unwrap();
+        assert!(text.starts_with(&format!("PGL|2|{LOG_A}|{format}|")));
+        let header = text.lines().next().unwrap().split('|').collect::<Vec<_>>();
+        assert_eq!(header[8], pages[0]["anchor"].as_str().unwrap());
+        assert_eq!(
+            text.lines().skip(1).take(2).collect::<Vec<_>>(),
+            first[1..3]
+        );
+        assert_eq!(
+            text.lines().skip(3).collect::<Vec<_>>(),
+            pages
+                .iter()
+                .flat_map(|page| page["document"].as_str().unwrap().lines().skip(3))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[tokio::test]
+async fn metadata_only_changes_upload_even_when_size_and_mtime_are_unchanged() {
+    let h = Harness::new(3).await;
+    h.run(Trigger::Start).await;
+    let file = h.folder.join("SavedVariables/Pagle.lua");
+    let metadata = std::fs::metadata(&file).unwrap();
+    std::fs::write(
+        &file,
+        pagle_lua_text(LOG_A, 3).replace("\"Ada\"", "\"Eve\""),
+    )
+    .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(metadata.modified().unwrap()))
+        .unwrap();
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), metadata.len());
+    assert_eq!(
+        h.run(Trigger::Scan).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    let documents = h.pagle.documents();
+    assert_eq!(documents.len(), 2);
+    assert!(
+        std::str::from_utf8(&documents[1])
+            .unwrap()
+            .contains("|Eve|Brook|")
+    );
 }

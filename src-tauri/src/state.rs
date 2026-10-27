@@ -111,7 +111,13 @@ pub struct LogState {
     pub characters: String,
     pub last_folder: String,
     #[serde(default)]
-    pub whole_send_pending: bool,
+    pub uploaded_snapshot: Option<String>,
+    #[serde(default)]
+    pub observed_snapshot: Option<String>,
+    #[serde(default)]
+    pub recovery: Option<crate::recovery::Pending>,
+    #[serde(default)]
+    pub recovery_notice: Option<String>,
     #[serde(default)]
     pub last_run: Option<LastRun>,
     #[serde(default)]
@@ -399,7 +405,10 @@ mod tests {
       "folder": "G:/World of Warcraft/_classic_beta_/WTF/Account/104973978#1",
       "characters": "Ada Brook, Kukli Vail",
       "lastFolder": "G:/World of Warcraft/_classic_beta_/WTF/Account/104973978#1",
-      "wholeSendPending": false,
+      "uploadedSnapshot": null,
+      "observedSnapshot": null,
+      "recovery": null,
+      "recoveryNotice": null,
       "lastRun": { "result": "uploaded", "at": 1791735100, "fileMtimeMs": 1791735090123, "fileSize": 812345,
                    "format": 1, "companionVersion": "1.0.0", "code": null, "message": null,
                    "catchLog": { "verification": "pending", "pendingReason": "forever-api", "heldCharacters": 0, "leftOff": null } },
@@ -492,7 +501,10 @@ mod tests {
             folder: None,
             characters: "Ada Brook".into(),
             last_folder: "G:/WoW/_classic_beta_/WTF/Account/1#1".into(),
-            whole_send_pending: false,
+            uploaded_snapshot: None,
+            observed_snapshot: None,
+            recovery: None,
+            recovery_notice: None,
             last_run: None,
             last_uploaded_at: None,
         };

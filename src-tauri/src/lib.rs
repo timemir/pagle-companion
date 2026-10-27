@@ -28,6 +28,7 @@ pub mod notify;
 pub mod os_notify;
 pub mod pagle_log;
 pub mod readings;
+pub mod recovery;
 pub mod removal;
 pub mod state;
 pub mod state_dir;

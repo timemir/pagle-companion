@@ -78,10 +78,11 @@ impl fmt::Display for Invalid {
 pub struct LocalLog {
     pub log_id: String,
     pub format: u64,
+    pub test: Option<bool>,
     /// `PagleLog.characters[1 … n]`.
     pub characters: Vec<Character>,
     /// `PagleLog.entries[1 … L]`, each its bytes after escapes (UPL-R12).
-    entries: Vec<Vec<u8>>,
+    pub(crate) entries: Vec<Vec<u8>>,
 }
 
 /// One `PagleLog.characters[i]`, as its character line writes it (CMP
@@ -96,6 +97,7 @@ pub struct Character {
     pub faction: String,
     pub realm_id: u64,
     pub hardcore: Option<bool>,
+    pub self_found: Option<bool>,
     pub first_seen: u64,
     pub last_seen: u64,
 }
@@ -103,17 +105,25 @@ pub struct Character {
 /// Parses a whole `Pagle.lua` and interprets its `PagleLog` (CMP-R31). A
 /// parse failure is CMP-R30's, which reads the file again.
 pub fn parse(source: &[u8]) -> Result<Found, ParseError> {
+    parse_with_entries(source, true)
+}
+
+pub fn parse_recovery(source: &[u8]) -> Result<Found, ParseError> {
+    parse_with_entries(source, false)
+}
+
+fn parse_with_entries(source: &[u8], strict: bool) -> Result<Found, ParseError> {
     let mut all = lua::parse(source)?;
     Ok(match all.remove("PagleLog") {
         None => Found::NoCatchLog,
-        Some(value) => match interpret(value) {
+        Some(value) => match interpret(value, strict) {
             Ok(log) => Found::Valid(log),
             Err(invalid) => Found::Invalid(invalid),
         },
     })
 }
 
-fn interpret(value: Value) -> Result<LocalLog, InvalidLog> {
+fn interpret(value: Value, strict: bool) -> Result<LocalLog, InvalidLog> {
     let Value::Table(table) = value else {
         return Err(InvalidLog {
             log_id: None,
@@ -131,19 +141,20 @@ fn interpret(value: Value) -> Result<LocalLog, InvalidLog> {
             });
         }
     };
-    check(table, &log_id).map_err(|reason| InvalidLog {
+    check(table, &log_id, strict).map_err(|reason| InvalidLog {
         log_id: Some(log_id.clone()),
         reason,
     })
 }
 
-fn check(mut table: Table, log_id: &str) -> Result<LocalLog, Invalid> {
+fn check(mut table: Table, log_id: &str, strict: bool) -> Result<LocalLog, Invalid> {
     let format = table
         .get("format")
         .and_then(integer)
         .filter(|&f| f >= 1)
         .ok_or(Invalid::Format)?;
 
+    let test = optional_bool(&table, "test").ok_or(Invalid::Format)?;
     let characters = list(&mut table, "characters")
         .ok_or(Invalid::Characters)?
         .into_iter()
@@ -175,9 +186,11 @@ fn check(mut table: Table, log_id: &str) -> Result<LocalLog, Invalid> {
         .collect::<Result<Vec<_>, _>>()?;
 
     for (seq, entry) in (1u64..).zip(&entries) {
-        let header = entry_header(entry).ok_or(Invalid::EntryHeader(seq))?;
-        if header.char > characters.len() as u64 {
-            return Err(Invalid::EntryChar(seq));
+        if strict {
+            let header = entry_header(entry).ok_or(Invalid::EntryHeader(seq))?;
+            if header.char > characters.len() as u64 {
+                return Err(Invalid::EntryChar(seq));
+            }
         }
         if entry.contains(&b'\n') {
             return Err(Invalid::LineFeed(seq));
@@ -187,6 +200,7 @@ fn check(mut table: Table, log_id: &str) -> Result<LocalLog, Invalid> {
     Ok(LocalLog {
         log_id: log_id.to_owned(),
         format,
+        test,
         characters,
         entries,
     })
@@ -262,7 +276,6 @@ fn character(table: &Table) -> Option<Character> {
     let number = |name: &str| table.get(name).and_then(integer);
     let surname = match table.get("surname") {
         None => None,
-        Some(Value::String(s)) if s.is_empty() => None,
         Some(Value::String(s)) => Some(field_text(s)?),
         Some(_) => return None,
     };
@@ -294,9 +307,29 @@ fn character(table: &Table) -> Option<Character> {
         faction,
         realm_id: number("realmID")?,
         hardcore,
+        self_found: optional_bool(table, "selfFound")?,
         first_seen: number("firstSeen")?,
         last_seen: number("lastSeen")?,
     })
+}
+
+fn optional_bool(table: &Table, name: &str) -> Option<Option<bool>> {
+    match table.get(name) {
+        None => Some(None),
+        Some(Value::Bool(value)) => Some(Some(*value)),
+        _ => None,
+    }
+}
+
+pub(crate) fn valid_snapshot_character(c: &Character) -> bool {
+    is_guid(c.guid.as_bytes())
+        && !c.name.is_empty()
+        && field_text(c.name.as_bytes()).is_some()
+        && c.surname
+            .as_ref()
+            .is_none_or(|s| field_text(s.as_bytes()).is_some())
+        && !c.faction.is_empty()
+        && c.faction.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
 /// UPL's `guid`: `Player-` digits `-` digits or upper-case hex.
@@ -355,6 +388,21 @@ impl LocalLog {
             String::from_utf8_lossy(header.time),
             String::from_utf8_lossy(header.tie)
         ))
+    }
+
+    /// Cumulative content checkpoint over exact entries and indexed GUIDs.
+    pub fn checkpoint(&self, upto: u64) -> Option<String> {
+        let mut digest = crate::integrity::checkpoint_initial(&self.log_id, self.format).ok()?;
+        for seq in 1..=upto {
+            let entry = self.entry(seq)?;
+            let header = entry_header(entry)?;
+            let guid = &self
+                .characters
+                .get(usize::try_from(header.char - 1).ok()?)?
+                .guid;
+            digest = crate::integrity::checkpoint_next(&digest, seq, guid, entry).ok()?;
+        }
+        Some(digest)
     }
 
     /// The characters as the confirm question lists them: "Name Surname" or
@@ -478,6 +526,7 @@ mod tests {
                 faction: "Alliance".into(),
                 realm_id: 4618,
                 hardcore: Some(false),
+                self_found: Some(false),
                 first_seen: 1791731680,
                 last_seen: 1791735090,
             }
@@ -740,7 +789,7 @@ mod tests {
         let log = valid(&with_characters(&format!(
             "{{ {} }}",
             ada_with("surname", "")
-                .replace("[\"selfFound\"] = false", "[\"selfFound\"] = 1.5, x = {}")
+                .replace("[\"selfFound\"] = false", "[\"selfFound\"] = false, x = {}")
         )));
         assert_eq!(log.characters[0].surname, None);
         let log = valid(&with_characters(&format!(
