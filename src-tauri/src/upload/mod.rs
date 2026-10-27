@@ -94,6 +94,7 @@ pub trait Env: Sync {
     /// Stages one private Recovery for the selected account's install.
     fn stage_recovery(
         &self,
+        _log_id: &str,
         folder: &str,
         lua: Vec<u8>,
     ) -> impl Future<Output = Result<bool, String>> + Send {
@@ -415,7 +416,7 @@ impl Uploads {
                 }
             })
             .map_err(|_| "Couldn't save Recovery state")?;
-        let new = ctx.env.stage_recovery(folder, verified.lua).await?;
+        let new = ctx.env.stage_recovery(log_id, folder, verified.lua).await?;
         let instruction = if new {
             "Recovery is ready. Return to character selection so WoW discovers Pagle_Recovery, then log in. Your original branch is preserved. Reload or log out to save, then Upload again to check consistency."
         } else {
