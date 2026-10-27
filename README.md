@@ -21,6 +21,10 @@ The Pagle Companion is a small tray app that runs beside WoW Forever. When the g
 
 It runs on Windows and Linux. **Steam Deck support is beta**, and **uploading in Game Mode is experimental**: neither has been tested on a Deck yet. See [Steam Deck testing](#steam-deck-testing).
 
+If a local backup falls behind or disagrees with Accepted history, choose **Prepare Recovery** in the Catch logs list. Recovery preserves your original branch and stages a signed data addon in the selected WoW installation. Return to character selection for a newly installed folder; if WoW already knows the folder, use `/reload`. After the addon applies Recovery and the game saves, use **Upload now** to check consistency.
+
+On a Mac, use the addon's Paste string and the website's manual Recovery download. The website walks you through the same restoration and follow-up Upload without a Companion.
+
 ## Steam Deck testing
 
 If you have a Steam Deck, please [file a Steam Deck report](https://github.com/timemir/pagle-companion/issues/new?template=steam-deck-report.yml). The "Keep uploading in Game Mode" toggle links to the same form.
