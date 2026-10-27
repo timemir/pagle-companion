@@ -505,6 +505,47 @@ fn write_install(fs: &dyn Fs, addon: &Addon, file: DataFile, body: &[u8]) -> io:
     Ok(())
 }
 
+/// Atomically stages one private Recovery in the selected account's install.
+/// Returns whether the game must discover a newly created addon folder.
+pub fn stage_recovery(account: &str, lua: &[u8]) -> io::Result<bool> {
+    stage_recovery_with_fs(&RealFs, account, lua)
+}
+
+fn stage_recovery_with_fs(fs: &dyn Fs, account: &str, lua: &[u8]) -> io::Result<bool> {
+    let account = Path::new(account);
+    let accounts = account.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let wtf = accounts.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let flavor = wtf.parent().ok_or_else(not_a_folder_of_its_own)?;
+    if !accounts
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("Account"))
+        || !wtf
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("WTF"))
+    {
+        return Err(not_a_folder_of_its_own());
+    }
+    let addon = Addon::of(&flavor.to_string_lossy()).ok_or_else(not_a_folder_of_its_own)?;
+    let flavor_pin = Pinned::open(flavor)?.ok_or_else(not_a_folder_of_its_own)?;
+    let interface = addon.addons.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let interface_pin = Pinned::open(interface)?.ok_or_else(not_a_folder_of_its_own)?;
+    let addons = Pinned::open(&addon.addons)?.ok_or_else(not_a_folder_of_its_own)?;
+    let name = paths::lookup(&addon.addons, "Pagle_Recovery")
+        .and_then(|p| p.file_name().map(|n| n.to_owned()))
+        .unwrap_or_else(|| "Pagle_Recovery".into());
+    let target = addons.target(name);
+    let new = !fs::symlink_metadata(target.at.join("Pagle_Recovery.toc"))
+        .is_ok_and(|meta| meta.is_file());
+    let folder = Pinned::open_or_create(fs, &target.at)?;
+    flavor_pin.check()?;
+    interface_pin.check()?;
+    addons.check()?;
+    write_atomic(fs, &folder, "Recovery.lua", lua)?;
+    write_atomic(fs, &folder, "README.txt", b"Pagle Recovery restores Accepted history and preserves your original local branch. Return to character selection for a new folder; otherwise /reload. Then Upload again to check consistency.\n")?;
+    write_atomic(fs, &folder, "Pagle_Recovery.toc", b"## Interface: 16001\n## Title: Pagle Recovery\n## LoadOnDemand: 1\n## Version: 1\n\nRecovery.lua\n")?;
+    Ok(new)
+}
+
 /// Deletes leftover `.*.tmp` files in the three folders of an install that
 /// has the Pagle addon (CMP-R83).
 fn sweep_tmp(fs: &dyn Fs, addon: &Addon) {
@@ -550,22 +591,44 @@ fn delete_folders(fs: &dyn Fs, flavors: &[String]) {
         let Some(addons) = paths::lookup_path(Path::new(flavor), &["Interface", "AddOns"]) else {
             continue;
         };
-        let Ok(entries) = fs::read_dir(&addons) else {
+        let flavor_pin = match Pinned::open(Path::new(flavor)) {
+            Ok(Some(pin)) => pin,
+            _ => continue,
+        };
+        let Some(interface) = addons.parent() else {
+            continue;
+        };
+        let interface_pin = match Pinned::open(interface) {
+            Ok(Some(pin)) => pin,
+            _ => continue,
+        };
+        let addons_pin = match Pinned::open(&addons) {
+            Ok(Some(pin)) => pin,
+            _ => continue,
+        };
+        let Ok(entries) = fs::read_dir(addons_pin.anchor()) else {
             continue;
         };
         for entry in entries.filter_map(Result::ok) {
             let name = entry.file_name().to_string_lossy().to_lowercase();
-            if !DataFile::ALL
-                .iter()
-                .any(|f| f.folder().to_lowercase() == name)
+            if name != "pagle_recovery"
+                && !DataFile::ALL
+                    .iter()
+                    .any(|f| f.folder().to_lowercase() == name)
             {
                 continue;
             }
             // `remove_dir_all` deletes a link here, never what it points at.
-            let path = entry.path();
-            match fs.remove_dir_all(&Target::plain(&path)) {
-                Ok(()) => log::info!("deleted {}", path.display()),
-                Err(e) => log::warn!("couldn't delete {}: {e}", path.display()),
+            if flavor_pin.check().is_err()
+                || interface_pin.check().is_err()
+                || addons_pin.check().is_err()
+            {
+                break;
+            }
+            let target = addons_pin.target(entry.file_name());
+            match fs.remove_dir_all(&target) {
+                Ok(()) => log::info!("deleted {}", target.shown.display()),
+                Err(e) => log::warn!("couldn't delete {}: {e}", target.shown.display()),
             }
         }
     }
@@ -695,6 +758,25 @@ impl Writer {
             busy: Mutex::new(false),
             failures: Mutex::default(),
         }
+    }
+
+    /// Shares the write/delete lock with Unlink and removal. The guard is
+    /// checked under that lock so a cancelled private stage cannot recreate
+    /// files after cleanup has completed.
+    pub fn stage_recovery(
+        &self,
+        account: &str,
+        lua: &[u8],
+        allowed: impl FnOnce() -> bool,
+    ) -> io::Result<bool> {
+        let stopped = lock(&self.busy);
+        if *stopped || !allowed() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Recovery stopped",
+            ));
+        }
+        stage_recovery_with_fs(self.fs.as_ref(), account, lua)
     }
 
     /// Writes a body that passed CMP-R82 byte for byte as `file`'s data file

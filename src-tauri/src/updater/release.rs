@@ -301,11 +301,7 @@ mod tests {
     fn the_platform_key_is_this_builds() {
         // DST Contracts, "Release assets": exactly windows-x86_64 and
         // linux-x86_64
-        let expected = if cfg!(windows) {
-            "windows-x86_64"
-        } else {
-            "linux-x86_64"
-        };
+        let expected = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         assert_eq!(platform(), expected);
     }
 

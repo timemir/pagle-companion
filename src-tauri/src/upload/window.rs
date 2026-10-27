@@ -1,6 +1,6 @@
 //! Uploading, in tray and headless mode alike: the queue's worker, CMP-R45's triggers (a
 //! debounced change, start, later scans, the **Upload** switch, **Upload
-//! now**, linking, **Replace**), which queue nothing while not linked or
+//! now**, linking), which queue nothing while not linked or
 //! during a stop, and "Last uploaded" in the window's Status and the tray
 //! menu (CMP UI).
 
@@ -133,23 +133,6 @@ fn may_run<H: Host>(app: &H) -> bool {
     })
 }
 
-/// **Replace Pagle's copy with this computer's**, once the window asked its
-/// question and the Player chose **Replace** (CMP-R52): sets the whole-send
-/// flag, lifts the hold, and starts a run.
-#[tauri::command]
-pub fn replace_catch_log(app: AppHandle, log_id: String) -> Result<(), String> {
-    let companion = app.state::<Companion>();
-    if !companion.is_watcher() {
-        return Err("Another Pagle Companion is running for this user.".into());
-    }
-    Uploads::replace(&companion.state, &log_id)?;
-    // The divergence's cause has cleared (CMP-R110).
-    super::notify(&companion.state, &companion.notifications);
-    show(&app);
-    trigger_one(&app, &log_id, Trigger::Replace);
-    Ok(())
-}
-
 /// Shows local state's upload times again: each row's state line, the
 /// Status part's "Last uploaded …" and the tray's status line.
 pub fn show<H: Host>(app: &H) {
@@ -221,6 +204,29 @@ impl<H: Host> Env for AppEnv<H> {
         }
     }
 
+    fn stage_recovery(
+        &self,
+        folder: &str,
+        lua: Vec<u8>,
+    ) -> impl Future<Output = Result<bool, String>> + Send {
+        let app = self.0.clone();
+        let folder = folder.to_owned();
+        async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                app.state::<folders::Writer>()
+                    .stage_recovery(&folder, &lua, || {
+                        let companion = app.state::<Companion>();
+                        companion.account().is_linked()
+                            && !companion.account().is_stopped()
+                            && !app.state::<Uploads>().stopping()
+                    })
+                    .map_err(|e| format!("Couldn't stage Recovery: {e}"))
+            })
+            .await
+            .map_err(|_| "Recovery writer stopped".to_owned())?
+        }
+    }
+
     fn refresh_tocs(&self) {
         folders::window::refresh_tocs(&self.0);
     }
@@ -254,7 +260,10 @@ mod tests {
                     folder: None,
                     characters: String::new(),
                     last_folder: String::new(),
-                    whole_send_pending: false,
+                    uploaded_snapshot: None,
+                    observed_snapshot: None,
+                    recovery: None,
+                    recovery_notice: None,
                     last_run: None,
                     last_uploaded_at: at,
                 },

@@ -41,6 +41,7 @@ tauri-plugin-updater = { version = "~2.12", default-features = false, features =
 minisign-verify = "0.3"
 semver = "1"
 base64 = "0.23"
+ring = "0.17.14"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"

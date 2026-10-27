@@ -28,9 +28,6 @@ pub enum Trigger {
     UploadNow,
     /// Right after linking (CMP-R101).
     PostLink,
-    /// **Replace Pagle's copy with this computer's** (CMP-R52), which has
-    /// lifted the divergence's hold and set the whole-send flag.
-    Replace,
 }
 
 /// What a queued run does at its start, from the triggers merged into it.
@@ -41,9 +38,6 @@ pub struct Props {
     /// Only file changes asked for it, so a `deleted` hold applies too
     /// (CMP-R45, CMP-R54: "held back from file changes only").
     pub file_change_only: bool,
-    /// A later scan's skip applies (CMP-R45): its last run ended uploaded or
-    /// up to date and the file is still that run's.
-    pub skip: bool,
     /// A run that would end up to date resends its last entry (CMP-R101).
     pub resend: bool,
 }
@@ -53,20 +47,18 @@ impl Trigger {
         Props {
             holds: !matches!(self, Trigger::UploadNow | Trigger::PostLink),
             file_change_only: self == Trigger::Change,
-            skip: self == Trigger::Scan,
             resend: self == Trigger::PostLink,
         }
     }
 }
 
 impl Props {
-    /// The stronger of two (CMP-R46): no skip and no hold unless both have
+    /// The stronger of two (CMP-R46): no hold unless both have
     /// them, and the post-link resend if either has it.
     pub fn merge(self, other: Props) -> Props {
         Props {
             holds: self.holds && other.holds,
             file_change_only: self.file_change_only && other.file_change_only,
-            skip: self.skip && other.skip,
             resend: self.resend || other.resend,
         }
     }
@@ -85,20 +77,21 @@ pub struct Run {
 pub enum Item {
     Run(Run),
     Download(DataFile),
+    Recovery(String),
 }
 
 impl Item {
     fn run(&self) -> Option<&Run> {
         match self {
             Item::Run(run) => Some(run),
-            Item::Download(_) => None,
+            Item::Download(_) | Item::Recovery(_) => None,
         }
     }
 
     fn run_mut(&mut self) -> Option<&mut Run> {
         match self {
             Item::Run(run) => Some(run),
-            Item::Download(_) => None,
+            Item::Download(_) | Item::Recovery(_) => None,
         }
     }
 }
@@ -109,11 +102,22 @@ pub struct Queue {
     items: VecDeque<Item>,
     /// The run in progress.
     running: Option<Run>,
+    recovering: Option<String>,
     /// The download in progress.
     downloading: Option<DataFile>,
 }
 
 impl Queue {
+    pub fn push_recovery(&mut self, log_id: &str) {
+        if !self
+            .items
+            .iter()
+            .any(|i| matches!(i, Item::Recovery(id) if id == log_id))
+        {
+            self.items.push_back(Item::Recovery(log_id.to_owned()));
+        }
+    }
+
     /// Adds a run of `log_id` for `trigger`, or merges the trigger into the
     /// one queued and not started (CMP-R46). Returns whether an item was
     /// added.
@@ -158,9 +162,13 @@ impl Queue {
             .or(if self.items.is_empty() { None } else { Some(0) })?;
         let item = self.items.remove(at)?;
         self.running = item.run().cloned();
+        self.recovering = match &item {
+            Item::Recovery(id) => Some(id.clone()),
+            _ => None,
+        };
         self.downloading = match item {
             Item::Download(file) => Some(file),
-            Item::Run(_) => None,
+            Item::Run(_) | Item::Recovery(_) => None,
         };
         Some(item)
     }
@@ -168,12 +176,16 @@ impl Queue {
     /// The item in progress has ended.
     pub fn done(&mut self) {
         self.running = None;
+        self.recovering = None;
         self.downloading = None;
     }
 
     /// The `logId` of the run in progress.
     pub fn running(&self) -> Option<&str> {
-        self.running.as_ref().map(|run| run.log_id.as_str())
+        self.running
+            .as_ref()
+            .map(|run| run.log_id.as_str())
+            .or(self.recovering.as_deref())
     }
 
     /// The post-link runs (CMP-R101) queued or in progress: the runs with
@@ -192,14 +204,21 @@ impl Queue {
     /// install waits for both (DST-R76). In-game downloads don't
     /// count.
     pub fn has_runs(&self) -> bool {
-        self.running.is_some() || self.items.iter().any(|item| item.run().is_some())
+        self.running.is_some()
+            || self.recovering.is_some()
+            || self
+                .items
+                .iter()
+                .any(|item| item.run().is_some() || matches!(item, Item::Recovery(_)))
     }
 
     /// Drops the queued runs of `log_id` (CMP-R41). Returns whether its run
     /// is in progress, which stops after its current request.
     pub fn drop_runs(&mut self, log_id: &str) -> bool {
-        self.items
-            .retain(|item| item.run().is_none_or(|run| run.log_id != log_id));
+        self.items.retain(|item| {
+            item.run().is_none_or(|run| run.log_id != log_id)
+                && !matches!(item,Item::Recovery(id) if id == log_id)
+        });
         self.running() == Some(log_id)
     }
 
@@ -207,7 +226,7 @@ impl Queue {
     /// in progress, which stops after its current request.
     pub fn clear(&mut self) -> bool {
         self.items.clear();
-        self.running.is_some() || self.downloading.is_some()
+        self.running.is_some() || self.recovering.is_some() || self.downloading.is_some()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -231,6 +250,7 @@ mod tests {
         match item.expect("an item") {
             Item::Run(run) => run,
             Item::Download(file) => panic!("a download of {file:?}"),
+            Item::Recovery(id) => panic!("Recovery of {id}"),
         }
     }
 
@@ -305,13 +325,12 @@ mod tests {
     #[test]
     fn a_queued_run_takes_on_the_stronger_properties() {
         // CMP-R46: the queued run takes on the trigger's stronger properties
-        // (no skip and no hold for Upload now, the post-link resend of
+        // (no hold for Upload now, the post-link resend of
         // CMP-R101)
         let mut queue = Queue::default();
         queue.push(A, Trigger::Scan);
         queue.push(A, Trigger::UploadNow);
         let props = run(queue.pop()).props;
-        assert!(!props.skip);
         assert!(!props.holds);
         assert!(!props.resend);
 
@@ -321,7 +340,6 @@ mod tests {
         let props = run(queue.pop()).props;
         assert!(props.resend);
         assert!(!props.holds);
-        assert!(!props.skip);
     }
 
     #[test]
@@ -332,7 +350,6 @@ mod tests {
         queue.push(A, Trigger::Scan);
         queue.push(A, Trigger::Change);
         let props = run(queue.pop()).props;
-        assert!(!props.skip);
         assert!(props.holds);
         assert!(!props.file_change_only);
     }
@@ -346,22 +363,19 @@ mod tests {
             Props {
                 holds: true,
                 file_change_only: true,
-                skip: false,
                 resend: false
             }
         );
-        for trigger in [Trigger::Start, Trigger::SwitchOn, Trigger::Replace] {
+        for trigger in [Trigger::Start, Trigger::SwitchOn] {
             assert_eq!(
                 trigger.props(),
                 Props {
                     holds: true,
                     file_change_only: false,
-                    skip: false,
                     resend: false
                 }
             );
         }
-        assert!(Trigger::Scan.props().skip);
         assert!(!Trigger::UploadNow.props().holds);
         assert!(!Trigger::PostLink.props().holds);
         assert!(Trigger::PostLink.props().resend);

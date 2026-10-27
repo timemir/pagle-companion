@@ -3,7 +3,7 @@
 // its state line: CMP-R40's question, CMP-R42's question, "Not found on this
 // computer", or CMP-R30's or CMP-R31's text; or the last run's result, which
 // goes in the row's `.run-line`: "Uploaded 5 minutes ago" or "Up to date"
-// with CMP-R53's lines under it, a divergence with Replace and its question
+// with CMP-R53's lines under it, a divergence with Recovery and its question
 // (CMP-R52), deleted (CMP-R54), log cap, failed and the rest. Every text
 // comes from the Companion. Rows that need the Player come first, Status
 // counts them with Show, and an empty list says "No Catch logs found yet.".
@@ -61,8 +61,8 @@
   const changing = new Set();
   // logIds switched off in this window, which say CMP-R41's text.
   const switchedOff = new Set();
-  // logIds whose Replace question is open (CMP-R52).
-  const replacing = new Set();
+  // logIds whose Recovery question is open (CMP-R52).
+  const recovering = new Set();
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -113,10 +113,10 @@
     return node;
   }
 
-  function replace(logId) {
+  function recover(logId) {
     error.hidden = true;
-    replacing.delete(logId);
-    invoke("replace_catch_log", { logId }).catch(showError);
+    recovering.delete(logId);
+    invoke("recover_catch_log", { logId }).catch(showError);
   }
 
   // The last run's result, then CMP-R53's lines in their order.
@@ -128,16 +128,19 @@
     for (const note of line.notes ?? []) {
       block.append(runText(note.kind, note.text, `note ${note.kind}`));
     }
+    if (line.kind === "failed") {
+      block.append(button("Prepare Recovery", () => recover(row.logId)));
+    }
     if (line.kind === "divergence") {
-      if (replacing.has(row.logId)) {
-        // CMP-R52: asks first, with Replace and Cancel.
+      if (recovering.has(row.logId)) {
+        // CMP-R52: asks first, with Recovery and Cancel.
         const ask = element("div", "confirm");
         ask.append(element("p", "", line.question));
         const actions = element("p", "actions");
         actions.append(
-          button("Replace", () => replace(row.logId), "danger"),
+          button("Prepare Recovery", () => recover(row.logId)),
           button("Cancel", () => {
-            replacing.delete(row.logId);
+            recovering.delete(row.logId);
             render();
           }),
         );
@@ -145,8 +148,8 @@
         block.append(ask);
       } else {
         const actions = element("p", "actions");
-        actions.append(button("Replace Pagle's copy with this computer's", () => {
-          replacing.add(row.logId);
+        actions.append(button("Prepare Recovery", () => {
+          recovering.add(row.logId);
           render();
         }));
         block.append(actions);
@@ -174,6 +177,9 @@
     const line = row.line;
     if (!line || RUN_KINDS.has(line.kind)) return null;
     const block = element("div", `state-line ${line.kind}`);
+    if (line.kind === "problem") {
+      block.append(button("Prepare Recovery", () => recover(row.logId)));
+    }
     block.append(element("p", "", line.text));
     if (line.kind === "awaiting") {
       const actions = element("p", "actions");

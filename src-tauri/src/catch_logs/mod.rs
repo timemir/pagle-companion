@@ -152,7 +152,10 @@ fn new_log(folder: &FolderReading) -> Option<LogState> {
         folder: None,
         characters: folder.catch_log()?.log.characters_display(),
         last_folder: folder.path.clone(),
-        whole_send_pending: false,
+        uploaded_snapshot: None,
+        observed_snapshot: None,
+        recovery: None,
+        recovery_notice: None,
         last_run: None,
         last_uploaded_at: None,
     })
@@ -350,10 +353,9 @@ pub enum Line {
         text: &'static str,
         notes: Vec<Note>,
     },
-    /// A divergence (CMP-R52), with **Replace Pagle's copy with this
-    /// computer's** and the question it asks first.
+    /// Recovery, its preparation result, and instructions (CMP-R52).
     Divergence {
-        text: &'static str,
+        text: String,
         question: &'static str,
     },
     Stale {
@@ -416,7 +418,7 @@ pub enum Note {
     Pending { text: &'static str },
     /// Held characters (ACC-R33), with a **Sign in** link to `/signin`.
     HeldCharacters { text: &'static str },
-    /// Left off Leaderboards and Region firsts, with a link to My Anglers.
+    /// Left off Leaderboards and First reported, with a link to My Anglers.
     LeftOff { text: &'static str },
 }
 
@@ -424,9 +426,8 @@ pub enum Note {
 pub const UP_TO_DATE: &str = "Up to date";
 /// CMP-R52's row text, also its notification (CMP-R111).
 pub const DIVERGENCE: &str = "This Catch log differs from the copy on Pagle.";
-/// What **Replace Pagle's copy with this computer's** asks first (CMP-R52).
-pub const REPLACE_QUESTION: &str = "Pagle will hold this computer's copy of this Catch log. \
-                                    Entries only Pagle's copy has will be dropped from Pagle.";
+/// The Recovery action explains preservation and game folder discovery.
+pub const RECOVERY_EXPLANATION: &str = "Recovery restores Accepted history, preserves your complete original branch, and keeps records needing review available. Return to character selection for a new Pagle_Recovery folder; use /reload for an existing folder. Upload again after saving to check consistency.";
 pub const STALE: &str = "Pagle already has a newer copy of this Catch log. Nothing changed.";
 /// CMP-R54.
 pub const DELETED: &str =
@@ -446,8 +447,9 @@ pub const UPDATE_COMPANION: &str = "Update Pagle Companion.";
 /// CMP-R53, ACC-R33; also its notification (CMP-R111).
 pub const HELD_CHARACTERS: &str = "A new character needs verifying. Sign in again to verify it.";
 /// CMP-R53, for `flagged` and `excluded` alike.
+pub const CHECKING: &str = "Competition is waiting for checks of your latest Upload. Your last checked Angler page stays available.";
 pub const LEFT_OFF: &str =
-    "This Angler is left off Leaderboards and Region firsts. Your Angler page says why.";
+    "This Angler is left off Leaderboards and First reported. Your Angler page says why.";
 
 /// The text of a Pending reason (accounts.md UI, Pending reasons); `None`
 /// for one this Companion doesn't know.
@@ -501,7 +503,17 @@ pub fn catch_log_notes(catch_log: &CatchLogState) -> Vec<Note> {
         .as_ref()
         .is_some_and(|left_off| !left_off.is_null())
     {
-        notes.push(Note::LeftOff { text: LEFT_OFF });
+        let text = if catch_log
+            .left_off
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            == Some("checking")
+        {
+            CHECKING
+        } else {
+            LEFT_OFF
+        };
+        notes.push(Note::LeftOff { text });
     }
     notes
 }
@@ -514,6 +526,18 @@ pub fn log_cap_text(run: &LastRun) -> String {
 
 /// The last run's line (CMP UI, Catch logs), at `now` in Unix seconds.
 pub fn run_line(log: &LogState, now: i64) -> Option<Line> {
+    if let Some(notice) = &log.recovery_notice {
+        return Some(Line::Divergence {
+            text: notice.clone(),
+            question: RECOVERY_EXPLANATION,
+        });
+    }
+    if let Some(pending) = &log.recovery {
+        return Some(Line::Divergence {
+            text: pending.instructions.clone(),
+            question: RECOVERY_EXPLANATION,
+        });
+    }
     let run = log.last_run.as_ref()?;
     let notes = || {
         run.catch_log
@@ -531,8 +555,8 @@ pub fn run_line(log: &LogState, now: i64) -> Option<Line> {
             notes: notes(),
         },
         RunResult::Divergence => Line::Divergence {
-            text: DIVERGENCE,
-            question: REPLACE_QUESTION,
+            text: run.message.clone().unwrap_or_else(|| DIVERGENCE.into()),
+            question: RECOVERY_EXPLANATION,
         },
         RunResult::Stale => Line::Stale { text: STALE },
         RunResult::Deleted => Line::Deleted { text: DELETED },
@@ -659,6 +683,8 @@ fn row(log_id: &str, log: &LogState, snapshot: &Snapshot, installs: &[String], n
         Some(Line::Awaiting { text: UPLOAD_IT })
     } else if decision.not_found {
         Some(Line::NotFound { text: NOT_FOUND })
+    } else if log.recovery.is_some() || log.recovery_notice.is_some() {
+        run_line(log, now)
     } else {
         decision
             .problem
@@ -1000,7 +1026,10 @@ mod tests {
             folder: folder.map(str::to_owned),
             characters: "Ada Brook".into(),
             last_folder: last_folder.into(),
-            whole_send_pending: false,
+            uploaded_snapshot: None,
+            observed_snapshot: None,
+            recovery: None,
+            recovery_notice: None,
             last_run: None,
             last_uploaded_at: None,
         }
@@ -1409,8 +1438,8 @@ mod tests {
                 dont_upload: false,
             },
             Line::Divergence {
-                text: DIVERGENCE,
-                question: REPLACE_QUESTION,
+                text: DIVERGENCE.into(),
+                question: RECOVERY_EXPLANATION,
             },
             Line::Deleted { text: DELETED },
             Line::LogCap {
@@ -1671,7 +1700,7 @@ mod tests {
         );
         assert_eq!(
             LEFT_OFF,
-            "This Angler is left off Leaderboards and Region firsts. Your Angler page says why."
+            "This Angler is left off Leaderboards and First reported. Your Angler page says why."
         );
         let state = catch_log("verified", None, 2, true);
         let failed = ran(RunResult::Failed, Some("entry_cap"), Some(state.clone()));
@@ -1687,17 +1716,15 @@ mod tests {
     }
 
     #[test]
-    fn the_divergence_line_carries_the_replace_question() {
-        // CMP-R52: the row offers Replace Pagle's copy with this computer's,
-        // which first asks its question
+    fn the_divergence_line_explains_recovery_and_game_folder_discovery() {
+        // CMP-R52: explain preservation and game folder discovery.
         let log = ran(RunResult::Divergence, None, None);
         assert_eq!(
             serde_json::to_value(run_line(&log, 0)).unwrap(),
             serde_json::json!({
                 "kind": "divergence",
                 "text": "This Catch log differs from the copy on Pagle.",
-                "question": "Pagle will hold this computer's copy of this Catch log. Entries \
-                             only Pagle's copy has will be dropped from Pagle."
+                "question": RECOVERY_EXPLANATION
             })
         );
     }

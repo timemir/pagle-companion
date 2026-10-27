@@ -252,18 +252,15 @@ impl Readings {
 
     /// Reads the account folder's `Pagle.lua` now, as CMP-R30 says: what an
     /// upload run does when it starts (CMP-R46), and **Upload now** (CMP-R23).
-    /// A file whose modification time and size are those of the folder's
-    /// last successful read isn't read again; that read's result comes back
-    /// (CMP-R21). Otherwise this blocks for the read, up to the read attempts
+    /// Every Upload reads actual bytes: modification time and size cannot
+    /// establish that character metadata or the accepted prefix is unchanged.
+    /// This blocks for the read, up to the read attempts
     /// 2 s apart. A watched folder's new reading reaches subscribers without
     /// counting as a change ([`Update::read`] stays empty), so it never
     /// triggers a run by itself.
     pub fn read_now(&self, folder: &str) -> Reading {
         let key = paths::same_folder_key(folder);
         let path = Path::new(folder);
-        if let Some(cached) = self.shared.cached(&key, path) {
-            return cached;
-        }
         let reading = self.shared.read_file(path);
         let mut inner = lock(&self.shared.inner);
         if let Some(mut snapshot) = inner.snapshot.clone()
@@ -311,23 +308,6 @@ fn set_reading(folder: &mut FolderReading, reading: Reading) {
 }
 
 impl Shared {
-    /// The last successful read of a folder whose file still has that
-    /// read's stamp (CMP-R21).
-    fn cached(&self, key: &str, path: &Path) -> Option<Reading> {
-        let stamp = read::current_stamp(path).ok()?;
-        let inner = lock(&self.inner);
-        if inner.last_ok.get(key) != Some(&stamp) {
-            return None;
-        }
-        inner
-            .snapshot
-            .as_ref()?
-            .folders
-            .iter()
-            .find(|f| paths::same_folder_key(&f.path) == key)
-            .map(|f| f.reading.clone())
-    }
-
     /// Whether a read of the folder would do nothing more, its file's stamp
     /// being that of its last successful read (CMP-R21).
     fn unchanged(&self, key: &str, path: &Path) -> bool {
@@ -645,6 +625,7 @@ mod tests {
     use super::fixture::*;
     use super::*;
     use crate::installs::{AccountFolder, Install, Source};
+    use std::fs;
 
     const WAIT: Duration = Duration::from_secs(15);
 
@@ -983,6 +964,29 @@ mod tests {
     }
 
     #[test]
+    fn upload_read_sees_same_size_metadata_even_when_mtime_is_restored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ada = account_folder(tmp.path(), "ADA#1");
+        save(&ada, &pagle_lua_text(LOG_A, 1));
+        let running = start(Config::default(), &[&ada]);
+        let file = ada.join("SavedVariables/Pagle.lua");
+        let before = fs::metadata(&file).unwrap();
+        let edited = pagle_lua_text(LOG_A, 1).replace("\"Ada\"", "\"Eve\"");
+        fs::write(&file, edited).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(before.modified().unwrap()))
+            .unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().len(), before.len());
+        let Reading::Valid(read) = running.readings.read_now(&canon(&ada)) else {
+            panic!("not valid");
+        };
+        assert_eq!(read.log.characters[0].name, "Eve");
+    }
+
+    #[test]
     fn read_now_reads_a_watched_file_without_triggering_a_run() {
         // CMP-R46: every run reads its watched file when it starts; CMP-R21:
         // an unchanged file isn't read again
@@ -996,7 +1000,7 @@ mod tests {
             panic!("not valid");
         };
         assert_eq!(read.log.len(), 1);
-        assert_eq!(running.readings.file_reads(), reads);
+        assert_eq!(running.readings.file_reads(), reads + 1);
 
         // A save the debounce hasn't reached yet is read at once, and
         // subscribers learn of it without a trigger.
@@ -1012,7 +1016,7 @@ mod tests {
         // The debounced read that follows finds the file as read: nothing
         // more.
         assert!(quiet(&running.updates, Duration::from_millis(2000)));
-        assert_eq!(running.readings.file_reads(), reads + 1);
+        assert_eq!(running.readings.file_reads(), reads + 2);
     }
 
     #[test]

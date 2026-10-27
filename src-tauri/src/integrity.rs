@@ -224,9 +224,13 @@ pub fn validate_record(entry: &[u8]) -> Result<(), String> {
         b"P1" if f.len() == 6 => {
             number(f[4], 1, false).is_some() && number(f[5], 0, false).is_some()
         }
-        b"B1" if f.len() == 7 => number(f[4], 0, false).is_some() && !f[5].is_empty()
-            && f[6].len() <= 64 && f[6].first().is_some_and(u8::is_ascii_alphanumeric)
-            && name(f[6], true),
+        b"B1" if f.len() == 7 => {
+            number(f[4], 0, false).is_some()
+                && !f[5].is_empty()
+                && f[6].len() <= 64
+                && f[6].first().is_some_and(u8::is_ascii_alphanumeric)
+                && name(f[6], true)
+        }
         b"U1" if f.len() == 6 => name(f[4], false) && number(f[5], 0, false).is_some(),
         b"K1" if f.len() == 6 => name(f[4], true) && number(f[5], 0, false).is_some(),
         b"A1" if f.len() >= 7 => {

@@ -13,7 +13,7 @@ use crate::pagle_log::{Character, LocalLog};
 pub const CONTENT_TYPE: &str = "application/vnd.pagle.upload+deflate";
 
 /// The upload document version this Companion writes (UPL Tunables).
-pub const DOCUMENT_VERSION: u32 = 1;
+pub const DOCUMENT_VERSION: u32 = 2;
 
 /// The compressed cap, per Upload (UPL Tunables).
 pub const COMPRESSED_CAP: usize = 2_097_152;
@@ -50,11 +50,7 @@ pub fn page(log: &LocalLog, from: u64, count: u64, as_of: u64) -> Option<Page> {
     if from == 0 || from.checked_add(count)? - 1 > log.len() {
         return None;
     }
-    let anchor = if from == 1 {
-        String::new()
-    } else {
-        log.entry_id(from - 1)?
-    };
+    let anchor = log.checkpoint(from - 1)?;
 
     let mut body = Vec::new();
     for character in &log.characters {
@@ -206,7 +202,7 @@ mod tests {
             lines(&page.document),
             [
                 format!(
-                    "PGL|1|3f9a2c1e7b0d4a65|1|1791735100|2|1|1||2|{EXAMPLE_BODY_BYTES}|{EXAMPLE_BODY_CRC}"
+                    "PGL|2|3f9a2c1e7b0d4a65|1|1791735100|2|1|1|aaca407c7c0a15ab37059a90380e117eb02b79f9f367ee6373b6fef6532a0bd4|2|{EXAMPLE_BODY_BYTES}|{EXAMPLE_BODY_CRC}"
                 )
                 .as_str(),
                 EXAMPLE_CHARACTER,
@@ -222,7 +218,7 @@ mod tests {
         // UPL Contracts, the example: header, character line and entry lines
         let page = page(&example_log(), 11, 2, 1791735100).expect("in range");
         let expected = format!(
-            "PGL|1|3f9a2c1e7b0d4a65|1|1791735100|12|1|11|Player-4618-0A1B2C3D-1791735000-0|2|\
+            "PGL|2|3f9a2c1e7b0d4a65|1|1791735100|12|1|11|9b5c1bd975d4f8decca456dcd05b5291f00d16941d4616f8db1ed8b1b965646c|2|\
              {EXAMPLE_BODY_BYTES}|{EXAMPLE_BODY_CRC}\n\
              {EXAMPLE_CHARACTER}\n{EXAMPLE_ENTRY_11}\n{EXAMPLE_ENTRY_12}\n"
         );
@@ -243,25 +239,6 @@ mod tests {
     }
 
     #[test]
-    fn a_later_page_carries_the_entry_id_at_from_minus_one_as_its_anchor() {
-        // UPL-R13: the anchor is entry 10's ID, the GUID at its char index plus time and tie
-        let mut entries: Vec<String> = (1..=9).map(|i| format!("S1|1|{i}|0")).collect();
-        entries.push("C1|2|1791735000|3|c|1".into());
-        entries.push("C1|1|1791735001|0|c|1".into());
-        let log = log(&[ADA, BO], &entries);
-        let page = page(&log, 11, 1, 1791735100).expect("in range");
-        let header = lines(&page.document)[0].to_owned();
-        assert_eq!(
-            header.split('|').nth(8),
-            Some("Player-4618-0A1B2C3E-1791735000-3")
-        );
-        assert_eq!(
-            log.entry_id(10).as_deref(),
-            Some("Player-4618-0A1B2C3E-1791735000-3")
-        );
-    }
-
-    #[test]
     fn character_lines_write_nil_as_empty_and_hardcore_as_one_or_zero() {
         // CMP Contracts, Building an upload document: nil surname empty;
         // hardcore 1, 0 or empty; selfFound left out
@@ -276,7 +253,7 @@ mod tests {
                 "S1|3|5|0",
             ]
         );
-        assert!(lines(&page.document)[0].starts_with("PGL|1|3f9a2c1e7b0d4a65|1|9|1|3|1||1|"));
+        assert!(lines(&page.document)[0].starts_with("PGL|2|3f9a2c1e7b0d4a65|1|9|1|3|1|aaca407c7c0a15ab37059a90380e117eb02b79f9f367ee6373b6fef6532a0bd4|1|"));
     }
 
     #[test]
@@ -315,17 +292,6 @@ mod tests {
         assert!(page(&log, 12, 2, 0).is_none());
         assert!(page(&log, 1, 13, 0).is_none());
         assert!(page(&log, 1, 12, 0).is_some());
-    }
-
-    #[test]
-    fn an_empty_page_after_the_last_entry_carries_its_anchor() {
-        // CMP-R47: E = L sends no entries; the anchor is still the entry at f − 1
-        let page = page(&example_log(), 13, 0, 5).expect("in range");
-        let lines = lines(&page.document);
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with(
-            "PGL|1|3f9a2c1e7b0d4a65|1|5|12|1|13|Player-4618-0A1B2C3D-1791735090-0|0|"
-        ));
     }
 
     #[test]
