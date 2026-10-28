@@ -101,7 +101,7 @@ fn board_payload(kind: &[u8], text: &[u8]) -> bool {
             && number(f[1], 0, false).is_some();
     }
     let start = match kind {
-        b"issue" => 0,
+        b"issue" | b"post" => 0,
         b"reroll" => 1,
         _ => return false,
     };
@@ -117,7 +117,7 @@ fn board_payload(kind: &[u8], text: &[u8]) -> bool {
         return false;
     }
     match goal {
-        b"haul" | b"quality" => number(target, 1, false).is_some(),
+        b"haul" | b"quality" | b"rarity" => number(target, 1, false).is_some(),
         b"species" => goal_type == b"n" && number(target, 1, false).is_some(),
         b"lure" => goal_type == b"n" && target.is_empty(),
         b"collector" => target.is_empty(),

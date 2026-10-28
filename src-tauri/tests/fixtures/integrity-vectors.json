@@ -391,6 +391,46 @@
       "name": "eastern-kingdoms-wanderer",
       "entry": "A1|1|1791735090|0|TackleBoard|issue|e;wanderer;0;60;5;0",
       "valid": true
+    },
+    {
+      "name": "refresh post",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;haul;1;10;20;148",
+      "valid": true
+    },
+    {
+      "name": "rarity notice",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;rarity;1;10;3;2",
+      "valid": true
+    },
+    {
+      "name": "rarity expedition",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|e;rarity;0;60;8;3",
+      "valid": true
+    },
+    {
+      "name": "rarity reroll",
+      "entry": "A1|1|1792422000|0|TackleBoard|reroll|Player-4618-0A1B2C3D-1792421999-0;n;rarity;1;10;3;2",
+      "valid": true
+    },
+    {
+      "name": "post missing field",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;haul;1;10;20",
+      "valid": false
+    },
+    {
+      "name": "post trailing field",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;haul;1;10;20;148;",
+      "valid": false
+    },
+    {
+      "name": "rarity signed target",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;rarity;1;10;3;+2",
+      "valid": false
+    },
+    {
+      "name": "rarity unknown verb",
+      "entry": "A1|1|1792422000|0|TackleBoard|freepost|n;rarity;1;10;3;2",
+      "valid": false
     }
   ],
   "initialVariants": [
