@@ -237,6 +237,25 @@ impl<H: Host> Env for AppEnv<H> {
         }
     }
 
+    fn retire_recovery(
+        &self,
+        pending: &crate::recovery::Pending,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        let app = self.0.clone();
+        let pending = pending.clone();
+        async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                app.state::<folders::Writer>()
+                    .retire_recovery(&pending)
+                    .map_err(|e| {
+                        format!("Couldn't retire completed Recovery; try Upload again: {e}")
+                    })
+            })
+            .await
+            .map_err(|_| "Recovery writer stopped".to_owned())?
+        }
+    }
+
     fn refresh_tocs(&self) {
         folders::window::refresh_tocs(&self.0);
     }

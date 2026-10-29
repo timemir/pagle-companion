@@ -546,6 +546,73 @@ fn stage_recovery_with_fs(fs: &dyn Fs, account: &str, lua: &[u8]) -> io::Result<
     Ok(new)
 }
 
+/// Removes a completed private package without touching another Recovery or
+/// SavedVariables. Renaming first makes retirement atomic for addon discovery.
+pub fn retire_recovery(pending: &crate::recovery::Pending) -> io::Result<()> {
+    retire_recovery_with_fs(&RealFs, pending)
+}
+
+fn retire_recovery_with_fs(fs: &dyn Fs, pending: &crate::recovery::Pending) -> io::Result<()> {
+    let account =
+        Path::new(pending.staged_folder.as_deref().ok_or_else(|| {
+            io::Error::other("Prepare Recovery again to record its staged folder")
+        })?);
+    let digest = pending
+        .package_digest
+        .as_deref()
+        .ok_or_else(|| io::Error::other("Prepare Recovery again to record its package identity"))?;
+    let accounts = account.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let wtf = accounts.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let flavor = wtf.parent().ok_or_else(not_a_folder_of_its_own)?;
+    if !accounts
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("Account"))
+        || !wtf
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("WTF"))
+        || !crate::recovery::snapshot::hex(digest, 64)
+    {
+        return Err(not_a_folder_of_its_own());
+    }
+    let flavor_pin = Pinned::open(flavor)?.ok_or_else(not_a_folder_of_its_own)?;
+    let Some(interface) = paths::lookup(flavor, "Interface") else {
+        return Ok(());
+    };
+    let interface_pin = Pinned::open(&interface)?.ok_or_else(not_a_folder_of_its_own)?;
+    let Some(addons_path) = paths::lookup(&interface, "AddOns") else {
+        return Ok(());
+    };
+    let addons = Pinned::open(&addons_path)?.ok_or_else(not_a_folder_of_its_own)?;
+    let Some(path) = paths::lookup(&addons_path, "Pagle_Recovery") else {
+        return Ok(());
+    };
+    let folder = Pinned::open(&path)?.ok_or_else(not_a_folder_of_its_own)?;
+    let data = folder.target("Recovery.lua");
+    if fs::symlink_metadata(&data.at)?.file_type().is_symlink() {
+        return Err(not_a_folder_of_its_own());
+    }
+    let bytes = paths::read_file(&data.at, crate::recovery::REPLY_CAP as u64)?;
+    if sha256_hex(&bytes) != digest {
+        // Another log in this install has staged its own package since ours.
+        return Ok(());
+    }
+    folder.check()?;
+    // Windows pins forbid renaming an open folder. Keep its parents pinned.
+    drop(folder);
+    flavor_pin.check()?;
+    interface_pin.check()?;
+    addons.check()?;
+    let retired = addons.target(format!(".Pagle_Recovery.{digest}.retired"));
+    fs.rename(
+        &addons.target(path.file_name().ok_or_else(not_a_folder_of_its_own)?),
+        &retired,
+    )?;
+    if let Err(e) = fs.remove_dir_all(&retired) {
+        log::warn!("completed Recovery was retired but couldn't be deleted: {e}");
+    }
+    Ok(())
+}
+
 /// Deletes leftover `.*.tmp` files in the three folders of an install that
 /// has the Pagle addon (CMP-R83).
 fn sweep_tmp(fs: &dyn Fs, addon: &Addon) {
@@ -758,6 +825,12 @@ impl Writer {
             busy: Mutex::new(false),
             failures: Mutex::default(),
         }
+    }
+
+    /// Serializes retirement with staging, Unlink and removal.
+    pub fn retire_recovery(&self, pending: &crate::recovery::Pending) -> io::Result<()> {
+        let _busy = lock(&self.busy);
+        retire_recovery_with_fs(self.fs.as_ref(), pending)
     }
 
     /// Shares the write/delete lock with Unlink and removal. The guard is

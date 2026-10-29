@@ -103,6 +103,17 @@ pub trait Env: Sync {
                 .map_err(|e| format!("Couldn't stage Recovery: {e}"))
         }
     }
+    /// Retires only the package staged by this Recovery, after confirmation.
+    fn retire_recovery(
+        &self,
+        pending: &crate::recovery::Pending,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        let pending = pending.clone();
+        async move {
+            crate::in_game::folders::retire_recovery(&pending)
+                .map_err(|e| format!("Couldn't retire completed Recovery; try Upload again: {e}"))
+        }
+    }
     /// Rewrites each data addon folder's TOC that `Pagle.toc` has moved on
     /// from (CMP-R83): at every in-game check.
     fn refresh_tocs(&self);
@@ -371,9 +382,6 @@ impl Uploads {
         {
             Reply::Ok(signed) => signed,
             Reply::Refused(refusal) => {
-                if let Step::Stop(stop) = on_refusal(&refusal) {
-                    ctx.account.enter_stop(stop);
-                }
                 return Err(refusal
                     .message
                     .unwrap_or_else(|| recovery::refusal_message(refusal.code.as_deref()).into()));
@@ -406,6 +414,7 @@ impl Uploads {
         }
         // Persist the identity before staging so a crash after the atomic
         // write still leads to a real Upload proof on restart.
+        verified.pending.staged_folder = Some(folder.clone());
         verified.pending.instructions =
             "Recovery prepared; staging in the selected WoW folder.".into();
         ctx.state
@@ -758,11 +767,19 @@ impl Uploads {
                 Reply::Ok(body)
                     if body.get("result").and_then(|v| v.as_str()) == Some("consistent") =>
                 {
-                    self.save(ctx, log_id, |log| {
-                        log.recovery = None;
-                        log.recovery_notice = None;
-                    });
+                    match ctx.env.retire_recovery(&pending).await {
+                        Ok(()) => self.save(ctx, log_id, |log| {
+                            log.recovery = None;
+                            log.recovery_notice = None;
+                        }),
+                        Err(message) => self.save(ctx, log_id, |log| {
+                            if let Some(pending) = &mut log.recovery {
+                                pending.instructions = message;
+                            }
+                        }),
+                    }
                 }
+                Reply::Ended(_) => return self.interrupted(log_id),
                 other => {
                     let code = match &other {
                         Reply::Refused(refusal) => refusal.code.as_deref(),
@@ -910,8 +927,13 @@ impl Uploads {
             let Reply::Refused(refusal) = &reply else {
                 return reply;
             };
-            let Step::Wait { retry_after } = on_refusal(refusal) else {
-                return reply;
+            let retry_after = match on_refusal(refusal) {
+                Step::Stop(stop) => {
+                    ctx.account.enter_stop(stop);
+                    return Reply::Ended("entered a required stop".into());
+                }
+                Step::Wait { retry_after } => retry_after,
+                _ => return reply,
             };
             let wait = retry_after.unwrap_or_else(|| lock(&self.backoff).next_delay());
             log::warn!(

@@ -206,6 +206,7 @@ async fn completion_waits_for_a_real_full_upload_and_retries_after_a_refused_con
             [RunEnd::Recorded(RunResult::Uploaded)]
         );
         assert_eq!(h.state.read(|s| s.logs[LOG_B].recovery.is_none()), retry);
+        assert_eq!(staged_folder(&h).exists(), !retry);
     }
     let requests = h.server.received_requests().await.unwrap();
     let proof = requests
@@ -461,4 +462,228 @@ async fn cleanup_cannot_follow_an_interface_directory_link_outside_the_install()
     link_folder(&interface, &outside);
     crate::in_game::folders::delete_data_addon_folders(&[flavor.to_string_lossy().into_owned()]);
     assert_eq!(std::fs::read(&precious).unwrap(), b"keep this");
+}
+
+#[tokio::test]
+async fn every_recovery_endpoint_obeys_required_stops() {
+    for endpoint in ["cursor", "recovery", "confirm"] {
+        for (code, message) in [
+            ("suspended", SUSPENDED),
+            ("update_required", UPDATE_REQUIRED),
+        ] {
+            let mut h = recovery_harness().await;
+            let updates = Arc::new(AtomicUsize::new(0));
+            let updated = updates.clone();
+            let cancelled = h.uploads.clone();
+            let os = MemoryStore::new("test link");
+            os.write(CREDENTIAL).unwrap();
+            h.link = Link::new(
+                Keychain::new(Box::new(os), None),
+                Hooks {
+                    cancel_queue: Box::new(move || cancelled.cancel()),
+                    entered_update_required: Box::new(move || {
+                        updated.fetch_add(1, Ordering::SeqCst);
+                    }),
+                    ..Hooks::default()
+                },
+            );
+            let target = if endpoint == "confirm" {
+                serve(&h, fixture()["signed"].clone()).await;
+                recover(&h).await.unwrap();
+                save(
+                    &h.folder,
+                    &fixture()["sourceLua"]
+                        .as_str()
+                        .unwrap()
+                        .replace(", \"opaque broken source record\"", ""),
+                );
+                format!(
+                    "/api/v1/catch-logs/{LOG_B}/recovery/{}/confirm",
+                    fixture()["signed"]["applicationId"].as_str().unwrap()
+                )
+            } else {
+                format!("/api/v1/catch-logs/{LOG_B}/{endpoint}")
+            };
+            Mock::given(path(&target))
+                .respond_with(
+                    ResponseTemplate::new(403)
+                        .set_body_json(json!({"reason": code, "message": message})),
+                )
+                .with_priority(1)
+                .mount(&h.server)
+                .await;
+            if endpoint == "confirm" {
+                h.uploads.trigger(LOG_B, Trigger::UploadNow);
+                assert_eq!(
+                    h.uploads.run_queued(&h.ctx()).await,
+                    [RunEnd::Interrupted],
+                    "{endpoint}: {code}"
+                );
+                assert!(h.state.read(|s| s.logs[LOG_B].recovery.is_some()));
+            } else {
+                assert!(recover(&h).await.is_err());
+            }
+            let account = h.link.account(&h.api, &h.state, &h.notifications);
+            assert!(account.is_stopped(), "{endpoint}: {code}");
+            assert_eq!(account.stop_message().as_deref(), Some(message));
+            assert!(h.state.read(|s| s.logs[LOG_B].last_run.is_none()));
+            assert_eq!(
+                updates.load(Ordering::SeqCst),
+                usize::from(code == "update_required")
+            );
+            if code == "suspended" {
+                assert_eq!(*h.shown.0.lock().unwrap(), [SUSPENDED]);
+            }
+            assert!(matches!(
+                account.send(reqwest::Method::GET, "probe", |r| r).await,
+                Err(SendError::Stopped)
+            ));
+            assert!(
+                h.server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.url.path() != "/api/v1/probe")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn linking_another_player_discards_the_previous_players_recovery() {
+    let h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    h.state
+        .update(|s| {
+            let log = s.logs.get_mut(LOG_B).unwrap();
+            log.recovery_notice = Some("old Player notice".into());
+            log.uploaded_snapshot = Some("old Player checkpoint".into());
+        })
+        .unwrap();
+    let before = h.state.read(|s| s.logs[LOG_B].clone());
+    h.link
+        .account(&h.api, &h.state, &h.notifications)
+        .store_link(Approval {
+            credential: "pgc_another_player".into(),
+            battle_tag: "Another#2345".into(),
+        })
+        .await
+        .unwrap();
+    let after = h.state.read(|s| s.logs[LOG_B].clone());
+    assert!(after.recovery.is_none());
+    assert!(after.recovery_notice.is_none());
+    assert!(after.uploaded_snapshot.is_none());
+    assert_eq!(after.answer, before.answer);
+    assert_eq!(after.folder, before.folder);
+    assert_eq!(after.last_folder, before.last_folder);
+    save(
+        &h.folder,
+        &fixture()["sourceLua"]
+            .as_str()
+            .unwrap()
+            .replace(", \"opaque broken source record\"", ""),
+    );
+    h.uploads.trigger(LOG_B, Trigger::PostLink);
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    h.uploads.trigger(LOG_B, Trigger::UploadNow);
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [RunEnd::Recorded(RunResult::UpToDate)]
+    );
+    assert!(
+        h.server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| !r.url.path().ends_with("/confirm"))
+    );
+}
+
+#[tokio::test]
+async fn recovery_retirement_is_idempotent_and_keeps_another_staged_package() {
+    let h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    let pending = h.state.read(|s| s.logs[LOG_B].recovery.clone().unwrap());
+    let folder = staged_folder(&h);
+    let file = folder.join("Recovery.lua");
+    let bytes = std::fs::read(&file).unwrap();
+    let different = [bytes.as_slice(), b"-- another package\n"].concat();
+    std::fs::write(&file, &different).unwrap();
+    let writer = crate::in_game::folders::Writer::new();
+    writer.retire_recovery(&pending).unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), different);
+    std::fs::write(&file, &bytes).unwrap();
+    let savedvariables = std::fs::read(h.folder.join("SavedVariables/Pagle.lua")).unwrap();
+    writer.retire_recovery(&pending).unwrap();
+    writer.retire_recovery(&pending).unwrap();
+    assert!(!folder.exists());
+    assert_eq!(
+        std::fs::read(h.folder.join("SavedVariables/Pagle.lua")).unwrap(),
+        savedvariables
+    );
+}
+
+#[tokio::test]
+async fn a_failed_retirement_keeps_pending_recovery_until_upload_retries_cleanup() {
+    let h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    let pending = h.state.read(|s| s.logs[LOG_B].recovery.clone().unwrap());
+    let obstacle = staged_folder(&h).parent().unwrap().join(format!(
+        ".Pagle_Recovery.{}.retired",
+        pending.package_digest.as_ref().unwrap()
+    ));
+    std::fs::create_dir(&obstacle).unwrap();
+    std::fs::write(obstacle.join("keep"), b"occupied").unwrap();
+    save(
+        &h.folder,
+        &fixture()["sourceLua"]
+            .as_str()
+            .unwrap()
+            .replace(", \"opaque broken source record\"", ""),
+    );
+    Mock::given(path(format!(
+        "/api/v1/catch-logs/{LOG_B}/recovery/{}/confirm",
+        pending.application_id
+    )))
+    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": "consistent"})))
+    .mount(&h.server)
+    .await;
+    h.uploads.trigger(LOG_B, Trigger::UploadNow);
+    h.uploads.run_queued(&h.ctx()).await;
+    assert!(h.state.read(|s| {
+        s.logs[LOG_B]
+            .recovery
+            .as_ref()
+            .unwrap()
+            .instructions
+            .contains("retire")
+    }));
+    assert!(staged_folder(&h).join("Recovery.lua").is_file());
+    std::fs::remove_dir_all(obstacle).unwrap();
+    h.uploads.trigger(LOG_B, Trigger::UploadNow);
+    h.uploads.run_queued(&h.ctx()).await;
+    assert!(h.state.read(|s| s.logs[LOG_B].recovery.is_none()));
+    assert!(!staged_folder(&h).exists());
+}
+
+#[tokio::test]
+async fn recovery_retirement_cannot_follow_a_folder_link_outside_the_install() {
+    let h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    let pending = h.state.read(|s| s.logs[LOG_B].recovery.clone().unwrap());
+    let folder = staged_folder(&h);
+    let outside = h.tmp.path().join("outside-recovery");
+    std::fs::rename(&folder, &outside).unwrap();
+    link_folder(&folder, &outside);
+    assert!(crate::in_game::folders::retire_recovery(&pending).is_err());
+    assert!(outside.join("Recovery.lua").is_file());
 }

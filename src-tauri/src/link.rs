@@ -526,6 +526,9 @@ impl<N: Notifier> Account<'_, N> {
             if was_linked {
                 // CMP UI, Catch logs: Link again… clears the catchLog kept.
                 for log in s.logs.values_mut() {
+                    log.recovery = None;
+                    log.recovery_notice = None;
+                    log.uploaded_snapshot = None;
                     if let Some(run) = &mut log.last_run {
                         run.catch_log = None;
                     }

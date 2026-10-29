@@ -17,6 +17,10 @@ pub const REPLY_CAP: usize = 33 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pending {
+    #[serde(default)]
+    pub staged_folder: Option<String>,
+    #[serde(default)]
+    pub package_digest: Option<String>,
     pub application_id: String,
     pub replacement_digest: String,
     pub accepted_seq: u64,
@@ -185,6 +189,8 @@ fn verify_with_modulus(
     .into_bytes();
     Ok(Verified {
         pending: Pending {
+            staged_folder: None,
+            package_digest: Some(sha256_hex(&lua)),
             application_id,
             replacement_digest,
             accepted_seq: seq,
