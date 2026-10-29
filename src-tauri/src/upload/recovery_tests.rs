@@ -3,6 +3,7 @@
 use super::*;
 use crate::in_game::folders::fixture::link_folder;
 use crate::readings::fixture::LOG_B;
+use crate::upload::{ANOTHER_RECOVERY, CONFIRM_GAVE_UP, CONFIRM_TRIES};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use wiremock::matchers::{body_json, method, path};
@@ -193,7 +194,7 @@ async fn completion_waits_for_a_real_full_upload_and_retries_after_a_refused_con
     Mock::given(method("POST"))
         .and(path(&confirm))
         .respond_with(
-            ResponseTemplate::new(409).set_body_json(json!({"reason":"validation_unavailable"})),
+            ResponseTemplate::new(409).set_body_json(json!({"reason":"recovery_not_uploaded"})),
         )
         .up_to_n_times(1)
         .mount(&h.server)
@@ -825,7 +826,7 @@ async fn a_transient_confirmation_failure_keeps_recovery_pending_and_retries_aft
     h.uploads.trigger(LOG_B, Trigger::UploadNow);
     assert_eq!(
         h.uploads.run_queued(&h.ctx()).await,
-        [RunEnd::Recorded(RunResult::Uploaded)]
+        [RunEnd::Requeued, RunEnd::Recorded(RunResult::Uploaded)]
     );
     assert_eq!(h.env.sleeps().len(), 2);
     assert_eq!(received(&h, &confirm_path()).await, 3);
@@ -858,6 +859,7 @@ async fn a_second_catch_log_in_the_same_install_cannot_overwrite_a_pending_recov
                 staged_folder: Some(other.to_string_lossy().into_owned()),
                 package_digest: Some(crate::in_game::folders::sha256_hex(theirs)),
                 expected_digest: None,
+                confirm_failures: 0,
                 application_id: "a".repeat(64),
                 replacement_digest: "b".repeat(64),
                 accepted_seq: 1,
@@ -885,4 +887,234 @@ async fn a_second_catch_log_in_the_same_install_cannot_overwrite_a_pending_recov
     // Once that package is retired, this Catch log stages its own.
     std::fs::remove_dir_all(&package).unwrap();
     assert!(recover(&h).await.unwrap().contains("character selection"));
+}
+
+/// Another confirmed Catch log, `log_id`, in `folder`, with no Recovery.
+fn add_log(h: &mut Harness, log_id: &str, folder: &Path) {
+    save(folder, &pagle_lua_text(log_id, 2));
+    let text = folder.to_string_lossy().into_owned();
+    h.state
+        .update(|s| {
+            let mut log = s.logs[LOG_B].clone();
+            log.recovery = None;
+            log.recovery_notice = None;
+            log.last_folder = text.clone();
+            s.logs.insert(log_id.into(), log);
+        })
+        .unwrap();
+    h.confirmed.insert(log_id.into(), text);
+}
+
+fn pending(h: &Harness, log_id: &str) -> Option<crate::recovery::Pending> {
+    h.state.read(|s| s.logs[log_id].recovery.clone())
+}
+
+#[tokio::test]
+async fn busy_confirmations_let_other_uploads_through_and_stop_after_their_budget_until_upload_now()
+{
+    let mut h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    save_applied(&h);
+    let other = account_folder(&h.tmp.path().join("second"), "CY#3");
+    add_log(&mut h, LOG_A, &other);
+    Mock::given(method("POST"))
+        .and(path(confirm_path()))
+        .respond_with(
+            ResponseTemplate::new(503).set_body_json(json!({"reason":"validation_unavailable"})),
+        )
+        .mount(&h.server)
+        .await;
+    h.uploads.trigger(LOG_B, Trigger::Scan);
+    h.uploads.trigger(LOG_A, Trigger::Scan);
+    // Each busy confirmation waits one retry backoff, as an ordinary retry
+    // would, then queues again behind the other Catch log's run.
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [
+            RunEnd::Requeued,
+            RunEnd::Recorded(RunResult::Uploaded),
+            RunEnd::Requeued,
+            RunEnd::Recorded(RunResult::Uploaded),
+        ]
+    );
+    assert_eq!(h.env.sleeps(), [30, 30]);
+    assert_eq!(received(&h, &confirm_path()).await, CONFIRM_TRIES as usize);
+    let paths: Vec<String> = h
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.url.path().to_owned())
+        .collect();
+    let others = paths
+        .iter()
+        .position(|p| *p == format!("/api/v1/catch-logs/{LOG_A}/cursor"))
+        .unwrap();
+    let second_confirm = paths
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| **p == confirm_path())
+        .nth(1)
+        .unwrap()
+        .0;
+    assert!(others < second_confirm);
+    assert_eq!(
+        h.state
+            .read(|s| s.logs[LOG_A].last_run.clone().unwrap().result),
+        RunResult::Uploaded
+    );
+    // Out of tries: Recovery stays pending for Upload now, and its row says so.
+    let waiting = pending(&h, LOG_B).unwrap();
+    assert_eq!(waiting.instructions, CONFIRM_GAVE_UP);
+    assert_eq!(waiting.confirm_failures, CONFIRM_TRIES);
+    assert!(staged_folder(&h).exists());
+    // Automatic runs no longer resend the whole log or confirm.
+    let uploads = received(&h, "/api/v1/uploads").await;
+    h.uploads.trigger(LOG_B, Trigger::Scan);
+    h.uploads.run_queued(&h.ctx()).await;
+    assert_eq!(received(&h, "/api/v1/uploads").await, uploads);
+    assert_eq!(received(&h, &confirm_path()).await, CONFIRM_TRIES as usize);
+    assert_eq!(pending(&h, LOG_B).unwrap().instructions, CONFIRM_GAVE_UP);
+    // Upload now uploads a new proof and checks again.
+    Mock::given(method("POST"))
+        .and(path(confirm_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":"consistent"})))
+        .with_priority(1)
+        .mount(&h.server)
+        .await;
+    h.uploads.trigger(LOG_B, Trigger::UploadNow);
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    assert!(received(&h, "/api/v1/uploads").await > uploads);
+    assert!(pending(&h, LOG_B).is_none());
+    assert!(!staged_folder(&h).exists());
+}
+
+#[tokio::test]
+async fn an_unknown_confirmation_refusal_ends_recovery_without_retrying() {
+    let h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    save_applied(&h);
+    Mock::given(method("POST"))
+        .and(path(confirm_path()))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({"reason":"something_new"})))
+        .mount(&h.server)
+        .await;
+    for end in [RunResult::Uploaded, RunResult::UpToDate] {
+        h.uploads.trigger(LOG_B, Trigger::UploadNow);
+        assert_eq!(
+            h.uploads.run_queued(&h.ctx()).await,
+            [RunEnd::Recorded(end)]
+        );
+    }
+    assert!(h.env.sleeps().is_empty());
+    assert_eq!(received(&h, &confirm_path()).await, 1);
+    assert!(pending(&h, LOG_B).is_none());
+    assert_eq!(
+        h.state.read(|s| s.logs[LOG_B].recovery_notice.clone()),
+        Some(crate::recovery::REFUSED.to_owned())
+    );
+    assert!(!staged_folder(&h).exists());
+}
+
+#[tokio::test]
+async fn a_refused_recovery_stops_claiming_the_install_for_another_catch_log() {
+    let mut h = recovery_harness().await;
+    // Another WoW account of this install staged its Recovery, and the addon
+    // applied it there.
+    let package = staged_folder(&h);
+    std::fs::create_dir_all(&package).unwrap();
+    let theirs: &[u8] =
+        b"PagleRecoveryData = { v = 1, keyId = \"testKey\", payload = \"QQ==\", sig = \"QQ==\" }\n";
+    std::fs::write(package.join("Recovery.lua"), theirs).unwrap();
+    std::fs::write(package.join("Pagle_Recovery.toc"), b"## Interface: 16002\n").unwrap();
+    let other = account_folder(h.tmp.path(), "BOB#2");
+    add_log(&mut h, LOG_A, &other);
+    let application = "a".repeat(64);
+    h.state
+        .update(|s| {
+            s.logs.get_mut(LOG_A).unwrap().recovery = Some(crate::recovery::Pending {
+                staged_folder: Some(other.to_string_lossy().into_owned()),
+                package_digest: Some(crate::in_game::folders::sha256_hex(theirs)),
+                expected_digest: None,
+                confirm_failures: 0,
+                application_id: application.clone(),
+                replacement_digest: "b".repeat(64),
+                accepted_seq: 1,
+                staged: 0,
+                instructions: "Recovery is ready.".into(),
+            });
+        })
+        .unwrap();
+    serve(&h, fixture()["signed"].clone()).await;
+    assert_eq!(recover(&h).await.unwrap_err(), ANOTHER_RECOVERY);
+    // Pagle refuses that Recovery for good.
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/api/v1/catch-logs/{LOG_A}/recovery/{application}/confirm"
+        )))
+        .respond_with(
+            ResponseTemplate::new(409).set_body_json(json!({"reason":"operator_review_required"})),
+        )
+        .mount(&h.server)
+        .await;
+    h.uploads.trigger(LOG_A, Trigger::UploadNow);
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    assert!(pending(&h, LOG_A).is_none());
+    assert_eq!(
+        h.state
+            .read(|s| s.logs[LOG_A].recovery_notice.clone())
+            .as_deref(),
+        Some(crate::recovery::refusal_message(Some(
+            "operator_review_required"
+        )))
+    );
+    assert!(!package.exists());
+    // Even had its package stayed, nothing claims it any more: this Catch log
+    // stages its own in its place.
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(package.join("Recovery.lua"), theirs).unwrap();
+    recover(&h).await.unwrap();
+    assert_ne!(std::fs::read(package.join("Recovery.lua")).unwrap(), theirs);
+    assert!(pending(&h, LOG_B).is_some());
+}
+
+#[tokio::test]
+async fn a_package_that_changes_nothing_locally_still_uploads_and_confirms() {
+    let h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    save_applied(&h);
+    // A plan whose replacement is exactly the local log: applying it leaves
+    // the local snapshot as it was.
+    let local = crate::recovery::snapshot_digest(
+        &crate::recovery::read_source(&h.folder.to_string_lossy()).unwrap(),
+    );
+    h.state
+        .update(|s| {
+            let pending = s.logs.get_mut(LOG_B).unwrap().recovery.as_mut().unwrap();
+            pending.expected_digest = Some(local.clone());
+            pending.replacement_digest = local.clone();
+        })
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path(confirm_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":"consistent"})))
+        .mount(&h.server)
+        .await;
+    h.uploads.trigger(LOG_B, Trigger::Scan);
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    assert_eq!(received(&h, &confirm_path()).await, 1);
+    assert!(pending(&h, LOG_B).is_none());
 }

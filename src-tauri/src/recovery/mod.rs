@@ -25,6 +25,11 @@ pub struct Pending {
     /// local log still has it, the addon hasn't applied the package.
     #[serde(default)]
     pub expected_digest: Option<String>,
+    /// Consecutive confirmations that couldn't be checked (a `5xx`, a
+    /// timeout). Kept across restarts, so once it reaches
+    /// [`crate::upload::CONFIRM_TRIES`] only **Upload now** checks again.
+    #[serde(default)]
+    pub confirm_failures: u32,
     pub application_id: String,
     pub replacement_digest: String,
     pub accepted_seq: u64,
@@ -197,6 +202,7 @@ fn verify_with_modulus(
             staged_folder: None,
             package_digest: Some(sha256_hex(&lua)),
             expected_digest: Some(expected_digest),
+            confirm_failures: 0,
             application_id,
             replacement_digest,
             accepted_seq: seq,
@@ -226,6 +232,10 @@ pub(crate) fn verify_test(
     )
 }
 
+/// What a refusal this Companion doesn't know says: the plan can't complete
+/// as it is.
+pub const REFUSED: &str = "Pagle refused this Recovery. Prepare Recovery again; if Pagle refuses it again, contact Pagle support.";
+
 pub fn refusal_message(code: Option<&str>) -> &'static str {
     match code {
         Some("missing_held_log") => "Pagle has no Accepted history for this Catch log.",
@@ -242,8 +252,6 @@ pub fn refusal_message(code: Option<&str>) -> &'static str {
         Some("recovery_not_uploaded") => {
             "Save the restored Catch log in game, then use Upload now to upload its complete history and check Recovery."
         }
-        _ => {
-            "Recovery is waiting for a successful Upload and current server validation. Upload again to retry the check."
-        }
+        _ => REFUSED,
     }
 }

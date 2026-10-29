@@ -122,7 +122,21 @@ impl Queue {
     /// one queued and not started (CMP-R46). Returns whether an item was
     /// added.
     pub fn push(&mut self, log_id: &str, trigger: Trigger) -> bool {
-        let props = trigger.props();
+        self.push_run(Run {
+            log_id: log_id.to_owned(),
+            props: trigger.props(),
+        })
+    }
+
+    /// Queues `run` again at the back, or merges it into the run of its
+    /// `logId` queued meanwhile: a Recovery's confirmation retry, which lets
+    /// the runs queued during its backoff go first.
+    pub fn requeue(&mut self, run: Run) {
+        self.push_run(run);
+    }
+
+    fn push_run(&mut self, run: Run) -> bool {
+        let Run { log_id, props } = run;
         if let Some(queued) = self
             .items
             .iter_mut()
@@ -134,10 +148,7 @@ impl Queue {
         }
         // Not queued: a new run, whether or not one is in progress (which
         // makes this the one more run of CMP-R46).
-        self.items.push_back(Item::Run(Run {
-            log_id: log_id.to_owned(),
-            props,
-        }));
+        self.items.push_back(Item::Run(Run { log_id, props }));
         true
     }
 

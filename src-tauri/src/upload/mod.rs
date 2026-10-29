@@ -67,9 +67,21 @@ pub const GAP: &str = "gap";
 pub const CONFIRM_RETRY: &str =
     "Pagle couldn't check Recovery just now. Pagle Companion will upload and check again shortly.";
 
+/// What a pending Recovery's row says once its confirmation couldn't be
+/// checked [`CONFIRM_TRIES`] times in a row: only **Upload now** checks again.
+pub const CONFIRM_GAVE_UP: &str = "Pagle couldn't check Recovery after several tries. Recovery is still waiting: use Upload now to check it again.";
+
+/// Confirmations of one Recovery that may go unchecked in a row (a `5xx`,
+/// a timeout) before automatic runs stop resending its proof and checking
+/// it, until **Upload now**. Each try resends the whole log, and its retry
+/// holds the queue for a backoff, so a backend that keeps answering busy
+/// can't hold the other Catch logs back for long. The count is kept in
+/// local state: a restart's run doesn't start another round on its own.
+pub const CONFIRM_TRIES: u32 = 3;
+
 /// Why Recovery isn't prepared while another Catch log's package waits in
 /// the same install.
-pub const ANOTHER_RECOVERY: &str = "Another Catch log in this WoW installation has a Recovery waiting in Pagle_Recovery. Log in to that WoW account so Pagle applies it, then use Upload now to finish it. Then prepare Recovery here.";
+pub const ANOTHER_RECOVERY: &str = "Another Catch log in this WoW installation has a Recovery in progress, and WoW loads one Recovery per installation. Finish that one first by following its Catch log's instructions, then prepare Recovery here again.";
 
 /// Gap restarts per run (CMP Tunables).
 pub const GAP_RESTARTS: u32 = 1;
@@ -155,6 +167,10 @@ pub enum RunEnd {
     NotStarted(&'static str),
     /// The item was an in-game download, which ended so (CMP-R81).
     Download(DownloadEnd),
+    /// A Recovery's confirmation couldn't be checked: the run waited the
+    /// retry backoff and queued again, behind the runs queued meanwhile
+    /// (CMP-R51). `lastRun` stays as it was.
+    Requeued,
 }
 
 /// A reply other than a success or a retry: a refusal, by its HTTP status
@@ -265,6 +281,8 @@ pub struct UploadReply {
 /// One pass of a run from step 1 (CMP-R47).
 enum Attempt {
     Retry(String),
+    /// A Recovery's confirmation couldn't be checked, with tries left.
+    RecoveryRetry(String),
     /// A `gap` (CMP-R50).
     Gap(Refusal),
     End(RunEnd),
@@ -579,6 +597,12 @@ impl Uploads {
         };
         let mut inner = self.lock();
         inner.queue.done();
+        if let (Item::Run(run), RunEnd::Requeued) = (&item, &end)
+            && !inner.stop
+        {
+            inner.queue.requeue(run.clone());
+            self.queued.notify_one();
+        }
         self.count_post_link(&inner);
         if let (Item::Download(file), RunEnd::Download(DownloadEnd::Retry)) = (&item, &end) {
             // CMP-R50, CMP-R51: after the backoff the download starts again,
@@ -644,17 +668,33 @@ impl Uploads {
                 )
             })
         });
-        if recovery
-            .as_ref()
-            .and_then(|pending| pending.expected_digest.as_deref())
-            == Some(semantic.as_str())
-        {
+        if recovery.as_ref().is_some_and(|pending| {
+            pending.expected_digest.as_deref() == Some(semantic.as_str())
+                && semantic != pending.replacement_digest
+        }) {
             // The addon hasn't applied the package yet. Sending this original
             // branch again would be refused and move the backend's checkpoint
             // past the one the plan pins, so confirmation could never pass.
+            // A package whose replacement is the local log changes nothing
+            // here, so its runs go ahead.
             return not_started(log_id, "Recovery isn't applied yet");
         }
-        let recovering = recovery.is_some();
+        if !run.props.holds
+            && recovery
+                .as_ref()
+                .is_some_and(|pending| pending.confirm_failures >= CONFIRM_TRIES)
+        {
+            // Upload now gives a Recovery out of tries a new round.
+            self.save(ctx, log_id, |log| {
+                if let Some(pending) = &mut log.recovery {
+                    pending.confirm_failures = 0;
+                }
+            });
+        }
+        let recovering = ctx
+            .state
+            .read(|s| s.logs.get(log_id).and_then(confirming))
+            .is_some();
         let changed_refusal = changed
             && last
                 .as_ref()
@@ -671,6 +711,13 @@ impl Uploads {
         loop {
             match self.attempt(ctx, run, &read).await {
                 Attempt::End(end) => return end,
+                Attempt::RecoveryRetry(why) => {
+                    if !self.wait_backoff(ctx, log_id, &why).await {
+                        log::info!("upload run for {log_id} stopped");
+                        return RunEnd::Interrupted;
+                    }
+                    return RunEnd::Requeued;
+                }
                 Attempt::Retry(why) => {
                     if !self.wait_backoff(ctx, log_id, &why).await {
                         log::info!("upload run for {log_id} stopped");
@@ -725,9 +772,7 @@ impl Uploads {
                 .and_then(|log| log.uploaded_snapshot.as_deref())
                 != Some(current.as_str())
         });
-        let recovery = ctx
-            .state
-            .read(|s| s.logs.get(log_id).and_then(|log| log.recovery.clone()));
+        let recovery = ctx.state.read(|s| s.logs.get(log_id).and_then(confirming));
         let first = match plan::plan(
             &read.log,
             &cursor,
@@ -795,7 +840,7 @@ impl Uploads {
                 "catch-logs/{log_id}/recovery/{}/confirm",
                 pending.application_id
             );
-            match self
+            let why = match self
                 .request::<serde_json::Value, _, _>(ctx, Method::POST, &path, |r| r)
                 .await
             {
@@ -813,36 +858,84 @@ impl Uploads {
                             }
                         }),
                     }
+                    None
                 }
+                Reply::Ok(_) => Some("a reply that isn't consistent".to_owned()),
+                Reply::Retry(why) => Some(why),
                 Reply::Ended(_) => return self.interrupted(log_id),
-                Reply::Retry(why) => {
-                    // CMP-R51: a busy (`503 validation_unavailable`) or
-                    // unreachable confirmation waits the retry backoff, then
-                    // the run starts again from step 1, so the proof Upload
-                    // names the current revision. Recovery stays pending.
-                    self.save(ctx, log_id, |log| {
-                        if let Some(pending) = &mut log.recovery {
-                            pending.instructions = CONFIRM_RETRY.into();
-                        }
-                    });
-                    ctx.env.changed();
-                    return Attempt::Retry(format!("Recovery confirmation: {why}"));
+                Reply::Refused(refusal) => {
+                    log::warn!(
+                        "{log_id}: Recovery confirmation refused with {} {}",
+                        refusal.status,
+                        refusal.code.as_deref().unwrap_or("(no code)")
+                    );
+                    if matches!(on_refusal(&refusal), Step::Unlinked) {
+                        return self.interrupted(log_id);
+                    }
+                    self.refused_confirmation(ctx, log_id, &pending, refusal.code.as_deref())
+                        .await;
+                    None
                 }
-                other => {
-                    let code = match &other {
-                        Reply::Refused(refusal) => refusal.code.as_deref(),
-                        _ => None,
-                    };
-                    self.save(ctx, log_id, |log| {
-                        if let Some(pending) = &mut log.recovery {
-                            pending.instructions = crate::recovery::refusal_message(code).into();
+            };
+            if let Some(why) = why {
+                // CMP-R51: a busy (`503 validation_unavailable`) or
+                // unreachable confirmation waits the retry backoff, then the
+                // run queues again behind the others and starts from step 1,
+                // so the proof Upload names the current revision. Recovery
+                // stays pending; out of tries, it waits for Upload now.
+                let failures = pending.confirm_failures + 1;
+                let again = failures < CONFIRM_TRIES;
+                self.save(ctx, log_id, |log| {
+                    if let Some(pending) = &mut log.recovery {
+                        pending.confirm_failures = failures;
+                        pending.instructions = if again {
+                            CONFIRM_RETRY
+                        } else {
+                            CONFIRM_GAVE_UP
                         }
-                    });
+                        .into();
+                    }
+                });
+                ctx.env.changed();
+                if again {
+                    return Attempt::RecoveryRetry(format!("Recovery confirmation: {why}"));
                 }
+                log::warn!("{log_id}: Recovery confirmation: {why}; waiting for Upload now");
             }
         }
         self.save(ctx, log_id, |log| log.uploaded_snapshot = Some(current));
         Attempt::End(self.finish(ctx, log_id, read, RunResult::Uploaded, catch_log))
+    }
+
+    /// A refused confirmation. `recovery_not_uploaded` waits for the next
+    /// Upload's proof. Any other refusal, known or not, is final for this
+    /// plan: it is retired, so it no longer holds its install's one Recovery
+    /// (another Catch log there may stage its own), and the row says why.
+    async fn refused_confirmation<N: Notifier, E: Env>(
+        &self,
+        ctx: &Ctx<'_, N, E>,
+        log_id: &str,
+        pending: &crate::recovery::Pending,
+        code: Option<&str>,
+    ) {
+        let message = crate::recovery::refusal_message(code);
+        if code == Some("recovery_not_uploaded") {
+            self.save(ctx, log_id, |log| {
+                if let Some(pending) = &mut log.recovery {
+                    pending.confirm_failures = 0;
+                    pending.instructions = message.into();
+                }
+            });
+            return;
+        }
+        if let Err(e) = ctx.env.retire_recovery(pending).await {
+            // Nothing claims it any more: the next staging replaces it.
+            log::warn!("{log_id}: refused Recovery's package stays staged: {e}");
+        }
+        self.save(ctx, log_id, |log| {
+            log.recovery = None;
+            log.recovery_notice = Some(message.into());
+        });
     }
 
     /// What a run does after a reply that isn't a success.
@@ -1182,6 +1275,14 @@ fn refusal(status: StatusCode, retry_after: Option<Duration>, body: &[u8]) -> Re
         message: text("message"),
         retry_after,
     }
+}
+
+/// The Recovery a run proves and confirms: one pending with confirmation
+/// tries left ([`CONFIRM_TRIES`]).
+fn confirming(log: &LogState) -> Option<crate::recovery::Pending> {
+    log.recovery
+        .clone()
+        .filter(|pending| pending.confirm_failures < CONFIRM_TRIES)
 }
 
 fn not_started(log_id: &str, why: &'static str) -> RunEnd {
