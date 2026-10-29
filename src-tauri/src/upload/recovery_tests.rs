@@ -108,6 +108,42 @@ async fn signed_recovery_stages_only_the_selected_install_without_changing_saved
     );
 }
 
+#[test]
+fn recovery_planning_uses_the_recovery_request_timeout() {
+    // CMP Tunables: Recovery request timeout, not the HTTP timeouts' 120 s
+    assert_eq!(
+        Uploads::new().recovery_timeout,
+        crate::api::RECOVERY_REQUEST_TIMEOUT
+    );
+}
+
+#[tokio::test]
+async fn recovery_planning_sets_its_own_timeout_over_the_client_default() {
+    // CMP Tunables: Recovery request timeout, applied to the planning
+    // request alone; the client's 120 s would have waited for this reply
+    let mut h = recovery_harness().await;
+    h.uploads = Arc::new(Uploads {
+        recovery_timeout: Duration::from_millis(200),
+        ..Uploads::with_recovery_test_key()
+    });
+    let f = fixture();
+    Mock::given(method("POST"))
+        .and(path(format!("/api/v1/catch-logs/{LOG_B}/recovery")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(f["signed"].clone())
+                .set_delay(Duration::from_secs(2)),
+        )
+        .mount(&h.server)
+        .await;
+    assert_eq!(
+        recover(&h).await.unwrap_err(),
+        "Couldn't prepare Recovery; try again"
+    );
+    assert!(!staged_folder(&h).exists());
+    assert!(h.state.read(|s| s.logs[LOG_B].recovery.is_none()));
+}
+
 #[tokio::test]
 async fn unknown_keys_altered_signatures_and_wrong_application_ids_never_stage() {
     for (field, value) in [

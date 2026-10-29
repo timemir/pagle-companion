@@ -301,6 +301,9 @@ pub struct Uploads {
     started: AtomicBool,
     #[cfg(test)]
     recovery_test_key: bool,
+    /// The Recovery planning request's timeout (CMP Tunables), shorter in
+    /// tests.
+    recovery_timeout: Duration,
     /// When the in-game downloads are due (CMP-R81).
     schedule: Mutex<Schedule>,
     /// How many post-link runs are queued or in progress (CMP-R101).
@@ -330,6 +333,7 @@ impl Uploads {
             started: AtomicBool::new(false),
             #[cfg(test)]
             recovery_test_key: false,
+            recovery_timeout: crate::api::RECOVERY_REQUEST_TIMEOUT,
             schedule: Mutex::default(),
             post_link: watch::channel(0).0,
         }
@@ -412,13 +416,14 @@ impl Uploads {
         let path = format!("catch-logs/{log_id}/recovery");
         // Recovery has a separate cap: a complete private snapshot is much
         // larger than a public content download or an ordinary JSON reply.
+        // It has its own timeout too, for the same reason (CMP Tunables).
         let signed = match self
             .request_capped::<recovery::Signed, _, _>(
                 ctx,
                 Method::POST,
                 &path,
                 recovery::REPLY_CAP,
-                |r| r.json(&body),
+                |r| r.json(&body).timeout(self.recovery_timeout),
             )
             .await
         {
