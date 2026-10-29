@@ -1,13 +1,13 @@
 //! Uploading (CMP-R45 to CMP-R51, CMP-R55, CMP-R101): the one queue, the
 //! upload run that sends a confirmed Catch log from the server's cursor, the
-//! whole-send flag, and the queue's retry backoff.
+//! content checkpoints, Recovery staging, and the queue's retry backoff.
 //!
 //! [`Uploads`] holds the queue ([`queue`]) and runs its items one at a time:
 //! [`Uploads::trigger`] queues a run (CMP-R45's triggers call it; whether
 //! one may queue at all, linked and outside a stop, is the caller's), and a
 //! run ([`Uploads::run_item`]) reads its file, checks CMP-R45's holds and
 //! skip, reads the cursor, decides what to send ([`plan`]) and sends it in
-//! pages, recording `lastRun`, `lastUploadedAt` and `wholeSendPending` in
+//! pages, recording `lastRun`, `lastUploadedAt` and the semantic snapshot in
 //! local state. The tray-mode wiring is in [`window`].
 //!
 //! Replies (CMP-R50) are classified into a [`Reply`], and every refusal into
@@ -62,6 +62,27 @@ use queue::{Item, Queue, Run, Trigger};
 /// isn't held back (CMP-R50).
 pub const GAP: &str = "gap";
 
+/// What a pending Recovery's row says while its confirmation waits to be
+/// retried (CMP-R51).
+pub const CONFIRM_RETRY: &str =
+    "Pagle couldn't check Recovery just now. Pagle Companion will upload and check again shortly.";
+
+/// What a pending Recovery's row says once its confirmation couldn't be
+/// checked [`CONFIRM_TRIES`] times in a row: only **Upload now** checks again.
+pub const CONFIRM_GAVE_UP: &str = "Pagle couldn't check Recovery after several tries. Recovery is still waiting: use Upload now to check it again.";
+
+/// Confirmations of one Recovery that may go unchecked in a row (a `5xx`,
+/// a timeout) before automatic runs stop resending its proof and checking
+/// it, until **Upload now**. Each try resends the whole log, and its retry
+/// holds the queue for a backoff, so a backend that keeps answering busy
+/// can't hold the other Catch logs back for long. The count is kept in
+/// local state: a restart's run doesn't start another round on its own.
+pub const CONFIRM_TRIES: u32 = 3;
+
+/// Why Recovery isn't prepared while another Catch log's package waits in
+/// the same install.
+pub const ANOTHER_RECOVERY: &str = "Another Catch log in this WoW installation has a Recovery in progress, and WoW loads one Recovery per installation. Finish that one first by following its Catch log's instructions, then prepare Recovery here again.";
+
 /// Gap restarts per run (CMP Tunables).
 pub const GAP_RESTARTS: u32 = 1;
 
@@ -91,6 +112,29 @@ pub trait Env: Sync {
     /// Writes a body that passed CMP-R82 as `file`'s data file into every
     /// qualifying install (CMP-R83), off the async runtime's threads.
     fn write(&self, file: DataFile, body: Vec<u8>) -> impl Future<Output = WriteReport> + Send;
+    /// Stages one private Recovery for the selected account's install.
+    fn stage_recovery(
+        &self,
+        _log_id: &str,
+        folder: &str,
+        lua: Vec<u8>,
+    ) -> impl Future<Output = Result<bool, String>> + Send {
+        async move {
+            crate::in_game::folders::stage_recovery(folder, &lua)
+                .map_err(|e| format!("Couldn't stage Recovery: {e}"))
+        }
+    }
+    /// Retires only the package staged by this Recovery, after confirmation.
+    fn retire_recovery(
+        &self,
+        pending: &crate::recovery::Pending,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        let pending = pending.clone();
+        async move {
+            crate::in_game::folders::retire_recovery(&pending)
+                .map_err(|e| format!("Couldn't retire completed Recovery; try Upload again: {e}"))
+        }
+    }
     /// Rewrites each data addon folder's TOC that `Pagle.toc` has moved on
     /// from (CMP-R83): at every in-game check.
     fn refresh_tocs(&self);
@@ -111,6 +155,7 @@ pub struct Ctx<'a, N: Notifier, E: Env> {
 /// How a run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
+    Recovery(Result<String, String>),
     /// It ended with a result, recorded as `lastRun` (CMP Data).
     Recorded(RunResult),
     /// Stopped (switched off, Unlink, **Link again…**, `credential_invalid`)
@@ -122,6 +167,10 @@ pub enum RunEnd {
     NotStarted(&'static str),
     /// The item was an in-game download, which ended so (CMP-R81).
     Download(DownloadEnd),
+    /// A Recovery's confirmation couldn't be checked: the run waited the
+    /// retry backoff and queued again, behind the runs queued meanwhile
+    /// (CMP-R51). `lastRun` stays as it was.
+    Requeued,
 }
 
 /// A reply other than a success or a retry: a refusal, by its HTTP status
@@ -179,8 +228,8 @@ pub fn on_refusal(refusal: &Refusal) -> Step {
         (403, Some("update_required")) => Step::Stop(Stop::UpdateRequired {
             message: message(UPDATE_REQUIRED_TEXT),
         }),
-        (_, Some(GAP)) => Step::Restart,
-        (_, Some("divergence")) => end(RunResult::Divergence),
+        (_, Some(GAP | "invalid_base")) => Step::Restart,
+        (_, Some("divergence" | "recovery_required")) => end(RunResult::Divergence),
         (_, Some("stale")) => end(RunResult::Stale),
         (_, Some("deleted")) => end(RunResult::Deleted),
         (_, Some("dev_log")) => end(RunResult::DevLog),
@@ -232,6 +281,8 @@ pub struct UploadReply {
 /// One pass of a run from step 1 (CMP-R47).
 enum Attempt {
     Retry(String),
+    /// A Recovery's confirmation couldn't be checked, with tries left.
+    RecoveryRetry(String),
     /// A `gap` (CMP-R50).
     Gap(Refusal),
     End(RunEnd),
@@ -248,6 +299,11 @@ pub struct Uploads {
     backoff: Mutex<Backoff>,
     /// Whether the start's runs have been triggered (CMP-R45: "at start").
     started: AtomicBool,
+    #[cfg(test)]
+    recovery_test_key: bool,
+    /// The Recovery planning request's timeout (CMP Tunables), shorter in
+    /// tests.
+    recovery_timeout: Duration,
     /// When the in-game downloads are due (CMP-R81).
     schedule: Mutex<Schedule>,
     /// How many post-link runs are queued or in progress (CMP-R101).
@@ -275,8 +331,19 @@ impl Uploads {
             interrupts: watch::channel(0).0,
             backoff: Mutex::default(),
             started: AtomicBool::new(false),
+            #[cfg(test)]
+            recovery_test_key: false,
+            recovery_timeout: crate::api::RECOVERY_REQUEST_TIMEOUT,
             schedule: Mutex::default(),
             post_link: watch::channel(0).0,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_recovery_test_key() -> Self {
+        Self {
+            recovery_test_key: true,
+            ..Self::new()
         }
     }
 
@@ -290,6 +357,142 @@ impl Uploads {
         self.count_post_link(&inner);
         drop(inner);
         self.queued.notify_one();
+    }
+
+    pub fn trigger_recovery(&self, log_id: &str) {
+        self.lock().queue.push_recovery(log_id);
+        self.queued.notify_one();
+    }
+
+    async fn recover<N: Notifier, E: Env>(
+        &self,
+        ctx: &Ctx<'_, N, E>,
+        log_id: &str,
+    ) -> Result<String, String> {
+        use crate::recovery::{self, snapshot};
+        use base64::Engine as _;
+        let folder = ctx
+            .confirmed
+            .get(log_id)
+            .ok_or("Choose the folder for this Catch log first")?;
+        if !ctx.account.is_linked() || ctx.account.is_stopped() {
+            return Err("Link Pagle Companion before preparing Recovery".into());
+        }
+        let source = recovery::read_source(folder)?;
+        if source.log_id != log_id {
+            return Err("The selected folder now holds another Catch log".into());
+        }
+        let bytes = snapshot::encode(&source);
+        if bytes.len() > snapshot::CAP {
+            return Err("Recovery snapshot too large".into());
+        }
+        // The addon loads exactly one package per install: never replace
+        // another Catch log's pending one, which would still say it's ready.
+        if let Some(staged) = crate::in_game::folders::staged_recovery_digest(folder)
+            && ctx.state.read(|s| {
+                s.logs.iter().any(|(other, log)| {
+                    other != log_id
+                        && log
+                            .recovery
+                            .as_ref()
+                            .is_some_and(|p| p.package_digest.as_deref() == Some(staged.as_str()))
+                })
+            })
+        {
+            return Err(ANOTHER_RECOVERY.into());
+        }
+        let cursor_path = format!("catch-logs/{log_id}/cursor");
+        let checkpoint = match self
+            .request::<Cursor, _, _>(ctx, Method::GET, &cursor_path, |r| r)
+            .await
+        {
+            Reply::Ok(cursor) => cursor.end,
+            _ => return Err("Couldn't read the current checkpoint; try Recovery again".into()),
+        };
+        if self.stopping() {
+            return Err("Recovery stopped".into());
+        }
+        let body = serde_json::json!({ "snapshot":base64::engine::general_purpose::STANDARD.encode(bytes), "checkpoint": {"seq":checkpoint.seq,"digest":checkpoint.digest,"revision":checkpoint.revision} });
+        let path = format!("catch-logs/{log_id}/recovery");
+        // Recovery has a separate cap: a complete private snapshot is much
+        // larger than a public content download or an ordinary JSON reply.
+        // It has its own timeout too, for the same reason (CMP Tunables).
+        let signed = match self
+            .request_capped::<recovery::Signed, _, _>(
+                ctx,
+                Method::POST,
+                &path,
+                recovery::REPLY_CAP,
+                |r| r.json(&body).timeout(self.recovery_timeout),
+            )
+            .await
+        {
+            Reply::Ok(signed) => signed,
+            Reply::Refused(refusal) => {
+                return Err(refusal
+                    .message
+                    .unwrap_or_else(|| recovery::refusal_message(refusal.code.as_deref()).into()));
+            }
+            _ => return Err("Couldn't prepare Recovery; try again".into()),
+        };
+        #[cfg(test)]
+        let verifier = if self.recovery_test_key {
+            recovery::verify_test
+        } else {
+            recovery::verify
+        };
+        #[cfg(not(test))]
+        let verifier = recovery::verify;
+        let mut verified = verifier(signed, &source, &checkpoint)?;
+        let same_selection = ctx.state.read(|s| {
+            s.logs.get(log_id).is_some_and(|log| {
+                crate::installs::paths::same_folder_key(
+                    log.folder.as_deref().unwrap_or(&log.last_folder),
+                ) == crate::installs::paths::same_folder_key(folder)
+            })
+        });
+        if self.stopping()
+            || !same_selection
+            || !ctx.account.is_linked()
+            || recovery::snapshot_digest(&recovery::read_source(folder)?)
+                != recovery::snapshot_digest(&source)
+        {
+            return Err("Your full local Catch log changed. Prepare Recovery again.".into());
+        }
+        // Persist the identity before staging so a crash after the atomic
+        // write still leads to a real Upload proof on restart.
+        verified.pending.staged_folder = Some(folder.clone());
+        verified.pending.instructions =
+            "Recovery prepared; staging in the selected WoW folder.".into();
+        ctx.state
+            .update(|s| {
+                if let Some(log) = s.logs.get_mut(log_id) {
+                    log.recovery = Some(verified.pending.clone());
+                    log.recovery_notice = None;
+                }
+            })
+            .map_err(|_| "Couldn't save Recovery state")?;
+        let new = ctx.env.stage_recovery(log_id, folder, verified.lua).await?;
+        let instruction = if new {
+            "Recovery is ready. Return to character selection so WoW discovers Pagle_Recovery, then log in. Your original branch is preserved. Reload or log out to save, then Upload again to check consistency."
+        } else {
+            "Recovery is ready. If WoW has already discovered Pagle_Recovery, use /reload; otherwise return to character selection, then log in. Your original branch is preserved. Reload or log out again to save, then Upload again to check consistency."
+        };
+        let instruction = format!(
+            "Recovery restores {} accepted entries; {} local records remain staged for review. {instruction}",
+            verified.pending.accepted_seq, verified.pending.staged
+        );
+        ctx.state
+            .update(|s| {
+                if let Some(log) = s.logs.get_mut(log_id)
+                    && let Some(pending) = &mut log.recovery
+                {
+                    pending.instructions = instruction.clone();
+                }
+            })
+            .map_err(|_| "Couldn't save Recovery instructions")?;
+        ctx.env.changed();
+        Ok(instruction)
     }
 
     /// How many post-link runs (CMP-R101) are queued or in progress, kept
@@ -375,9 +578,36 @@ impl Uploads {
         let end = match &item {
             Item::Run(run) => self.run(ctx, run).await,
             Item::Download(file) => RunEnd::Download(self.download(ctx, *file).await),
+            Item::Recovery(log_id) => {
+                self.save(ctx, log_id, |log| {
+                    log.recovery_notice = Some("Preparing Recovery…".into())
+                });
+                ctx.env.changed();
+                let result = self.recover(ctx, log_id).await;
+                if let Err(message) = &result {
+                    let message = message.clone();
+                    self.save(ctx, log_id, |log| {
+                        log.recovery_notice = Some(message.clone());
+                        if let Some(pending) = &mut log.recovery {
+                            pending.instructions = message.clone();
+                        }
+                        if let Some(run) = &mut log.last_run {
+                            run.message = Some(message);
+                        }
+                    });
+                    ctx.env.changed();
+                }
+                RunEnd::Recovery(result)
+            }
         };
         let mut inner = self.lock();
         inner.queue.done();
+        if let (Item::Run(run), RunEnd::Requeued) = (&item, &end)
+            && !inner.stop
+        {
+            inner.queue.requeue(run.clone());
+            self.queued.notify_one();
+        }
         self.count_post_link(&inner);
         if let (Item::Download(file), RunEnd::Download(DownloadEnd::Retry)) = (&item, &end) {
             // CMP-R50, CMP-R51: after the backoff the download starts again,
@@ -434,11 +664,48 @@ impl Uploads {
             format: read.log.format,
             companion_version: ctx.version,
         };
-        if plan::held_back(last.as_ref(), now, run.props) {
-            return not_started(log_id, "held back");
+        let semantic = crate::recovery::snapshot_digest(&read.log);
+        let (changed, recovery) = ctx.state.read(|s| {
+            s.logs.get(log_id).map_or((true, None), |log| {
+                (
+                    log.observed_snapshot.as_deref() != Some(semantic.as_str()),
+                    log.recovery.clone(),
+                )
+            })
+        });
+        if recovery.as_ref().is_some_and(|pending| {
+            pending.expected_digest.as_deref() == Some(semantic.as_str())
+                && semantic != pending.replacement_digest
+        }) {
+            // The addon hasn't applied the package yet. Sending this original
+            // branch again would be refused and move the backend's checkpoint
+            // past the one the plan pins, so confirmation could never pass.
+            // A package whose replacement is the local log changes nothing
+            // here, so its runs go ahead.
+            return not_started(log_id, "Recovery isn't applied yet");
         }
-        if plan::skipped(last.as_ref(), read.file, run.props) {
-            return not_started(log_id, "unchanged since its last run");
+        if !run.props.holds
+            && recovery
+                .as_ref()
+                .is_some_and(|pending| pending.confirm_failures >= CONFIRM_TRIES)
+        {
+            // Upload now gives a Recovery out of tries a new round.
+            self.save(ctx, log_id, |log| {
+                if let Some(pending) = &mut log.recovery {
+                    pending.confirm_failures = 0;
+                }
+            });
+        }
+        let recovering = ctx
+            .state
+            .read(|s| s.logs.get(log_id).and_then(confirming))
+            .is_some();
+        let changed_refusal = changed
+            && last
+                .as_ref()
+                .is_some_and(|run| matches!(run.result, RunResult::Failed | RunResult::TooLarge));
+        if !recovering && !changed_refusal && plan::held_back(last.as_ref(), now, run.props) {
+            return not_started(log_id, "held back");
         }
         log::info!(
             "upload run for {log_id}: {} entries as of {}",
@@ -449,6 +716,13 @@ impl Uploads {
         loop {
             match self.attempt(ctx, run, &read).await {
                 Attempt::End(end) => return end,
+                Attempt::RecoveryRetry(why) => {
+                    if !self.wait_backoff(ctx, log_id, &why).await {
+                        log::info!("upload run for {log_id} stopped");
+                        return RunEnd::Interrupted;
+                    }
+                    return RunEnd::Requeued;
+                }
                 Attempt::Retry(why) => {
                     if !self.wait_backoff(ctx, log_id, &why).await {
                         log::info!("upload run for {log_id} stopped");
@@ -458,14 +732,14 @@ impl Uploads {
                 Attempt::Gap(refusal) => {
                     gaps += 1;
                     if gaps > GAP_RESTARTS {
-                        // CMP-R50: failed, not held back (CMP-R45).
+                        // CMP-R50: rechecking did not resolve the gap.
                         let message = refusal.message;
-                        let code = Some(GAP.to_owned());
+                        let code = Some("recovery_required".to_owned());
                         return self.record(
                             ctx,
                             log_id,
                             &read,
-                            RunResult::Failed,
+                            RunResult::Divergence,
                             code,
                             message,
                             None,
@@ -496,24 +770,31 @@ impl Uploads {
         if self.stopping() {
             return self.interrupted(log_id);
         }
-        let flag = ctx
-            .state
-            .read(|s| s.logs.get(log_id).is_some_and(|log| log.whole_send_pending));
-        let first = match plan::plan(&read.log, &cursor, flag, run.props.resend) {
+        let current = crate::recovery::snapshot_digest(&read.log);
+        let changed = ctx.state.read(|s| {
+            s.logs
+                .get(log_id)
+                .and_then(|log| log.uploaded_snapshot.as_deref())
+                != Some(current.as_str())
+        });
+        let recovery = ctx.state.read(|s| s.logs.get(log_id).and_then(confirming));
+        let first = match plan::plan(
+            &read.log,
+            &cursor,
+            run.props.resend || changed || recovery.is_some(),
+        ) {
             Plan::UpToDate => {
                 return Attempt::End(self.finish(ctx, log_id, read, RunResult::UpToDate, None));
             }
             Plan::Divergence => {
-                return Attempt::End(self.finish(ctx, log_id, read, RunResult::Divergence, None));
+                let shorter = cursor.seq > read.log.len();
+                return Attempt::End(self.record(ctx,log_id,read,RunResult::Divergence,
+                    shorter.then(||"recovery_required".into()),
+                    shorter.then(||"This computer has a shorter backup. Prepare Recovery to restore Accepted history.".into()),None));
             }
-            Plan::Send { from, whole } => {
-                if whole && !flag {
-                    // CMP-R48: set when a whole send starts.
-                    self.save(ctx, log_id, |log| log.whole_send_pending = true);
-                }
-                from
-            }
+            Plan::Send { from } => from,
         };
+        let first = if recovery.is_some() { 1 } else { first };
         let total = read.log.len();
         let as_of = u64::try_from(read.as_of).unwrap_or(0);
         let mut catch_log = None;
@@ -547,11 +828,6 @@ impl Uploads {
             self.save(ctx, log_id, |log| {
                 // CMP-R50: "last uploaded", per page.
                 log.last_uploaded_at = Some(at);
-                if last == total {
-                    // CMP-R48: cleared when the page holding seq L is
-                    // applied or unchanged.
-                    log.whole_send_pending = false;
-                }
             });
             ctx.env.changed();
             if reply.catch_log.is_some() {
@@ -564,7 +840,107 @@ impl Uploads {
             // reply's end.
             from = last + 1;
         }
+        if let Some(pending) = recovery {
+            let path = format!(
+                "catch-logs/{log_id}/recovery/{}/confirm",
+                pending.application_id
+            );
+            let why = match self
+                .request::<serde_json::Value, _, _>(ctx, Method::POST, &path, |r| r)
+                .await
+            {
+                Reply::Ok(body)
+                    if body.get("result").and_then(|v| v.as_str()) == Some("consistent") =>
+                {
+                    match ctx.env.retire_recovery(&pending).await {
+                        Ok(()) => self.save(ctx, log_id, |log| {
+                            log.recovery = None;
+                            log.recovery_notice = None;
+                        }),
+                        Err(message) => self.save(ctx, log_id, |log| {
+                            if let Some(pending) = &mut log.recovery {
+                                pending.instructions = message;
+                            }
+                        }),
+                    }
+                    None
+                }
+                Reply::Ok(_) => Some("a reply that isn't consistent".to_owned()),
+                Reply::Retry(why) => Some(why),
+                Reply::Ended(_) => return self.interrupted(log_id),
+                Reply::Refused(refusal) => {
+                    log::warn!(
+                        "{log_id}: Recovery confirmation refused with {} {}",
+                        refusal.status,
+                        refusal.code.as_deref().unwrap_or("(no code)")
+                    );
+                    if matches!(on_refusal(&refusal), Step::Unlinked) {
+                        return self.interrupted(log_id);
+                    }
+                    self.refused_confirmation(ctx, log_id, &pending, refusal.code.as_deref())
+                        .await;
+                    None
+                }
+            };
+            if let Some(why) = why {
+                // CMP-R51: a busy (`503 validation_unavailable`) or
+                // unreachable confirmation waits the retry backoff, then the
+                // run queues again behind the others and starts from step 1,
+                // so the proof Upload names the current revision. Recovery
+                // stays pending; out of tries, it waits for Upload now.
+                let failures = pending.confirm_failures + 1;
+                let again = failures < CONFIRM_TRIES;
+                self.save(ctx, log_id, |log| {
+                    if let Some(pending) = &mut log.recovery {
+                        pending.confirm_failures = failures;
+                        pending.instructions = if again {
+                            CONFIRM_RETRY
+                        } else {
+                            CONFIRM_GAVE_UP
+                        }
+                        .into();
+                    }
+                });
+                ctx.env.changed();
+                if again {
+                    return Attempt::RecoveryRetry(format!("Recovery confirmation: {why}"));
+                }
+                log::warn!("{log_id}: Recovery confirmation: {why}; waiting for Upload now");
+            }
+        }
+        self.save(ctx, log_id, |log| log.uploaded_snapshot = Some(current));
         Attempt::End(self.finish(ctx, log_id, read, RunResult::Uploaded, catch_log))
+    }
+
+    /// A refused confirmation. `recovery_not_uploaded` waits for the next
+    /// Upload's proof. Any other refusal, known or not, is final for this
+    /// plan: it is retired, so it no longer holds its install's one Recovery
+    /// (another Catch log there may stage its own), and the row says why.
+    async fn refused_confirmation<N: Notifier, E: Env>(
+        &self,
+        ctx: &Ctx<'_, N, E>,
+        log_id: &str,
+        pending: &crate::recovery::Pending,
+        code: Option<&str>,
+    ) {
+        let message = crate::recovery::refusal_message(code);
+        if code == Some("recovery_not_uploaded") {
+            self.save(ctx, log_id, |log| {
+                if let Some(pending) = &mut log.recovery {
+                    pending.confirm_failures = 0;
+                    pending.instructions = message.into();
+                }
+            });
+            return;
+        }
+        if let Err(e) = ctx.env.retire_recovery(pending).await {
+            // Nothing claims it any more: the next staging replaces it.
+            log::warn!("{log_id}: refused Recovery's package stays staged: {e}");
+        }
+        self.save(ctx, log_id, |log| {
+            log.recovery = None;
+            log.recovery_notice = Some(message.into());
+        });
     }
 
     /// What a run does after a reply that isn't a success.
@@ -673,13 +1049,37 @@ impl Uploads {
         N: Notifier,
         E: Env,
     {
+        self.request_capped(ctx, method, path, crate::api::REPLY_CAP, build)
+            .await
+    }
+
+    async fn request_capped<T, N, E>(
+        &self,
+        ctx: &Ctx<'_, N, E>,
+        method: Method,
+        path: &str,
+        cap: usize,
+        build: impl Fn(RequestBuilder) -> RequestBuilder,
+    ) -> Reply<T>
+    where
+        T: DeserializeOwned,
+        N: Notifier,
+        E: Env,
+    {
         loop {
-            let reply = self.request_once(ctx, method.clone(), path, &build).await;
+            let reply = self
+                .request_once(ctx, method.clone(), path, cap, &build)
+                .await;
             let Reply::Refused(refusal) = &reply else {
                 return reply;
             };
-            let Step::Wait { retry_after } = on_refusal(refusal) else {
-                return reply;
+            let retry_after = match on_refusal(refusal) {
+                Step::Stop(stop) => {
+                    ctx.account.enter_stop(stop);
+                    return Reply::Ended("entered a required stop".into());
+                }
+                Step::Wait { retry_after } => retry_after,
+                _ => return reply,
             };
             let wait = retry_after.unwrap_or_else(|| lock(&self.backoff).next_delay());
             log::warn!(
@@ -698,6 +1098,7 @@ impl Uploads {
         ctx: &Ctx<'_, N, E>,
         method: Method,
         path: &str,
+        cap: usize,
         build: &impl Fn(RequestBuilder) -> RequestBuilder,
     ) -> Reply<T>
     where
@@ -715,7 +1116,7 @@ impl Uploads {
             return Reply::Retry(status.to_string());
         }
         let retry_after = retry_after(reply.headers());
-        let body = match crate::api::read_capped(reply, crate::api::REPLY_CAP).await {
+        let body = match crate::api::read_capped(reply, cap).await {
             Ok(body) => body,
             Err(e) => return Reply::Retry(e.to_string()),
         };
@@ -761,6 +1162,7 @@ impl Uploads {
         let at = ctx.env.now();
         let version = ctx.version.to_owned();
         self.save(ctx, log_id, |log| {
+            log.observed_snapshot = Some(crate::recovery::snapshot_digest(&read.log));
             let kept = log.last_run.take().and_then(|run| run.catch_log);
             log.last_run = Some(LastRun {
                 result,
@@ -778,36 +1180,6 @@ impl Uploads {
         notify(ctx.state, ctx.account.notifications());
         ctx.env.changed();
         RunEnd::Recorded(result)
-    }
-
-    /// **Replace Pagle's copy with this computer's**, once the Player
-    /// confirmed it (CMP-R52): sets the whole-send flag (CMP-R48) and lifts
-    /// the hold by clearing the divergence's `lastRun`, so a Replace cut off
-    /// (a stop, Unlink, the process ending) still sends the whole log at the
-    /// next run. The caller then starts a run ([`queue::Trigger::Replace`]).
-    /// Only a `logId` whose last run ended as a divergence can be replaced;
-    /// the error is the text to show.
-    pub fn replace(state: &Store, log_id: &str) -> Result<(), String> {
-        let diverged = state.read(|s| {
-            s.logs
-                .get(log_id)
-                .and_then(|log| log.last_run.as_ref())
-                .is_some_and(|run| run.result == RunResult::Divergence)
-        });
-        if !diverged {
-            return Err("This Catch log doesn't differ from the copy on Pagle.".into());
-        }
-        let saved = state.update(|s| {
-            if let Some(log) = s.logs.get_mut(log_id) {
-                log.whole_send_pending = true;
-                log.last_run = None;
-            }
-        });
-        if let Err(e) = saved {
-            log::error!("couldn't write state.json: {e}");
-        }
-        log::info!("{log_id}: Replace Pagle's copy with this computer's");
-        Ok(())
     }
 
     /// Changes the run's `logId` in local state.
@@ -908,6 +1280,14 @@ fn refusal(status: StatusCode, retry_after: Option<Duration>, body: &[u8]) -> Re
         message: text("message"),
         retry_after,
     }
+}
+
+/// The Recovery a run proves and confirms: one pending with confirmation
+/// tries left ([`CONFIRM_TRIES`]).
+fn confirming(log: &LogState) -> Option<crate::recovery::Pending> {
+    log.recovery
+        .clone()
+        .filter(|pending| pending.confirm_failures < CONFIRM_TRIES)
 }
 
 fn not_started(log_id: &str, why: &'static str) -> RunEnd {

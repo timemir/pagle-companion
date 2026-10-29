@@ -884,25 +884,6 @@ fn the_message_uses_the_os_path_form() {
     );
 }
 
-/// Makes `link` a link to the folder `target`: a junction on Windows, which
-/// any user can make without privilege, a symlink on Linux.
-fn link_folder(link: &Path, target: &Path) {
-    #[cfg(windows)]
-    {
-        // cmd reads a `/` as the start of an option.
-        let backslashed = |path: &Path| path.to_string_lossy().replace('/', "\\");
-        let made = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(backslashed(link))
-            .arg(backslashed(target))
-            .output()
-            .unwrap();
-        assert!(made.status.success(), "{made:?}");
-    }
-    #[cfg(target_os = "linux")]
-    std::os::unix::fs::symlink(target, link).unwrap();
-}
-
 #[test]
 fn a_link_where_a_data_addon_folder_belongs_is_never_written_through() {
     // CMP-R4, CMP-R83, CMP-R132: another OS user who can write to a shared
@@ -1067,4 +1048,42 @@ fn a_folder_swapped_for_a_link_after_pinning_is_still_the_one_written() {
         b"body"
     );
     assert!(!tmp.path().join("moved/Documents").exists());
+}
+
+#[test]
+fn the_recovery_toc_is_its_template_with_the_copied_lines() {
+    // CMP-R83, RCV-R2: the staged package targets the client Pagle targets
+    let toc = recovery_toc(&copied_lines(TOC_LINES));
+    assert_eq!(
+        String::from_utf8(toc).unwrap(),
+        "## Interface: 11508\n## AllowLoadGameType: classic\n## Title: Pagle Recovery\n\
+         ## LoadOnDemand: 1\n## Version: 1\n\nRecovery.lua\n"
+    );
+}
+
+#[test]
+fn staging_recovery_copies_pagle_toc_and_the_refresh_keeps_it_current() {
+    // CMP-R83, RCV-R2: a client patch that moves Pagle.toc on reaches a
+    // staged package before the player logs in
+    let tmp = tempfile::tempdir().unwrap();
+    let a = install(tmp.path(), "WoW/_classic_beta_", Some(TOC_LINES));
+    let account = Path::new(&a).join("WTF/Account/ANGLER");
+    fs::create_dir_all(&account).unwrap();
+    let lua = b"PagleRecoveryData = {}\n";
+    assert!(stage_recovery_with_fs(&RealFs, &account.to_string_lossy(), lua).unwrap());
+    let dir = Path::new(&a).join("Interface/AddOns/Pagle_Recovery");
+    let toc = fs::read_to_string(dir.join("Pagle_Recovery.toc")).unwrap();
+    assert!(toc.starts_with(
+        "## Interface: 11508\n## AllowLoadGameType: classic\n## Title: Pagle Recovery\n"
+    ));
+
+    fs::write(
+        Path::new(&a).join("Interface/AddOns/Pagle/Pagle.toc"),
+        "## Interface: 11509\n## AllowLoadGameType: classic\n",
+    )
+    .unwrap();
+    Writer::new().refresh_tocs(std::slice::from_ref(&a));
+    let toc = fs::read_to_string(dir.join("Pagle_Recovery.toc")).unwrap();
+    assert!(toc.starts_with("## Interface: 11509\n## AllowLoadGameType: classic\n"));
+    assert_eq!(fs::read(dir.join("Recovery.lua")).unwrap(), lua);
 }

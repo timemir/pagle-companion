@@ -47,6 +47,8 @@ struct Held {
     characters: Vec<String>,
     entries: Vec<Entry>,
     newest_as_of: u64,
+    format: u64,
+    revision: u64,
 }
 
 /// The `catchLog` a success carries unless a test sets another: Pending
@@ -98,6 +100,7 @@ struct Inner {
     upload_script: VecDeque<Option<ResponseTemplate>>,
     cursor_reads: usize,
     pages: Vec<Seen>,
+    documents: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Default)]
@@ -135,6 +138,10 @@ impl FakePagle {
     /// Every page received, answered or not.
     pub fn pages(&self) -> Vec<Seen> {
         self.lock().pages.clone()
+    }
+
+    pub fn documents(&self) -> Vec<Vec<u8>> {
+        self.lock().documents.clone()
     }
 
     pub fn cursor_reads(&self) -> usize {
@@ -186,11 +193,11 @@ impl Respond for Cursor {
         }
         let log_id = request.url.path().split('/').nth(4).unwrap_or_default();
         let (end, newest) = match inner.logs.get(log_id) {
-            Some(held) if !held.entries.is_empty() => (
-                json!({ "seq": held.entries.len(), "entryId": held.entries.last().unwrap().id }),
-                json!(held.newest_as_of),
+            Some(held) => (end(held, log_id), json!(held.newest_as_of)),
+            _ => (
+                json!({ "seq": 0, "entryId": null, "digest": null, "revision": 0 }),
+                json!(null),
             ),
-            _ => (json!({ "seq": 0, "entryId": null }), json!(null)),
         };
         ResponseTemplate::new(200)
             .set_body_json(json!({ "logId": log_id, "end": end, "newestAsOf": newest }))
@@ -211,6 +218,7 @@ impl Respond for Upload {
             .expect("raw DEFLATE");
         let mut inner = self.0.lock();
         inner.pages.push(header(&document));
+        inner.documents.push(document.clone());
         if let Some(Some(reply)) = inner.upload_script.pop_front() {
             return reply;
         }
@@ -279,44 +287,72 @@ fn apply(inner: &mut Inner, document: &[u8]) -> (u16, serde_json::Value) {
         (
             status,
             json!({ "result": "refused", "reason": code, "message": code, "logId": seen.log_id,
-                    "end": end(held), "newestAsOf": held.newest_as_of, "catchLog": null }),
+                    "end": end(held, &seen.log_id), "newestAsOf": held.newest_as_of, "catchLog": null }),
         )
     };
     if seen.from > e + 1 {
         return refuse(409, "gap", held);
     }
-    if seen.from > 1 && held.entries[(seen.from - 2) as usize].id != seen.anchor {
-        return refuse(409, "divergence", held);
+    let format = field(&fields, 3);
+    if held.revision == 0 {
+        held.format = format;
+    }
+    if format != held.format || checkpoint(held, &seen.log_id, seen.from - 1) != seen.anchor {
+        return refuse(409, "invalid_base", held);
+    }
+    for (i, character) in held.characters.iter().enumerate() {
+        if characters.get(i).map(|s| s.split('|').next()) != Some(character.split('|').next()) {
+            return refuse(409, "divergence", held);
+        }
     }
     let f = (seen.from - 1) as usize;
-    let mut result: Vec<Entry> = held.entries[..f].to_vec();
-    result.extend(entries);
-    let keep_to = (e.min(seen.total)) as usize;
-    if keep_to > result.len() {
-        result.extend_from_slice(&held.entries[result.len()..keep_to]);
+    for (i, entry) in entries.iter().enumerate() {
+        if held.entries.get(f + i).is_some_and(|old| old != entry) {
+            return refuse(409, "divergence", held);
+        }
+    }
+    if seen.total < e {
+        return refuse(409, "recovery_required", held);
+    }
+    let mut result = held.entries.clone();
+    for (i, entry) in entries.into_iter().enumerate() {
+        if f + i >= result.len() {
+            result.push(entry);
+        }
     }
     let unchanged = result == held.entries && characters == held.characters;
-    if !unchanged && seen.as_of < held.newest_as_of {
-        return refuse(409, "stale", held);
-    }
     if !unchanged {
         held.entries = result;
         held.characters = characters;
         held.newest_as_of = held.newest_as_of.max(seen.as_of);
+        held.revision += 1;
     }
     (
         200,
         json!({ "result": if unchanged { "unchanged" } else { "applied" }, "reason": null,
-                "message": null, "logId": seen.log_id, "end": end(held),
+                "message": null, "logId": seen.log_id, "end": end(held, &seen.log_id),
                 "newestAsOf": held.newest_as_of, "catchLog": catch_log }),
     )
 }
 
-fn end(held: &Held) -> serde_json::Value {
-    match held.entries.last() {
-        Some(last) => json!({ "seq": held.entries.len(), "entryId": last.id }),
-        None => json!({ "seq": 0, "entryId": null }),
+fn checkpoint(held: &Held, log_id: &str, upto: u64) -> String {
+    let mut digest = crate::integrity::checkpoint_initial(log_id, held.format).unwrap();
+    for (i, entry) in held.entries.iter().take(upto as usize).enumerate() {
+        let c = std::str::from_utf8(&entry.bytes)
+            .unwrap()
+            .split('|')
+            .nth(1)
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        let guid = held.characters[c - 1].split('|').next().unwrap();
+        digest =
+            crate::integrity::checkpoint_next(&digest, i as u64 + 1, guid, &entry.bytes).unwrap();
     }
+    digest
+}
+fn end(held: &Held, log_id: &str) -> serde_json::Value {
+    json!({ "seq":held.entries.len(), "entryId":held.entries.last().map(|e| &e.id), "digest":checkpoint(held,log_id,held.entries.len() as u64), "revision":held.revision })
 }
 
 /// One in-game download as [`FakeInGame`] received it.

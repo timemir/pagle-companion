@@ -35,7 +35,8 @@ use crate::updater::install::{CommandLine, Launch, Launcher, SystemLauncher, Ui}
 use crate::updater::{Installed, Updater};
 use crate::upload::{self, queue::Trigger};
 use crate::{
-    appimage, catch_logs, first_run, game_mode, in_game, installs, linking, readings, removal,
+    appimage, catch_logs, first_run, game_mode, in_game, installs, linking, readings, recovery,
+    removal,
 };
 
 pub const MAIN_WINDOW: &str = "main";
@@ -136,7 +137,7 @@ pub fn run(mode: Mode) {
             first_run::window::first_run_not_now,
             first_run::window::first_run_close,
             upload::window::last_uploaded,
-            upload::window::replace_catch_log,
+            recovery::window::recover_catch_log,
             removal::window::remove_companion,
             game_mode::window::game_mode,
             game_mode::window::set_game_mode,

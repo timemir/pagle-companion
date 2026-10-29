@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::pagle_log::LocalLog;
 use crate::readings::FileStamp;
@@ -24,16 +24,17 @@ pub const LONGEST_RETRY_DELAY: Duration = Duration::from_secs(15 * 60);
 
 /// A Catch log's end on the server (UPL-R23, UPL Contracts): `seq` 0 with no
 /// entry ID when the Player holds no such Catch log.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct End {
     pub seq: u64,
-    #[serde(default)]
     pub entry_id: Option<String>,
+    pub digest: Option<String>,
+    pub revision: u64,
 }
 
 /// The cursor endpoint's success body (UPL-R26).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cursor {
     pub end: End,
@@ -42,45 +43,29 @@ pub struct Cursor {
 /// What a run does after reading the cursor (CMP-R47 step 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Plan {
-    /// Send pages from `seq from` to `L`. `whole` is a whole send, which
-    /// sets the whole-send flag (CMP-R48).
-    Send { from: u64, whole: bool },
+    /// Send pages from `seq from` through the complete local log.
+    Send { from: u64 },
     /// `E = L`: nothing to send; the run ends up to date without an Upload.
     UpToDate,
-    /// The local entry ID at `E` differs from the cursor's (CMP-R52): the run
-    /// ends without sending.
+    /// The server is ahead or the complete local prefix differs: offer Recovery.
     Divergence,
 }
 
-/// CMP-R47 step 2 for a local log, the server's end `cursor`, the `logId`'s
-/// whole-send flag, and whether the run resends its last entry when up to
-/// date (a post-link run, CMP-R101). `log` has at least one entry
-/// (CMP-R32).
-pub fn plan(log: &LocalLog, cursor: &End, whole_send_flag: bool, resend: bool) -> Plan {
-    let local_end = log.len();
+/// Compare the complete prefix with the server checkpoint (CMP-R47).
+/// `resend` supplies metadata, a post-link Upload, or Recovery coverage.
+pub fn plan(log: &LocalLog, cursor: &End, resend: bool) -> Plan {
     let e = cursor.seq;
-    if e == 0 || e > local_end || whole_send_flag {
-        return Plan::Send {
-            from: 1,
-            whole: true,
-        };
+    if e == 0 && cursor.digest.is_none() && cursor.revision == 0 {
+        return Plan::Send { from: 1 };
     }
-    if log.entry_id(e) != cursor.entry_id {
+    if e > log.len() || cursor.digest != log.checkpoint(e) {
         return Plan::Divergence;
     }
-    if e < local_end {
-        return Plan::Send {
-            from: e + 1,
-            whole: false,
-        };
+    if e < log.len() {
+        return Plan::Send { from: e + 1 };
     }
     if resend {
-        // CMP-R101: the last entry again, as one page, so the receiving
-        // page sees an Upload. Linking sets no whole-send flag.
-        return Plan::Send {
-            from: local_end,
-            whole: false,
-        };
+        return Plan::Send { from: log.len() };
     }
     Plan::UpToDate
 }
@@ -122,7 +107,7 @@ pub struct FileNow<'a> {
 
 /// Whether the `logId` is **held back** from a run with `props` (CMP-R45),
 /// given its last run and the file the run read:
-/// - a divergence, until the Player picks **Replace** (CMP-R52);
+/// - a divergence, until Recovery restores a matching prefix (CMP-R52);
 /// - dev log, until the file's `format` differs from that run's;
 /// - failed with a refusal, or too large, until the file changes or the
 ///   Companion runs another version; a run that failed after a second `gap`
@@ -153,17 +138,6 @@ pub fn held_back(last: Option<&LastRun>, now: FileNow, props: Props) -> bool {
         | RunResult::WaitingForPagle
         | RunResult::LogCap => false,
     }
-}
-
-/// Whether a later scan's run is skipped (CMP-R45): its last run ended
-/// uploaded or up to date and the watched file's modification time and size
-/// are still that run's.
-pub fn skipped(last: Option<&LastRun>, file: FileStamp, props: Props) -> bool {
-    props.skip
-        && last.is_some_and(|last| {
-            matches!(last.result, RunResult::Uploaded | RunResult::UpToDate)
-                && same_file(last, file)
-        })
 }
 
 fn same_file(last: &LastRun, file: FileStamp) -> bool {
@@ -228,115 +202,6 @@ mod tests {
             Found::Valid(log) => log,
             other => panic!("not valid: {other:?}"),
         }
-    }
-
-    fn end(log: &LocalLog, seq: u64) -> End {
-        End {
-            seq,
-            entry_id: log.entry_id(seq),
-        }
-    }
-
-    #[test]
-    fn an_empty_cursor_is_a_whole_send() {
-        // CMP-R47 step 2: f = 1 when E = 0
-        let log = local(15);
-        let cursor = End {
-            seq: 0,
-            entry_id: None,
-        };
-        assert_eq!(
-            plan(&log, &cursor, false, false),
-            Plan::Send {
-                from: 1,
-                whole: true
-            }
-        );
-    }
-
-    #[test]
-    fn a_server_ahead_of_the_disk_is_a_whole_send() {
-        // CMP-R47 step 2: f = 1 when E > L (a restored backup, ADR 0001)
-        let log = local(15);
-        let cursor = End {
-            seq: 20,
-            entry_id: Some("Player-1-F-1-0".into()),
-        };
-        assert_eq!(
-            plan(&log, &cursor, false, false),
-            Plan::Send {
-                from: 1,
-                whole: true
-            }
-        );
-    }
-
-    #[test]
-    fn the_whole_send_flag_is_a_whole_send() {
-        // CMP-R47 step 2, CMP-R48: f = 1 when the whole-send flag is set
-        let log = local(15);
-        assert_eq!(
-            plan(&log, &end(&log, 12), true, false),
-            Plan::Send {
-                from: 1,
-                whole: true
-            }
-        );
-    }
-
-    #[test]
-    fn a_matching_cursor_appends_from_the_next_entry() {
-        // CMP-R47 step 2: otherwise f = E + 1
-        let log = local(15);
-        assert_eq!(
-            plan(&log, &end(&log, 12), false, false),
-            Plan::Send {
-                from: 13,
-                whole: false
-            }
-        );
-    }
-
-    #[test]
-    fn a_different_entry_id_at_the_cursor_is_a_divergence() {
-        // CMP-R47 step 2: the local entry ID at E differs from the cursor's
-        let log = local(15);
-        let cursor = End {
-            seq: 12,
-            entry_id: Some("Player-4618-0A1B2C3D-1-0".into()),
-        };
-        assert_eq!(plan(&log, &cursor, false, false), Plan::Divergence);
-        // Even when E = L, and even right after linking.
-        let cursor = End {
-            seq: 15,
-            entry_id: None,
-        };
-        assert_eq!(plan(&log, &cursor, false, true), Plan::Divergence);
-    }
-
-    #[test]
-    fn a_cursor_at_the_last_entry_is_up_to_date() {
-        // CMP-R47 step 2: when E = L the run ends up to date without an
-        // Upload
-        let log = local(15);
-        assert_eq!(plan(&log, &end(&log, 15), false, false), Plan::UpToDate);
-    }
-
-    #[test]
-    fn right_after_linking_up_to_date_resends_the_last_entry() {
-        // CMP-R101: a post-link run that would end up to date sends its
-        // last entry again as one page (from = L); linking sets no
-        // whole-send flag
-        let log = local(15);
-        assert_eq!(
-            plan(&log, &end(&log, 15), false, true),
-            Plan::Send {
-                from: 15,
-                whole: false
-            }
-        );
-        let page = page(&log, 15, 1_791_735_090, 1).unwrap();
-        assert_eq!((page.from, page.count), (15, 1));
     }
 
     #[test]
@@ -434,8 +299,8 @@ mod tests {
     }
 
     #[test]
-    fn a_divergence_holds_until_replace_but_not_for_upload_now_or_linking() {
-        // CMP-R45: held back after a divergence until Replace; Upload now
+    fn a_divergence_holds_until_recovery_but_not_for_upload_now_or_linking() {
+        // CMP-R45: held back after a divergence until Recovery; Upload now
         // and linking run it held back or not (CMP-R52)
         let run = last(RunResult::Divergence);
         for trigger in [
@@ -529,28 +394,6 @@ mod tests {
                 Trigger::Change.props()
             ));
         }
-    }
-
-    #[test]
-    fn a_later_scan_skips_an_unchanged_file_after_uploaded_or_up_to_date() {
-        // CMP-R45: after each later scan, except one whose last run ended
-        // uploaded or up to date and whose watched file's modification time
-        // and size are still those of that run
-        let scan = Trigger::Scan.props();
-        for result in [RunResult::Uploaded, RunResult::UpToDate] {
-            assert!(skipped(Some(&last(result)), SAME, scan));
-            assert!(!skipped(Some(&last(result)), CHANGED, scan));
-        }
-        assert!(!skipped(Some(&last(RunResult::Stale)), SAME, scan));
-        assert!(!skipped(None, SAME, scan));
-        // Only scans skip (CMP-R46: Upload now has no skip).
-        let merged = scan.merge(Trigger::UploadNow.props());
-        assert!(!skipped(Some(&last(RunResult::Uploaded)), SAME, merged));
-        assert!(!skipped(
-            Some(&last(RunResult::Uploaded)),
-            SAME,
-            Trigger::Start.props()
-        ));
     }
 
     #[test]

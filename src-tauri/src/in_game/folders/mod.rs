@@ -157,6 +157,25 @@ pub fn copied_lines(pagle_toc: &[u8]) -> CopiedLines {
 /// A folder's TOC (IGV Contracts, The TOCs; CMP-R83): its template with the
 /// copied lines, a line `Pagle.toc` lacks left out. LF line ends, no BOM.
 pub fn toc(file: DataFile, lines: &CopiedLines) -> Vec<u8> {
+    with_copied_lines(lines, file.toc_rest())
+}
+
+/// The private Recovery package's TOC lines after the two copied ones.
+const RECOVERY_TOC_REST: &str = concat!(
+    "## Title: Pagle Recovery\n",
+    "## LoadOnDemand: 1\n",
+    "## Version: 1\n",
+    "\n",
+    "Recovery.lua\n",
+);
+
+/// `Pagle_Recovery.toc` (CMP-R83, RCV-R2): the copied lines, so a staged
+/// package loads on the client Pagle targets, then its own template.
+pub fn recovery_toc(lines: &CopiedLines) -> Vec<u8> {
+    with_copied_lines(lines, RECOVERY_TOC_REST)
+}
+
+fn with_copied_lines(lines: &CopiedLines, rest: &str) -> Vec<u8> {
     let mut toc = Vec::new();
     for line in [&lines.interface, &lines.allow_load_game_type]
         .into_iter()
@@ -165,7 +184,7 @@ pub fn toc(file: DataFile, lines: &CopiedLines) -> Vec<u8> {
         toc.extend_from_slice(line);
         toc.push(b'\n');
     }
-    toc.extend_from_slice(file.toc_rest().as_bytes());
+    toc.extend_from_slice(rest.as_bytes());
     toc
 }
 
@@ -418,10 +437,19 @@ impl Addon {
     }
 
     fn toc(&self, file: DataFile) -> io::Result<Vec<u8>> {
-        Ok(toc(
-            file,
-            &copied_lines(&paths::read_file(&self.pagle_toc, TOC_CAP)?),
-        ))
+        Ok(toc(file, &self.copied_lines()?))
+    }
+
+    fn copied_lines(&self) -> io::Result<CopiedLines> {
+        Ok(copied_lines(&paths::read_file(&self.pagle_toc, TOC_CAP)?))
+    }
+
+    /// `Pagle_Recovery/` when it is a folder of its own holding a staged
+    /// `Recovery.lua`, neither of them a link.
+    fn recovery_with_data(&self) -> Option<PathBuf> {
+        let folder = paths::lookup(&self.addons, "Pagle_Recovery")?;
+        let data = fs::symlink_metadata(folder.join("Recovery.lua"));
+        (is_folder_of_its_own(&folder) && data.is_ok_and(|meta| meta.is_file())).then_some(folder)
     }
 }
 
@@ -505,6 +533,130 @@ fn write_install(fs: &dyn Fs, addon: &Addon, file: DataFile, body: &[u8]) -> io:
     Ok(())
 }
 
+/// Atomically stages one private Recovery in the selected account's install.
+/// Returns whether the game must discover a newly created addon folder.
+pub fn stage_recovery(account: &str, lua: &[u8]) -> io::Result<bool> {
+    stage_recovery_with_fs(&RealFs, account, lua)
+}
+
+fn stage_recovery_with_fs(fs: &dyn Fs, account: &str, lua: &[u8]) -> io::Result<bool> {
+    let account = Path::new(account);
+    let accounts = account.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let wtf = accounts.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let flavor = wtf.parent().ok_or_else(not_a_folder_of_its_own)?;
+    if !accounts
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("Account"))
+        || !wtf
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("WTF"))
+    {
+        return Err(not_a_folder_of_its_own());
+    }
+    let addon = Addon::of(&flavor.to_string_lossy()).ok_or_else(not_a_folder_of_its_own)?;
+    let flavor_pin = Pinned::open(flavor)?.ok_or_else(not_a_folder_of_its_own)?;
+    let interface = addon.addons.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let interface_pin = Pinned::open(interface)?.ok_or_else(not_a_folder_of_its_own)?;
+    let addons = Pinned::open(&addon.addons)?.ok_or_else(not_a_folder_of_its_own)?;
+    let name = paths::lookup(&addon.addons, "Pagle_Recovery")
+        .and_then(|p| p.file_name().map(|n| n.to_owned()))
+        .unwrap_or_else(|| "Pagle_Recovery".into());
+    let target = addons.target(name);
+    let new = !fs::symlink_metadata(target.at.join("Pagle_Recovery.toc"))
+        .is_ok_and(|meta| meta.is_file());
+    let toc = recovery_toc(&addon.copied_lines()?);
+    let folder = Pinned::open_or_create(fs, &target.at)?;
+    flavor_pin.check()?;
+    interface_pin.check()?;
+    addons.check()?;
+    write_atomic(fs, &folder, "Recovery.lua", lua)?;
+    write_atomic(fs, &folder, "README.txt", b"Pagle Recovery restores Accepted history and preserves your original local branch. Return to character selection for a new folder; otherwise /reload. Then Upload again to check consistency.\n")?;
+    write_atomic(fs, &folder, "Pagle_Recovery.toc", &toc)?;
+    Ok(new)
+}
+
+/// The digest of the `Recovery.lua` staged in `account`'s install, when the
+/// install has Pagle and its `Pagle_Recovery/` holds one, neither of them a
+/// link. The addon loads one package per install, so this tells which Catch
+/// log's Recovery is staged there.
+pub fn staged_recovery_digest(account: &str) -> Option<String> {
+    let flavor = Path::new(account).parent()?.parent()?.parent()?;
+    let folder = Addon::of(&flavor.to_string_lossy())?.recovery_with_data()?;
+    let bytes = paths::read_file(
+        &folder.join("Recovery.lua"),
+        crate::recovery::REPLY_CAP as u64,
+    )
+    .ok()?;
+    Some(sha256_hex(&bytes))
+}
+
+/// Removes a completed private package without touching another Recovery or
+/// SavedVariables. Renaming first makes retirement atomic for addon discovery.
+pub fn retire_recovery(pending: &crate::recovery::Pending) -> io::Result<()> {
+    retire_recovery_with_fs(&RealFs, pending)
+}
+
+fn retire_recovery_with_fs(fs: &dyn Fs, pending: &crate::recovery::Pending) -> io::Result<()> {
+    let account =
+        Path::new(pending.staged_folder.as_deref().ok_or_else(|| {
+            io::Error::other("Prepare Recovery again to record its staged folder")
+        })?);
+    let digest = pending
+        .package_digest
+        .as_deref()
+        .ok_or_else(|| io::Error::other("Prepare Recovery again to record its package identity"))?;
+    let accounts = account.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let wtf = accounts.parent().ok_or_else(not_a_folder_of_its_own)?;
+    let flavor = wtf.parent().ok_or_else(not_a_folder_of_its_own)?;
+    if !accounts
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("Account"))
+        || !wtf
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("WTF"))
+        || !crate::recovery::snapshot::hex(digest, 64)
+    {
+        return Err(not_a_folder_of_its_own());
+    }
+    let flavor_pin = Pinned::open(flavor)?.ok_or_else(not_a_folder_of_its_own)?;
+    let Some(interface) = paths::lookup(flavor, "Interface") else {
+        return Ok(());
+    };
+    let interface_pin = Pinned::open(&interface)?.ok_or_else(not_a_folder_of_its_own)?;
+    let Some(addons_path) = paths::lookup(&interface, "AddOns") else {
+        return Ok(());
+    };
+    let addons = Pinned::open(&addons_path)?.ok_or_else(not_a_folder_of_its_own)?;
+    let Some(path) = paths::lookup(&addons_path, "Pagle_Recovery") else {
+        return Ok(());
+    };
+    let folder = Pinned::open(&path)?.ok_or_else(not_a_folder_of_its_own)?;
+    let data = folder.target("Recovery.lua");
+    if fs::symlink_metadata(&data.at)?.file_type().is_symlink() {
+        return Err(not_a_folder_of_its_own());
+    }
+    let bytes = paths::read_file(&data.at, crate::recovery::REPLY_CAP as u64)?;
+    if sha256_hex(&bytes) != digest {
+        // Another log in this install has staged its own package since ours.
+        return Ok(());
+    }
+    folder.check()?;
+    // Windows pins forbid renaming an open folder. Keep its parents pinned.
+    drop(folder);
+    flavor_pin.check()?;
+    interface_pin.check()?;
+    addons.check()?;
+    let retired = addons.target(format!(".Pagle_Recovery.{digest}.retired"));
+    fs.rename(
+        &addons.target(path.file_name().ok_or_else(not_a_folder_of_its_own)?),
+        &retired,
+    )?;
+    if let Err(e) = fs.remove_dir_all(&retired) {
+        log::warn!("completed Recovery was retired but couldn't be deleted: {e}");
+    }
+    Ok(())
+}
+
 /// Deletes leftover `.*.tmp` files in the three folders of an install that
 /// has the Pagle addon (CMP-R83).
 fn sweep_tmp(fs: &dyn Fs, addon: &Addon) {
@@ -550,22 +702,44 @@ fn delete_folders(fs: &dyn Fs, flavors: &[String]) {
         let Some(addons) = paths::lookup_path(Path::new(flavor), &["Interface", "AddOns"]) else {
             continue;
         };
-        let Ok(entries) = fs::read_dir(&addons) else {
+        let flavor_pin = match Pinned::open(Path::new(flavor)) {
+            Ok(Some(pin)) => pin,
+            _ => continue,
+        };
+        let Some(interface) = addons.parent() else {
+            continue;
+        };
+        let interface_pin = match Pinned::open(interface) {
+            Ok(Some(pin)) => pin,
+            _ => continue,
+        };
+        let addons_pin = match Pinned::open(&addons) {
+            Ok(Some(pin)) => pin,
+            _ => continue,
+        };
+        let Ok(entries) = fs::read_dir(addons_pin.anchor()) else {
             continue;
         };
         for entry in entries.filter_map(Result::ok) {
             let name = entry.file_name().to_string_lossy().to_lowercase();
-            if !DataFile::ALL
-                .iter()
-                .any(|f| f.folder().to_lowercase() == name)
+            if name != "pagle_recovery"
+                && !DataFile::ALL
+                    .iter()
+                    .any(|f| f.folder().to_lowercase() == name)
             {
                 continue;
             }
             // `remove_dir_all` deletes a link here, never what it points at.
-            let path = entry.path();
-            match fs.remove_dir_all(&Target::plain(&path)) {
-                Ok(()) => log::info!("deleted {}", path.display()),
-                Err(e) => log::warn!("couldn't delete {}: {e}", path.display()),
+            if flavor_pin.check().is_err()
+                || interface_pin.check().is_err()
+                || addons_pin.check().is_err()
+            {
+                break;
+            }
+            let target = addons_pin.target(entry.file_name());
+            match fs.remove_dir_all(&target) {
+                Ok(()) => log::info!("deleted {}", target.shown.display()),
+                Err(e) => log::warn!("couldn't delete {}: {e}", target.shown.display()),
             }
         }
     }
@@ -697,6 +871,31 @@ impl Writer {
         }
     }
 
+    /// Serializes retirement with staging, Unlink and removal.
+    pub fn retire_recovery(&self, pending: &crate::recovery::Pending) -> io::Result<()> {
+        let _busy = lock(&self.busy);
+        retire_recovery_with_fs(self.fs.as_ref(), pending)
+    }
+
+    /// Shares the write/delete lock with Unlink and removal. The guard is
+    /// checked under that lock so a cancelled private stage cannot recreate
+    /// files after cleanup has completed.
+    pub fn stage_recovery(
+        &self,
+        account: &str,
+        lua: &[u8],
+        allowed: impl FnOnce() -> bool,
+    ) -> io::Result<bool> {
+        let stopped = lock(&self.busy);
+        if *stopped || !allowed() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Recovery stopped",
+            ));
+        }
+        stage_recovery_with_fs(self.fs.as_ref(), account, lua)
+    }
+
     /// Writes a body that passed CMP-R82 byte for byte as `file`'s data file
     /// into every install of `flavors` that has the Pagle addon now, with the
     /// folder's TOC, then deletes everything else in the folder (CMP-R80,
@@ -784,6 +983,28 @@ impl Writer {
                         );
                         self.fail(flavor, file, &folder, Cause::TocRefresh);
                     }
+                }
+            }
+            // A staged Recovery follows Pagle.toc too, so a client patch
+            // between staging and login doesn't leave it out of date.
+            if let Some(folder) = addon.recovery_with_data() {
+                let refreshed = addon.copied_lines().and_then(|lines| {
+                    let want = recovery_toc(&lines);
+                    let pinned = Pinned::open(&folder)?
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+                    let have =
+                        paths::read_file(&pinned.target("Pagle_Recovery.toc").at, TOC_CAP).ok();
+                    if have.as_deref() == Some(want.as_slice()) {
+                        return Ok(());
+                    }
+                    log::info!("rewriting {}", folder.join("Pagle_Recovery.toc").display());
+                    write_atomic(self.fs.as_ref(), &pinned, "Pagle_Recovery.toc", &want)
+                });
+                if let Err(e) = refreshed {
+                    log::warn!(
+                        "couldn't write Pagle_Recovery.toc to {}: {e}",
+                        folder.display()
+                    );
                 }
             }
         }
@@ -912,6 +1133,25 @@ pub(crate) mod fixture {
     use std::sync::Arc;
 
     use super::*;
+
+    /// Makes `link` a link to the folder `target`: a junction on Windows, which
+    /// any user can make without privilege, a symlink on Linux.
+    pub fn link_folder(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            // cmd reads a `/` as the start of an option.
+            let backslashed = |path: &Path| path.to_string_lossy().replace('/', "\\");
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(backslashed(link))
+                .arg(backslashed(target))
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+        #[cfg(target_os = "linux")]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
 
     /// A flavor folder at `base/rel` with `Interface/AddOns/`, and
     /// `Pagle/Pagle.toc` holding `pagle_toc` if given. Canonical (CMP-R17).

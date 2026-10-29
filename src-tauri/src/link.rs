@@ -429,6 +429,11 @@ impl<N: Notifier> Account<'_, N> {
         let saved = self.state.update(|s| {
             s.battle_tag = None;
             s.in_game = InGame::default();
+            for log in s.logs.values_mut() {
+                log.recovery = None;
+                log.recovery_notice = None;
+                log.uploaded_snapshot = None;
+            }
         });
         if let Err(e) = saved {
             log::error!("couldn't write state.json: {e}");
@@ -521,6 +526,9 @@ impl<N: Notifier> Account<'_, N> {
             if was_linked {
                 // CMP UI, Catch logs: Link again… clears the catchLog kept.
                 for log in s.logs.values_mut() {
+                    log.recovery = None;
+                    log.recovery_notice = None;
+                    log.uploaded_snapshot = None;
                     if let Some(run) = &mut log.last_run {
                         run.catch_log = None;
                     }
@@ -802,7 +810,10 @@ mod tests {
                 folder: Some("G:/WoW/_classic_beta_/WTF/Account/1#1".into()),
                 characters: "Ada Brook".into(),
                 last_folder: "G:/WoW/_classic_beta_/WTF/Account/1#1".into(),
-                whole_send_pending: false,
+                uploaded_snapshot: None,
+                observed_snapshot: None,
+                recovery: None,
+                recovery_notice: None,
                 last_run: None,
                 last_uploaded_at: None,
             },

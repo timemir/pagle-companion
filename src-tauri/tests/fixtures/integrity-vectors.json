@@ -1,0 +1,479 @@
+{
+  "version": 1,
+  "logId": "3f9a2c1e7b0d4a65",
+  "format": 3,
+  "initial": "c9025f45ec197905862011e464f64b2ab5e446cb4c3a1006b4f50aa052289ca0",
+  "steps": [
+    {
+      "sequence": 1,
+      "guid": "Player-4618-0A1B2C3D",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "digest": "de3acb6b7e2f0273a936bd13cae40f219c673184e01e26c608080c871ea0a3c0",
+      "frame": "PGL-ENTRY|1|c9025f45ec197905862011e464f64b2ab5e446cb4c3a1006b4f50aa052289ca0|1|20|Player-4618-0A1B2C3D|71|C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1\n"
+    },
+    {
+      "sequence": 2,
+      "guid": "Player-4618-0A1B2C3D",
+      "entry": "S1|1|1791735090|0|87|150|-5",
+      "digest": "5b837e70f2595660a0e587206a935f73f28db528bca3ca310e5522884700fa69",
+      "frame": "PGL-ENTRY|1|de3acb6b7e2f0273a936bd13cae40f219c673184e01e26c608080c871ea0a3c0|2|20|Player-4618-0A1B2C3D|27|S1|1|1791735090|0|87|150|-5\n"
+    },
+    {
+      "sequence": 3,
+      "guid": "Player-4618-0B000000",
+      "entry": "B1|2|1791735091|0|12345|pêche|pagle-2026a",
+      "digest": "77429b49dc0b97c68cae671e169169de87ec84060ac10026d9549c41b6f4a421",
+      "frame": "PGL-ENTRY|1|5b837e70f2595660a0e587206a935f73f28db528bca3ca310e5522884700fa69|3|20|Player-4618-0B000000|42|B1|2|1791735091|0|12345|pêche|pagle-2026a\n"
+    }
+  ],
+  "records": [
+    {
+      "name": "cast",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": true
+    },
+    {
+      "name": "skill",
+      "entry": "S1|1|1791735090|0|87|150|-5",
+      "valid": true
+    },
+    {
+      "name": "build",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|pagle-2026a",
+      "valid": true
+    },
+    {
+      "name": "prestige",
+      "entry": "P1|1|1791735090|0|1|0",
+      "valid": true
+    },
+    {
+      "name": "purchase",
+      "entry": "U1|1|1791735090|0|crest.blue|50",
+      "valid": true
+    },
+    {
+      "name": "companion",
+      "entry": "K1|1|1791735090|0|pagle-2026a|2",
+      "valid": true
+    },
+    {
+      "name": "zero-skill",
+      "entry": "S1|1|0|0|0|0|0",
+      "valid": true
+    },
+    {
+      "name": "max-integer",
+      "entry": "S1|1|9007199254740991|0|0|0|-9007199254740991",
+      "valid": true
+    },
+    {
+      "name": "leading-zero-rank",
+      "entry": "S1|1|1791735090|0|0301|0300|0",
+      "valid": false
+    },
+    {
+      "name": "leading-zero-time",
+      "entry": "S1|1|01791735090|0|1|75|0",
+      "valid": false
+    },
+    {
+      "name": "negative-rank",
+      "entry": "S1|1|1791735090|0|-1|75|0",
+      "valid": false
+    },
+    {
+      "name": "negative-zero",
+      "entry": "S1|1|1791735090|0|1|75|-0",
+      "valid": false
+    },
+    {
+      "name": "plus-sign",
+      "entry": "S1|1|1791735090|0|+1|75|0",
+      "valid": false
+    },
+    {
+      "name": "exponent",
+      "entry": "S1|1|1791735090|0|1e2|150|0",
+      "valid": false
+    },
+    {
+      "name": "fraction",
+      "entry": "S1|1|1791735090|0|1.0|75|0",
+      "valid": false
+    },
+    {
+      "name": "nonfinite",
+      "entry": "S1|1|1791735090|0|nan|75|0",
+      "valid": false
+    },
+    {
+      "name": "oversized",
+      "entry": "S1|1|1791735090|0|9007199254740992|75|0",
+      "valid": false
+    },
+    {
+      "name": "missing",
+      "entry": "S1|1|1791735090|0|1|75",
+      "valid": false
+    },
+    {
+      "name": "trailing",
+      "entry": "S1|1|1791735090|0|1|75|0|",
+      "valid": false
+    },
+    {
+      "name": "char-zero",
+      "entry": "S1|0|1791735090|0|1|75|0",
+      "valid": false
+    },
+    {
+      "name": "unknown-tag",
+      "entry": "S2|1|1791735090|0|1|75|0",
+      "valid": false
+    },
+    {
+      "name": "empty-price",
+      "entry": "U1|1|1791735090|0|crest.blue|",
+      "valid": false
+    },
+    {
+      "name": "negative-price",
+      "entry": "U1|1|1791735090|0|crest.blue|-1",
+      "valid": false
+    },
+    {
+      "name": "prestige-missing-xp",
+      "entry": "P1|1|1791735090|0|1",
+      "valid": false
+    },
+    {
+      "name": "prestige-zero",
+      "entry": "P1|1|1791735090|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "empty-build",
+      "entry": "B1|1|1791735090|0|12345|",
+      "valid": false
+    },
+    {
+      "name": "negative-zone",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|-1|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "minute-range",
+      "entry": "C1|1|1791731747|0|c|1440|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "unordered-events",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|301,12|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "duplicate-events",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,12|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "trailing-list",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301,|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "leading-zero-item",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|06358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "zero-quantity",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x0,0x1",
+      "valid": false
+    },
+    {
+      "name": "away-with-items",
+      "entry": "C1|1|1791731747|0|g|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "module-missing-payload",
+      "entry": "A1|1|1791735090|0|Pagle_Ledger|title",
+      "valid": false
+    },
+    {
+      "name": "module-oversized",
+      "entry": "A1|1|1791735090|0|Pagle_Ledger|title|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false
+    },
+    {
+      "name": "line-feed",
+      "entry": "S1|1|1791735090|0|1|75|0\n",
+      "valid": false
+    },
+    {
+      "name": "negative-mod-limit",
+      "entry": "S1|1|0|0|0|0|-9007199254740992",
+      "valid": false
+    },
+    {
+      "name": "signed-max",
+      "entry": "S1|1|0|0|0|-1|0",
+      "valid": false
+    },
+    {
+      "name": "zero-char-leading",
+      "entry": "S1|01|0|0|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "unsigned-negative-mod",
+      "entry": "C1|1|1|0|g|||-1|0|0||||||",
+      "valid": false
+    },
+    {
+      "name": "empty-caught",
+      "entry": "C1|1|1|0|c||||0|0||||||",
+      "valid": true
+    },
+    {
+      "name": "unicode-build",
+      "entry": "B1|1|1|0|1|pêche|pagle-2026a",
+      "valid": true
+    },
+    {
+      "name": "unicode-module-limit",
+      "entry": "A1|1|1|0|Hunts|def|p_x|1/1|éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "valid": true
+    },
+    {
+      "name": "unicode-module-overflow",
+      "entry": "A1|1|1|0|Hunts|def|p_x|1/1|ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "valid": false
+    },
+    {
+      "name": "carriage-return-build",
+      "entry": "B1|1|1|0|1|two\rlines|pagle-2026a",
+      "valid": true
+    },
+    {
+      "name": "bounds-are-findings",
+      "entry": "S1|1|1791735090|0|301|300|0",
+      "valid": true
+    },
+    {
+      "name": "ledger-title",
+      "entry": "A1|1|1792422000|0|Ledger|title|title:level1",
+      "valid": true
+    },
+    {
+      "name": "ledger-title-auto",
+      "entry": "A1|1|1792422000|0|Ledger|title|",
+      "valid": true
+    },
+    {
+      "name": "ledger-crest",
+      "entry": "A1|1|1792422000|0|Ledger|crest|core.crest.plain",
+      "valid": true
+    },
+    {
+      "name": "board-start",
+      "entry": "A1|1|1792422000|0|TackleBoard|start|1792422000;1792422000",
+      "valid": true
+    },
+    {
+      "name": "board-issue",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;30;20;148",
+      "valid": true
+    },
+    {
+      "name": "board-reroll",
+      "entry": "A1|1|1792422000|0|TackleBoard|reroll|Player-4618-0A1B2C3D-1792422000-0;n;quality;1;30;3;2",
+      "valid": true
+    },
+    {
+      "name": "hunt-run",
+      "entry": "A1|1|1792422000|0|Hunts|run|darkshore|1792422000|1792681200|r",
+      "valid": true
+    },
+    {
+      "name": "hunt-def",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|1/2|{kind=\"huntEvent\",",
+      "valid": true
+    },
+    {
+      "name": "unknown-module",
+      "entry": "A1|1|1792422000|0|Other|pay|999",
+      "valid": false
+    },
+    {
+      "name": "unknown-subtype",
+      "entry": "A1|1|1792422000|0|TackleBoard|pay|999",
+      "valid": false
+    },
+    {
+      "name": "wrong-module-name",
+      "entry": "A1|1|1792422000|0|Pagle_Ledger|title|fish.master",
+      "valid": false
+    },
+    {
+      "name": "extra-board-fields",
+      "entry": "A1|1|1792422000|0|TackleBoard|start|1;2;3",
+      "valid": false
+    },
+    {
+      "name": "board-leading-zero",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;01;30;20;148",
+      "valid": false
+    },
+    {
+      "name": "board-big-pay",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;9007199254740992;20;148",
+      "valid": false
+    },
+    {
+      "name": "board-plus-pay",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;+30;20;148",
+      "valid": false
+    },
+    {
+      "name": "board-zero-need",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;1;30;0;148",
+      "valid": false
+    },
+    {
+      "name": "board-extra-target",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;lure;1;30;20;148",
+      "valid": false
+    },
+    {
+      "name": "expedition-species-order",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;variety;0;100;2;148:6358,6303",
+      "valid": false
+    },
+    {
+      "name": "expedition-variety",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;variety;0;100;2;148:6303,6358",
+      "valid": true
+    },
+    {
+      "name": "hunt-source",
+      "entry": "A1|1|1792422000|0|Hunts|run|darkshore|1|2|x",
+      "valid": false
+    },
+    {
+      "name": "hunt-part-leading-zero",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|01/2|text",
+      "valid": false
+    },
+    {
+      "name": "hunt-extra-source",
+      "entry": "A1|1|1792422000|0|Hunts|run|darkshore|1|2|r|more",
+      "valid": false
+    },
+    {
+      "name": "ledger-title-extra-field",
+      "entry": "A1|1|1792422000|0|Ledger|title|title:level1|extra",
+      "valid": false
+    },
+    {
+      "name": "build-missing-rules",
+      "entry": "B1|1|1791735090|0|12345|1.0.0",
+      "valid": false
+    },
+    {
+      "name": "build-invalid-rules",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|bad/rules",
+      "valid": false
+    },
+    {
+      "name": "eastern-kingdoms-wanderer",
+      "entry": "A1|1|1791735090|0|TackleBoard|issue|e;wanderer;0;60;5;0",
+      "valid": true
+    },
+    {
+      "name": "refresh post",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;haul;1;10;20;148",
+      "valid": true
+    },
+    {
+      "name": "rarity notice",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;rarity;1;10;3;2",
+      "valid": true
+    },
+    {
+      "name": "rarity expedition",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|e;rarity;0;60;8;3",
+      "valid": true
+    },
+    {
+      "name": "rarity reroll",
+      "entry": "A1|1|1792422000|0|TackleBoard|reroll|Player-4618-0A1B2C3D-1792421999-0;n;rarity;1;10;3;2",
+      "valid": true
+    },
+    {
+      "name": "post missing field",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;haul;1;10;20",
+      "valid": false
+    },
+    {
+      "name": "post trailing field",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;haul;1;10;20;148;",
+      "valid": false
+    },
+    {
+      "name": "rarity signed target",
+      "entry": "A1|1|1792422000|0|TackleBoard|post|n;rarity;1;10;3;+2",
+      "valid": false
+    },
+    {
+      "name": "rarity unknown verb",
+      "entry": "A1|1|1792422000|0|TackleBoard|freepost|n;rarity;1;10;3;2",
+      "valid": false
+    }
+  ],
+  "initialVariants": [
+    {
+      "logId": "0000000000000000",
+      "format": 2,
+      "digest": "4c0d22e4598e2d33a2bce6f7746897e4e5c0d5a9a955d8014e3cf285ceb45b6a"
+    },
+    {
+      "logId": "3f9a2c1e7b0d4a65",
+      "format": 1,
+      "digest": "aaca407c7c0a15ab37059a90380e117eb02b79f9f367ee6373b6fef6532a0bd4"
+    },
+    {
+      "logId": "3f9a2c1e7b0d4a65",
+      "format": 9007199254740991,
+      "digest": "ec8d981e459b78470fc931460e458a5f3fbb17068304b4a9736f4c617427be32"
+    }
+  ],
+  "entryVariants": [
+    {
+      "previous": "b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c",
+      "sequence": 2,
+      "guid": "Player-4618-0A1B2C3D",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "digest": "e5fc00ebacab73a33b292683a74cbac8cfbeefab97291ce9f8356add8e26fdd4",
+      "frame": "PGL-ENTRY|1|b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c|2|20|Player-4618-0A1B2C3D|71|C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1\n"
+    },
+    {
+      "previous": "b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c",
+      "sequence": 1,
+      "guid": "Player-4618-0B000000",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "digest": "175dc09aae33b8d4f1a8454bdd0673336940dc0dfce42facf3d5546bafa1fccc",
+      "frame": "PGL-ENTRY|1|b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c|1|20|Player-4618-0B000000|71|C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1\n"
+    },
+    {
+      "previous": "b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c",
+      "sequence": 1,
+      "guid": "Player-4618-0A1B2C3D",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x2,0x1",
+      "digest": "a3a2262fc38821cd648601482fd957f58d877aab982734fa7ed7124d116c5a4b",
+      "frame": "PGL-ENTRY|1|b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c|1|20|Player-4618-0A1B2C3D|71|C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x2,0x1\n"
+    }
+  ]
+}

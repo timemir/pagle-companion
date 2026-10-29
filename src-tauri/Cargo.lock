@@ -2909,6 +2909,7 @@ dependencies = [
  "notify-rust",
  "qrcode",
  "reqwest 0.12.28",
+ "ring",
  "semver",
  "serde",
  "serde_json",

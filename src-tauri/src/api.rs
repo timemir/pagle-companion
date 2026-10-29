@@ -15,6 +15,14 @@ pub const BASE_URL_VAR: &str = "PAGLE_COMPANION_BASE_URL";
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The Recovery request timeout (CMP Tunables): the whole Recovery planning
+/// request, in place of [`REQUEST_TIMEOUT`]. It sends a snapshot of up to
+/// 24 MiB, which the backend reads for up to its Recovery read deadline of
+/// 2 min (UPL Tunables), then waits for the backend to replay the history and
+/// reads a reply of up to 33 MiB; 120 s in all would time out first on a
+/// slow link. Confirmation is small and keeps the default.
+pub const RECOVERY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Carries the running version on every request (DST Contracts, Version header).
 pub const VERSION_HEADER: HeaderName = HeaderName::from_static("pagle-companion-version");
 
@@ -317,5 +325,13 @@ mod tests {
         // CMP Tunables: HTTP timeouts
         assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(10));
         assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn recovery_planning_has_five_minutes_per_request() {
+        // CMP Tunables: Recovery request timeout, longer than the HTTP
+        // timeouts' per-request one
+        assert_eq!(RECOVERY_REQUEST_TIMEOUT, Duration::from_secs(300));
+        assert!(RECOVERY_REQUEST_TIMEOUT > REQUEST_TIMEOUT);
     }
 }
