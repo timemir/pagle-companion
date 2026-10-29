@@ -431,6 +431,316 @@
       "name": "rarity unknown verb",
       "entry": "A1|1|1792422000|0|TackleBoard|freepost|n;rarity;1;10;3;2",
       "valid": false
+    },
+    {
+      "name": "header-time-oversized",
+      "entry": "S1|1|9007199254740992|0|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "header-tie-oversized",
+      "entry": "S1|1|0|9007199254740992|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "header-char-oversized",
+      "entry": "S1|9007199254740992|0|0|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "header-empty-tag",
+      "entry": "|1|0|0|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "header-lowercase-tag",
+      "entry": "s1|1|0|0|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "header-empty-record",
+      "entry": "",
+      "valid": false
+    },
+    {
+      "name": "digits-18",
+      "entry": "S1|1|100000000000000000|0|0|0|0",
+      "valid": false
+    },
+    {
+      "name": "digits-30",
+      "entry": "S1|1|0|0|0|0|-100000000000000000000000000000",
+      "valid": false
+    },
+    {
+      "name": "cast-minute-leading-zero",
+      "entry": "C1|1|1791731747|0|c|01|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-modifier-negative-zero",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-0|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-modifier-leading-zero",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-01|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-empty-zone",
+      "entry": "C1|1|1791731747|0|c|494|1439|1||453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-empty-subzone",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148||86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-unknown-outcome",
+      "entry": "C1|1|1791731747|0|x|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-empty-outcome",
+      "entry": "C1|1|1791731747|0||494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-15-fields",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087",
+      "valid": false
+    },
+    {
+      "name": "cast-17-fields",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,0x1|",
+      "valid": false
+    },
+    {
+      "name": "cast-unordered-auras",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087,12|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-duplicate-auras",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087,8087|6358x1,0x1",
+      "valid": false
+    },
+    {
+      "name": "cast-item-triple",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|1x2x3",
+      "valid": false
+    },
+    {
+      "name": "cast-items-bare-comma",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|,",
+      "valid": false
+    },
+    {
+      "name": "cast-items-trailing-comma",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,",
+      "valid": false
+    },
+    {
+      "name": "cast-item-quantity-leading-zero",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x01",
+      "valid": false
+    },
+    {
+      "name": "cast-repeated-item",
+      "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x1,6358x1",
+      "valid": true
+    },
+    {
+      "name": "skill-modifier-leading-zero",
+      "entry": "S1|1|1791735090|0|1|75|-01",
+      "valid": false
+    },
+    {
+      "name": "build-rules-64",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "valid": true
+    },
+    {
+      "name": "build-rules-65",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "valid": false
+    },
+    {
+      "name": "build-rules-leading-hyphen",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|-pagle",
+      "valid": false
+    },
+    {
+      "name": "build-rules-leading-underscore",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|_pagle",
+      "valid": false
+    },
+    {
+      "name": "build-rules-empty",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|",
+      "valid": false
+    },
+    {
+      "name": "build-rules-non-ascii",
+      "entry": "B1|1|1791735090|0|12345|1.0.0|pagle-2026é",
+      "valid": false
+    },
+    {
+      "name": "purchase-hyphen",
+      "entry": "U1|1|1791735090|0|crest-blue|50",
+      "valid": false
+    },
+    {
+      "name": "companion-hyphen",
+      "entry": "K1|1|1791735090|0|crest-blue|50",
+      "valid": true
+    },
+    {
+      "name": "purchase-empty-id",
+      "entry": "U1|1|1791735090|0||50",
+      "valid": false
+    },
+    {
+      "name": "companion-empty-id",
+      "entry": "K1|1|1791735090|0||2",
+      "valid": false
+    },
+    {
+      "name": "module-ascii-200",
+      "entry": "A1|1|1792422000|0|Ledger|title|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": true
+    },
+    {
+      "name": "module-ascii-201",
+      "entry": "A1|1|1792422000|0|Ledger|title|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false
+    },
+    {
+      "name": "hunt-def-separator-text",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|2/2|a|b|",
+      "valid": true
+    },
+    {
+      "name": "hunt-def-part-over-parts",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|3/2|text",
+      "valid": false
+    },
+    {
+      "name": "hunt-def-zero-part",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|0/1|text",
+      "valid": false
+    },
+    {
+      "name": "hunt-def-empty-text",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_test|1/1|",
+      "valid": false
+    },
+    {
+      "name": "hunt-def-bare-prefix",
+      "entry": "A1|1|1792422000|0|Hunts|def|p_|1/1|text",
+      "valid": false
+    },
+    {
+      "name": "hunt-run-dotted-event",
+      "entry": "A1|1|1792422000|0|Hunts|run|dark.shore|1792422000|1792681200|r",
+      "valid": false
+    },
+    {
+      "name": "hunt-unknown-kind",
+      "entry": "A1|1|1792422000|0|Hunts|defs|p_test|1/1|text",
+      "valid": false
+    },
+    {
+      "name": "ledger-crest-colon",
+      "entry": "A1|1|1792422000|0|Ledger|crest|core:crest",
+      "valid": false
+    },
+    {
+      "name": "ledger-title-hyphen",
+      "entry": "A1|1|1792422000|0|Ledger|title|title-level1",
+      "valid": false
+    },
+    {
+      "name": "board-reroll-lowercase-guid",
+      "entry": "A1|1|1792422000|0|TackleBoard|reroll|Player-4618-0a1b2c3d-1792422000-0;n;quality;1;30;3;2",
+      "valid": false
+    },
+    {
+      "name": "board-reroll-leading-zero-time",
+      "entry": "A1|1|1792422000|0|TackleBoard|reroll|Player-4618-0A1B2C3D-01792422000-0;n;quality;1;30;3;2",
+      "valid": false
+    },
+    {
+      "name": "board-wanderer-notice-target",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;wanderer;1;30;5;0",
+      "valid": false
+    },
+    {
+      "name": "board-wanderer-notice",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;wanderer;1;30;5;",
+      "valid": true
+    },
+    {
+      "name": "board-species-expedition",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;species;0;100;5;6358",
+      "valid": false
+    },
+    {
+      "name": "board-lure-expedition",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;lure;0;100;5;",
+      "valid": false
+    },
+    {
+      "name": "board-collector-target",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;collector;1;30;5;1",
+      "valid": false
+    },
+    {
+      "name": "board-collector",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;collector;0;100;5;",
+      "valid": true
+    },
+    {
+      "name": "board-tier-4",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|n;haul;4;30;20;148",
+      "valid": false
+    },
+    {
+      "name": "board-variety-empty-items",
+      "entry": "A1|1|1792422000|0|TackleBoard|issue|e;variety;0;100;2;148:",
+      "valid": false
+    },
+    {
+      "name": "raw-nul-build-version",
+      "bytesHex": "42317c317c313739313733353039307c307c31323334357c312e302e30007c7061676c652d3230323661",
+      "valid": true
+    },
+    {
+      "name": "raw-nul-numeric",
+      "bytesHex": "53317c317c313739313733353039307c307c317c37357c3000",
+      "valid": false
+    },
+    {
+      "name": "raw-lone-continuation-rules",
+      "bytesHex": "42317c317c313739313733353039307c307c31323334357c312e302e307c7061676c6580",
+      "valid": false
+    },
+    {
+      "name": "raw-lone-continuation-build-version",
+      "bytesHex": "42317c317c313739313733353039307c307c31323334357c807c7061676c652d3230323661",
+      "valid": true
+    },
+    {
+      "name": "raw-invalid-utf8-build-version",
+      "bytesHex": "42317c317c313739313733353039307c307c31323334357cc328ff7c7061676c652d3230323661",
+      "valid": true
+    },
+    {
+      "name": "raw-invalid-utf8-hunt-def",
+      "bytesHex": "41317c317c313739323432323030307c307c48756e74737c6465667c705f746573747c312f317ceda080fe",
+      "valid": true
     }
   ],
   "initialVariants": [
