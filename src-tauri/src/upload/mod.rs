@@ -62,6 +62,15 @@ use queue::{Item, Queue, Run, Trigger};
 /// isn't held back (CMP-R50).
 pub const GAP: &str = "gap";
 
+/// What a pending Recovery's row says while its confirmation waits to be
+/// retried (CMP-R51).
+pub const CONFIRM_RETRY: &str =
+    "Pagle couldn't check Recovery just now. Pagle Companion will upload and check again shortly.";
+
+/// Why Recovery isn't prepared while another Catch log's package waits in
+/// the same install.
+pub const ANOTHER_RECOVERY: &str = "Another Catch log in this WoW installation has a Recovery waiting in Pagle_Recovery. Log in to that WoW account so Pagle applies it, then use Upload now to finish it. Then prepare Recovery here.";
+
 /// Gap restarts per run (CMP Tunables).
 pub const GAP_RESTARTS: u32 = 1;
 
@@ -355,6 +364,21 @@ impl Uploads {
         if bytes.len() > snapshot::CAP {
             return Err("Recovery snapshot too large".into());
         }
+        // The addon loads exactly one package per install: never replace
+        // another Catch log's pending one, which would still say it's ready.
+        if let Some(staged) = crate::in_game::folders::staged_recovery_digest(folder)
+            && ctx.state.read(|s| {
+                s.logs.iter().any(|(other, log)| {
+                    other != log_id
+                        && log
+                            .recovery
+                            .as_ref()
+                            .is_some_and(|p| p.package_digest.as_deref() == Some(staged.as_str()))
+                })
+            })
+        {
+            return Err(ANOTHER_RECOVERY.into());
+        }
         let cursor_path = format!("catch-logs/{log_id}/cursor");
         let checkpoint = match self
             .request::<Cursor, _, _>(ctx, Method::GET, &cursor_path, |r| r)
@@ -612,14 +636,25 @@ impl Uploads {
             companion_version: ctx.version,
         };
         let semantic = crate::recovery::snapshot_digest(&read.log);
-        let (changed, recovering) = ctx.state.read(|s| {
-            s.logs.get(log_id).map_or((true, false), |log| {
+        let (changed, recovery) = ctx.state.read(|s| {
+            s.logs.get(log_id).map_or((true, None), |log| {
                 (
                     log.observed_snapshot.as_deref() != Some(semantic.as_str()),
-                    log.recovery.is_some(),
+                    log.recovery.clone(),
                 )
             })
         });
+        if recovery
+            .as_ref()
+            .and_then(|pending| pending.expected_digest.as_deref())
+            == Some(semantic.as_str())
+        {
+            // The addon hasn't applied the package yet. Sending this original
+            // branch again would be refused and move the backend's checkpoint
+            // past the one the plan pins, so confirmation could never pass.
+            return not_started(log_id, "Recovery isn't applied yet");
+        }
+        let recovering = recovery.is_some();
         let changed_refusal = changed
             && last
                 .as_ref()
@@ -780,6 +815,19 @@ impl Uploads {
                     }
                 }
                 Reply::Ended(_) => return self.interrupted(log_id),
+                Reply::Retry(why) => {
+                    // CMP-R51: a busy (`503 validation_unavailable`) or
+                    // unreachable confirmation waits the retry backoff, then
+                    // the run starts again from step 1, so the proof Upload
+                    // names the current revision. Recovery stays pending.
+                    self.save(ctx, log_id, |log| {
+                        if let Some(pending) = &mut log.recovery {
+                            pending.instructions = CONFIRM_RETRY.into();
+                        }
+                    });
+                    ctx.env.changed();
+                    return Attempt::Retry(format!("Recovery confirmation: {why}"));
+                }
                 other => {
                     let code = match &other {
                         Reply::Refused(refusal) => refusal.code.as_deref(),

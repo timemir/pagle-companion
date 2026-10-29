@@ -575,6 +575,21 @@ fn stage_recovery_with_fs(fs: &dyn Fs, account: &str, lua: &[u8]) -> io::Result<
     Ok(new)
 }
 
+/// The digest of the `Recovery.lua` staged in `account`'s install, when the
+/// install has Pagle and its `Pagle_Recovery/` holds one, neither of them a
+/// link. The addon loads one package per install, so this tells which Catch
+/// log's Recovery is staged there.
+pub fn staged_recovery_digest(account: &str) -> Option<String> {
+    let flavor = Path::new(account).parent()?.parent()?.parent()?;
+    let folder = Addon::of(&flavor.to_string_lossy())?.recovery_with_data()?;
+    let bytes = paths::read_file(
+        &folder.join("Recovery.lua"),
+        crate::recovery::REPLY_CAP as u64,
+    )
+    .ok()?;
+    Some(sha256_hex(&bytes))
+}
+
 /// Removes a completed private package without touching another Recovery or
 /// SavedVariables. Renaming first makes retirement atomic for addon discovery.
 pub fn retire_recovery(pending: &crate::recovery::Pending) -> io::Result<()> {

@@ -692,3 +692,197 @@ async fn recovery_retirement_cannot_follow_a_folder_link_outside_the_install() {
     assert!(crate::in_game::folders::retire_recovery(&pending).is_err());
     assert!(outside.join("Recovery.lua").is_file());
 }
+
+/// The addon applied the package: the restored log, without the staged
+/// original record.
+fn save_applied(h: &Harness) {
+    save(
+        &h.folder,
+        &fixture()["sourceLua"]
+            .as_str()
+            .unwrap()
+            .replace(", \"opaque broken source record\"", ""),
+    );
+}
+fn confirm_path() -> String {
+    format!(
+        "/api/v1/catch-logs/{LOG_B}/recovery/{}/confirm",
+        fixture()["signed"]["applicationId"].as_str().unwrap()
+    )
+}
+async fn received(h: &Harness, at: &str) -> usize {
+    h.server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == at)
+        .count()
+}
+
+#[tokio::test]
+async fn an_unapplied_recovery_never_reuploads_the_original_branch() {
+    let h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    let source = crate::recovery::read_source(&h.folder.to_string_lossy()).unwrap();
+    assert_eq!(
+        h.state
+            .read(|s| s.logs[LOG_B].recovery.clone().unwrap().expected_digest),
+        Some(crate::recovery::snapshot_digest(&source))
+    );
+    // The fixture's original branch holds a record the normal reader
+    // refuses. Stand in an original branch an ordinary Upload would send,
+    // as after a cross-log conflict, as the plan's expected local log.
+    let original = fixture()["sourceLua"]
+        .as_str()
+        .unwrap()
+        .replace("opaque broken source record", "S1|1|1792422100|0|87|150|25");
+    save(&h.folder, &original);
+    let expected = crate::recovery::snapshot_digest(
+        &crate::recovery::read_source(&h.folder.to_string_lossy()).unwrap(),
+    );
+    h.state
+        .update(|s| {
+            s.logs
+                .get_mut(LOG_B)
+                .unwrap()
+                .recovery
+                .as_mut()
+                .unwrap()
+                .expected_digest = Some(expected)
+        })
+        .unwrap();
+    // Character selection saves SavedVariables again before the addon has
+    // applied the package: still exactly the plan's expected local log.
+    // Sending its conflicting entries would move the backend's conflict
+    // revision and leave the plan stale at confirmation.
+    save(&h.folder, &original);
+    for trigger in [Trigger::Scan, Trigger::UploadNow] {
+        h.uploads.trigger(LOG_B, trigger);
+        assert_eq!(
+            h.uploads.run_queued(&h.ctx()).await,
+            [RunEnd::NotStarted("Recovery isn't applied yet")],
+            "{trigger:?}"
+        );
+    }
+    assert_eq!(received(&h, "/api/v1/uploads").await, 0);
+    assert_eq!(received(&h, &confirm_path()).await, 0);
+    assert!(h.state.read(|s| s.logs[LOG_B].recovery.is_some()));
+    assert!(h.state.read(|s| s.logs[LOG_B].last_run.is_none()));
+    // Once the local log reflects the applied package, it uploads and confirms.
+    save_applied(&h);
+    Mock::given(method("POST"))
+        .and(path(confirm_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":"consistent"})))
+        .mount(&h.server)
+        .await;
+    h.uploads.trigger(LOG_B, Trigger::Scan);
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    assert!(h.state.read(|s| s.logs[LOG_B].recovery.is_none()));
+    assert_eq!(received(&h, &confirm_path()).await, 1);
+}
+
+#[tokio::test]
+async fn a_transient_confirmation_failure_keeps_recovery_pending_and_retries_after_the_backoff() {
+    let mut h = recovery_harness().await;
+    serve(&h, fixture()["signed"].clone()).await;
+    recover(&h).await.unwrap();
+    save_applied(&h);
+    // The backend's one Recovery permit is busy: 503 validation_unavailable.
+    Mock::given(method("POST"))
+        .and(path(confirm_path()))
+        .respond_with(
+            ResponseTemplate::new(503).set_body_json(json!({"reason":"validation_unavailable"})),
+        )
+        .up_to_n_times(2)
+        .mount(&h.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(confirm_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":"consistent"})))
+        .with_priority(6)
+        .mount(&h.server)
+        .await;
+    // Stopped during the backoff: Recovery stays pending and no result is
+    // recorded.
+    h.env.cancel_at_wait = Some((1, h.uploads.clone()));
+    h.uploads.trigger(LOG_B, Trigger::UploadNow);
+    assert_eq!(h.uploads.run_queued(&h.ctx()).await, [RunEnd::Interrupted]);
+    assert_eq!(
+        h.state
+            .read(|s| s.logs[LOG_B].recovery.clone().unwrap().instructions),
+        crate::upload::CONFIRM_RETRY
+    );
+    assert!(h.state.read(|s| s.logs[LOG_B].last_run.is_none()));
+    assert!(staged_folder(&h).exists());
+    // Left to wait, the run starts again after the backoff, uploads a new
+    // proof and confirms, all in this one run.
+    h.env.cancel_at_wait = None;
+    h.uploads.trigger(LOG_B, Trigger::UploadNow);
+    assert_eq!(
+        h.uploads.run_queued(&h.ctx()).await,
+        [RunEnd::Recorded(RunResult::Uploaded)]
+    );
+    assert_eq!(h.env.sleeps().len(), 2);
+    assert_eq!(received(&h, &confirm_path()).await, 3);
+    assert!(h.state.read(|s| s.logs[LOG_B].recovery.is_none()));
+    assert!(!staged_folder(&h).exists());
+    let requests = h.server.received_requests().await.unwrap();
+    let paths: Vec<_> = requests.iter().map(|r| r.url.path()).collect();
+    let last_confirm = paths.iter().rposition(|p| *p == confirm_path()).unwrap();
+    let before = &paths[..last_confirm];
+    let previous_confirm = before.iter().rposition(|p| *p == confirm_path()).unwrap();
+    assert!(before[previous_confirm..].contains(&"/api/v1/uploads"));
+}
+
+#[tokio::test]
+async fn a_second_catch_log_in_the_same_install_cannot_overwrite_a_pending_recovery() {
+    let h = recovery_harness().await;
+    // Another WoW account of this install staged its own Recovery, which is
+    // still pending. The addon loads exactly one package per install.
+    let package = staged_folder(&h);
+    std::fs::create_dir_all(&package).unwrap();
+    let theirs: &[u8] =
+        b"PagleRecoveryData = { v = 1, keyId = \"testKey\", payload = \"QQ==\", sig = \"QQ==\" }\n";
+    std::fs::write(package.join("Recovery.lua"), theirs).unwrap();
+    std::fs::write(package.join("Pagle_Recovery.toc"), b"## Interface: 16002\n").unwrap();
+    let other = h.folder.parent().unwrap().join("BOB#2");
+    h.state
+        .update(|s| {
+            let mut log = s.logs[LOG_B].clone();
+            log.recovery = Some(crate::recovery::Pending {
+                staged_folder: Some(other.to_string_lossy().into_owned()),
+                package_digest: Some(crate::in_game::folders::sha256_hex(theirs)),
+                expected_digest: None,
+                application_id: "a".repeat(64),
+                replacement_digest: "b".repeat(64),
+                accepted_seq: 1,
+                staged: 0,
+                instructions: "Recovery is ready.".into(),
+            });
+            s.logs.insert(LOG_A.into(), log);
+        })
+        .unwrap();
+    serve(&h, fixture()["signed"].clone()).await;
+    let refused = recover(&h).await.unwrap_err();
+    assert!(refused.contains("Another Catch log"), "{refused}");
+    assert_eq!(std::fs::read(package.join("Recovery.lua")).unwrap(), theirs);
+    assert!(h.state.read(|s| s.logs[LOG_B].recovery.is_none()));
+    assert_eq!(
+        h.state.read(|s| s.logs[LOG_B].recovery_notice.clone()),
+        Some(refused)
+    );
+    assert!(h.state.read(|s| s.logs[LOG_A].recovery.is_some()));
+    // Not even planned: the backend's Recovery permit stays free.
+    assert_eq!(
+        received(&h, &format!("/api/v1/catch-logs/{LOG_B}/recovery")).await,
+        0
+    );
+    // Once that package is retired, this Catch log stages its own.
+    std::fs::remove_dir_all(&package).unwrap();
+    assert!(recover(&h).await.unwrap().contains("character selection"));
+}

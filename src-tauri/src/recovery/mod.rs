@@ -21,6 +21,10 @@ pub struct Pending {
     pub staged_folder: Option<String>,
     #[serde(default)]
     pub package_digest: Option<String>,
+    /// The local snapshot digest the package expects to replace. While the
+    /// local log still has it, the addon hasn't applied the package.
+    #[serde(default)]
+    pub expected_digest: Option<String>,
     pub application_id: String,
     pub replacement_digest: String,
     pub accepted_seq: u64,
@@ -131,10 +135,11 @@ fn verify_with_modulus(
         return Err("Recovery checkpoint changed; prepare Recovery again".into());
     }
     let rules = r.text()?;
+    let expected_digest = r.text()?;
     if rules.is_empty()
         || rules.len() > 256
         || !snapshot::hex(&digest, 64)
-        || r.text()? != snapshot_digest(local)
+        || expected_digest != snapshot_digest(local)
     {
         return Err("Recovery no longer matches the full local Catch log".into());
     }
@@ -191,6 +196,7 @@ fn verify_with_modulus(
         pending: Pending {
             staged_folder: None,
             package_digest: Some(sha256_hex(&lua)),
+            expected_digest: Some(expected_digest),
             application_id,
             replacement_digest,
             accepted_seq: seq,
