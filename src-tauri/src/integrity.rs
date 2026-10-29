@@ -314,11 +314,22 @@ mod tests {
         serde_json::from_str(include_str!("../tests/fixtures/integrity-vectors.json")).unwrap()
     }
 
+    /// `bytesHex` carries records JSON text can't: lone or ill-formed UTF-8 bytes.
+    fn record_bytes(case: &serde_json::Value) -> Vec<u8> {
+        match case["bytesHex"].as_str() {
+            Some(hex) => (0..hex.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+                .collect(),
+            None => case["entry"].as_str().unwrap().as_bytes().to_vec(),
+        }
+    }
+
     #[test]
     fn canonical_core_records_agree_with_shared_adversarial_contract() {
         for case in vectors()["records"].as_array().unwrap() {
             assert_eq!(
-                validate_record(case["entry"].as_str().unwrap().as_bytes()).is_ok(),
+                validate_record(&record_bytes(case)).is_ok(),
                 case["valid"].as_bool().unwrap(),
                 "{}",
                 case["name"]
