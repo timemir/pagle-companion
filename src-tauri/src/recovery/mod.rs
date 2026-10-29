@@ -65,11 +65,15 @@ pub fn read_source(folder: &str) -> Result<LocalLog, String> {
         .map_err(|_| "Couldn't read Pagle.lua")?;
     match pagle_log::parse_recovery(&bytes).map_err(|_| "Pagle.lua isn't SavedVariables data")? {
         Found::Valid(log)
-            if log.format == 3 && log.characters.len() <= 100 && log.len() <= 100_000 =>
+            if matches!(log.format, 3 | 4)
+                && log.characters.len() <= 100
+                && log.len() <= 100_000 =>
         {
             Ok(log)
         }
-        _ => Err("Recovery needs a complete format-3 Catch log. Update Pagle first.".into()),
+        _ => Err(
+            "Recovery needs a complete format-3 or format-4 Catch log. Update Pagle first.".into(),
+        ),
     }
 }
 

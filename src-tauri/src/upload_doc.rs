@@ -214,6 +214,38 @@ mod tests {
     }
 
     #[test]
+    fn a_format_4_log_gives_the_same_lines_as_the_format_3_log_and_its_own_format() {
+        // CMP Contracts, Building an upload document: one entry per line, the header
+        // carrying the log's own format (issue #57)
+        let entries: Vec<String> = (0..600)
+            .map(|i| format!("S1|1|{}|{}|87|150|25", 1791730000 + i, i % 2))
+            .collect();
+        let three = log(&[ADA], &entries);
+        let blocks: Vec<String> = entries
+            .chunks(256)
+            .map(|chunk| format!("{:?}", chunk.join("\n")))
+            .collect();
+        let source = format!(
+            "PagleLog = {{ format = 4, logId = \"3f9a2c1e7b0d4a65\", characters = {{ {ADA} }}, \
+             blockSize = 256, count = 600, blocks = {{ {} }} }}",
+            blocks.join(", ")
+        );
+        let Found::Valid(four) = pagle_log::parse(source.as_bytes()).expect("parses") else {
+            panic!("not valid");
+        };
+        for (from, count) in [(1, 600), (250, 10), (257, 256), (600, 1)] {
+            let (a, b) = (
+                page(&three, from, count, 7).unwrap(),
+                page(&four, from, count, 7).unwrap(),
+            );
+            let (a, b) = (lines(&a.document), lines(&b.document));
+            assert_eq!(a[1..], b[1..], "from {from}");
+            assert_eq!(a[0].split('|').nth(3), Some("1"));
+            assert_eq!(b[0].split('|').nth(3), Some("4"));
+        }
+    }
+
+    #[test]
     fn the_examples_page_matches_its_header_and_lines_exactly() {
         // UPL Contracts, the example: header, character line and entry lines
         let page = page(&example_log(), 11, 2, 1791735100).expect("in range");

@@ -133,8 +133,8 @@ pub fn decode(bytes: &[u8]) -> Result<LocalLog, String> {
         return Err("Invalid snapshot log ID".into());
     }
     let format = r.number()?;
-    if format != 3 {
-        return Err("Recovery needs Catch log format 3; update Pagle first".into());
+    if !matches!(format, 3 | 4) {
+        return Err("Recovery needs Catch log format 3 or 4; update Pagle first".into());
     }
     let test = r.boolean()?;
     let n = r.number()?;
@@ -196,4 +196,50 @@ pub fn decode(bytes: &[u8]) -> Result<LocalLog, String> {
         characters,
         entries,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pagle_log::{self, Found};
+
+    const ADA: &str = r#"{ guid = "Player-4618-0A1B2C3D", name = "Ada", surname = "Brook",
+        classID = 1, raceID = 1, faction = "Alliance", realmID = 4618, hardcore = false,
+        selfFound = false, firstSeen = 1791731680, lastSeen = 1791735090 }"#;
+
+    fn log(format: u64) -> LocalLog {
+        let storage = if format >= 4 {
+            "blockSize = 2, count = 3, blocks = { \"C1|1|1791735050|0|c\\nS1|1|1791735090|0|87|150|25\", \"S1|1|1791735091|0|87|150|25\" }"
+        } else {
+            "entries = { \"C1|1|1791735050|0|c\", \"S1|1|1791735090|0|87|150|25\", \"S1|1|1791735091|0|87|150|25\" }"
+        };
+        let source = format!(
+            "PagleLog = {{ format = {format}, logId = \"3f9a2c1e7b0d4a65\", characters = {{ {ADA} }}, {storage} }}"
+        );
+        match pagle_log::parse(source.as_bytes()).expect("parses") {
+            Found::Valid(log) => log,
+            other => panic!("not valid: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recovery_snapshots_round_trip_in_format_3_and_format_4() {
+        // recovery-v1: the snapshot names the log's format, 3 or 4, over LF-free entries
+        let (three, four) = (log(3), log(4));
+        assert_eq!(decode(&encode(&three)).expect("format 3"), three);
+        assert_eq!(decode(&encode(&four)).expect("format 4"), four);
+        assert_eq!(four.format, 4);
+        assert_eq!(four.entries, three.entries);
+        assert_ne!(encode(&three), encode(&four));
+    }
+
+    #[test]
+    fn a_recovery_snapshot_in_another_format_is_refused() {
+        // recovery-v1: only the formats the backend accepts (3, and 4 from the pin bump)
+        for format in [0, 1, 2, 5] {
+            let mut snapshot = log(3);
+            snapshot.format = format;
+            assert!(decode(&encode(&snapshot)).is_err(), "format {format}");
+        }
+    }
 }

@@ -10,6 +10,12 @@ use crate::lua::{self, ParseError, Table, Value};
 /// The largest number an upload document carries (UPL Contracts).
 pub const MAX_NUMBER: u64 = (1 << 53) - 1;
 
+/// The first format that stores its entries as `blocks` (the one-string-per-
+/// entry formats 1 to 3 overflow Lua 5.1's constant limit in a large log).
+/// Every format from here on keeps that layout (LOG-R17); a later encoding
+/// shows itself as a block's reserved first byte.
+const BLOCK_FORMAT: u64 = 4;
+
 /// What one `Pagle.lua` holds.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Found {
@@ -42,8 +48,22 @@ pub enum Invalid {
     Format,
     /// `characters` is missing, or not a list of tables at `1 … n`.
     Characters,
-    /// `entries` is missing, or not a list of strings at `1 … n`.
+    /// `entries` (formats 1 to 3) is missing, or not a list of strings at
+    /// `1 … n`.
     Entries,
+    /// `blockSize` (format 4) isn't an integer literal of at least 1.
+    BlockSize,
+    /// `count` (format 4) isn't an integer literal, or differs from the
+    /// entries the blocks hold.
+    Count,
+    /// `blocks` (format 4) is missing, or not a list of strings at `1 … n`.
+    Blocks,
+    /// The block at this index is empty, or holds the wrong number of
+    /// entries: all but the last hold `blockSize`, the last 1 … `blockSize`.
+    Block(usize),
+    /// The block at this index starts with a byte below 0x20, which a later
+    /// block encoding reserves; this Companion can't read it.
+    ReservedBlock(usize),
     /// The character at this index can't be written as a character line.
     Character(usize),
     /// The character at this index has the GUID of an earlier one.
@@ -52,7 +72,9 @@ pub enum Invalid {
     EntryHeader(u64),
     /// The entry at this `seq` names a character index `characters` lacks.
     EntryChar(u64),
-    /// The entry at this `seq` holds a line feed.
+    /// The entry at this `seq` holds a line feed. Only formats 1 to 3 can
+    /// say so: format 4 splits its blocks on line feeds, so none of its
+    /// entries holds one.
     LineFeed(u64),
 }
 
@@ -64,6 +86,11 @@ impl fmt::Display for Invalid {
             Invalid::Format => write!(f, "format isn't an integer literal of at least 1"),
             Invalid::Characters => write!(f, "characters isn't a list of tables"),
             Invalid::Entries => write!(f, "entries isn't a list of strings"),
+            Invalid::BlockSize => write!(f, "blockSize isn't an integer literal of at least 1"),
+            Invalid::Count => write!(f, "count isn't the number of entries the blocks hold"),
+            Invalid::Blocks => write!(f, "blocks isn't a list of strings"),
+            Invalid::Block(i) => write!(f, "block {i} doesn't hold a valid number of entries"),
+            Invalid::ReservedBlock(i) => write!(f, "block {i} starts with a reserved byte"),
             Invalid::Character(i) => write!(f, "character {i} can't be a character line"),
             Invalid::DuplicateGuid(i) => write!(f, "character {i} repeats a GUID"),
             Invalid::EntryHeader(seq) => write!(f, "entry {seq} has no entry header"),
@@ -81,7 +108,9 @@ pub struct LocalLog {
     pub test: Option<bool>,
     /// `PagleLog.characters[1 … n]`.
     pub characters: Vec<Character>,
-    /// `PagleLog.entries[1 … L]`, each its bytes after escapes (UPL-R12).
+    /// `PagleLog.entries[1 … L]` (formats 1 to 3), or the lines of
+    /// `PagleLog.blocks` in order (format 4), each its bytes after escapes
+    /// (UPL-R12).
     pub(crate) entries: Vec<Vec<u8>>,
 }
 
@@ -163,14 +192,11 @@ fn check(mut table: Table, log_id: &str, strict: bool) -> Result<LocalLog, Inval
             _ => Err(Invalid::Characters),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let entries = list(&mut table, "entries")
-        .ok_or(Invalid::Entries)?
-        .into_iter()
-        .map(|v| match v {
-            Value::String(s) => Ok(s),
-            _ => Err(Invalid::Entries),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let entries = if format >= BLOCK_FORMAT {
+        block_entries(&mut table)?
+    } else {
+        strings(&mut table, "entries", Invalid::Entries)?
+    };
 
     let mut guids = HashSet::new();
     let characters = characters
@@ -204,6 +230,50 @@ fn check(mut table: Table, log_id: &str, strict: bool) -> Result<LocalLog, Inval
         characters,
         entries,
     })
+}
+
+/// Takes `table[name]` as a list of strings at `1 … n`, or `invalid`.
+fn strings(table: &mut Table, name: &str, invalid: Invalid) -> Result<Vec<Vec<u8>>, Invalid> {
+    list(table, name)
+        .ok_or(invalid)?
+        .into_iter()
+        .map(|v| match v {
+            Value::String(s) => Ok(s),
+            _ => Err(invalid),
+        })
+        .collect()
+}
+
+/// The entries of a format 4 or later log: the lines of `blocks`, in order. Every
+/// block but the last holds `blockSize` lines, and the last holds 1 …
+/// `blockSize`; a block's first byte is 0x20 or above; `count` is the
+/// number of entries.
+fn block_entries(table: &mut Table) -> Result<Vec<Vec<u8>>, Invalid> {
+    let blocks = strings(table, "blocks", Invalid::Blocks)?;
+    let block_size = table
+        .get("blockSize")
+        .and_then(integer)
+        .filter(|&size| size >= 1)
+        .ok_or(Invalid::BlockSize)?;
+    let count = table.get("count").and_then(integer).ok_or(Invalid::Count)?;
+
+    let mut entries = Vec::new();
+    for (i, block) in (1usize..).zip(&blocks) {
+        match block.first() {
+            None => return Err(Invalid::Block(i)),
+            Some(&first) if first < 0x20 => return Err(Invalid::ReservedBlock(i)),
+            Some(_) => {}
+        }
+        let lines = block.iter().filter(|&&b| b == b'\n').count() as u64 + 1;
+        if lines != block_size && (i != blocks.len() || lines > block_size) {
+            return Err(Invalid::Block(i));
+        }
+        entries.extend(block.split(|&b| b == b'\n').map(<[u8]>::to_vec));
+    }
+    if entries.len() as u64 != count {
+        return Err(Invalid::Count);
+    }
+    Ok(entries)
 }
 
 /// Takes the values of `table[name]` when it is a list at `1 … n` with no
@@ -576,12 +646,17 @@ mod tests {
         }
         assert_eq!(
             valid(&file(
-                "12",
+                "3",
                 "\"3f9a2c1e7b0d4a65\"",
                 &format!("{{ {} }}", ada()),
                 "{}"
             ))
             .format,
+            3
+        );
+        assert_eq!(
+            valid(&blocks_file("256", "0", &[]).replace("[\"format\"] = 4,", "[\"format\"] = 12,"))
+                .format,
             12
         );
     }
@@ -856,6 +931,384 @@ mod tests {
         assert_eq!(
             Invalid::LineFeed(7).to_string(),
             "entry 7 holds a line feed"
+        );
+    }
+
+    // Format 4: the same entries stored as blocks (issue #57).
+
+    /// A Lua string literal for `text`, whatever bytes it holds.
+    fn lua_string(text: &str) -> String {
+        let mut out = String::from("\"");
+        for c in text.chars() {
+            match c {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\{}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    /// A file whose `PagleLog` is format 4 with exactly these `blockSize`,
+    /// `count` and `blocks` values (Lua source for the first two).
+    fn blocks_file(block_size: &str, count: &str, blocks: &[String]) -> String {
+        let blocks: Vec<String> = blocks.iter().map(|b| lua_string(b)).collect();
+        format!(
+            "PagleDB = {{}}\nPagleLog = {{\n  [\"format\"] = 4,\n  [\"logId\"] = \"3f9a2c1e7b0d4a65\",\n  \
+             [\"characters\"] = {{ {}, {BO} }},\n  [\"blockSize\"] = {block_size},\n  \
+             [\"count\"] = {count},\n  [\"blocks\"] = {{ {} }},\n}}\n",
+            ada(),
+            blocks.join(", ")
+        )
+    }
+
+    /// `n` distinct entries of character 1, 2 or 3 alternating (3 is
+    /// missing from `characters`, so none uses it).
+    fn entries_of(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| format!("C1|{}|{}|{}|c", 1 + i % 2, 1791735000 + i, i % 3))
+            .collect()
+    }
+
+    /// The format-4 form of a format-3 entry list: `size` entries to a block.
+    fn blocks_of(entries: &[String], size: usize) -> Vec<String> {
+        entries.chunks(size).map(|chunk| chunk.join("\n")).collect()
+    }
+
+    /// The format-4 file holding `entries`, with a consistent `count`.
+    fn format4(entries: &[String], size: usize) -> String {
+        blocks_file(
+            &size.to_string(),
+            &entries.len().to_string(),
+            &blocks_of(entries, size),
+        )
+    }
+
+    /// The format-3 file holding `entries`.
+    fn format3(entries: &[String]) -> String {
+        let quoted: Vec<String> = entries.iter().map(|e| lua_string(e)).collect();
+        file(
+            "3",
+            "\"3f9a2c1e7b0d4a65\"",
+            &format!("{{ {}, {BO} }}", ada()),
+            &format!("{{ {} }}", quoted.join(", ")),
+        )
+    }
+
+    #[test]
+    fn a_format_4_log_expands_into_the_same_entries_as_format_3() {
+        // CMP-R31: format 4's blocks expand into the entries (issue #57)
+        for n in [1, 2, 255, 256, 257, 511, 512, 513, 1000] {
+            let entries = entries_of(n);
+            let four = valid(&format4(&entries, 256));
+            let three = valid(&format3(&entries));
+            assert_eq!(four.format, 4);
+            assert_eq!(four.len(), n as u64, "n = {n}");
+            assert_eq!(four.entries, three.entries, "n = {n}");
+            assert_eq!(four.characters, three.characters);
+            assert_eq!(four.entry(n as u64), three.entry(n as u64));
+            assert_eq!(four.entry(n as u64 + 1), None);
+            assert_eq!(
+                four.entry_id(257.min(n as u64)),
+                three.entry_id(257.min(n as u64))
+            );
+        }
+    }
+
+    #[test]
+    fn addressing_follows_the_block_edges() {
+        // CMP-R31: block b holds seqs (b-1)·blockSize+1 … b·blockSize (issue #57)
+        let entries = entries_of(7);
+        let log = valid(&format4(&entries, 3));
+        for (i, entry) in entries.iter().enumerate() {
+            assert_eq!(
+                log.entry(i as u64 + 1),
+                Some(entry.as_bytes()),
+                "seq {}",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_format_4_log_is_valid() {
+        // CMP-R32: count 0 with blocks {} is an empty log (issue #57)
+        let log = valid(&blocks_file("256", "0", &[]));
+        assert!(log.is_empty());
+        assert_eq!(log.format, 4);
+    }
+
+    #[test]
+    fn a_count_that_differs_from_what_the_blocks_hold_is_invalid() {
+        // CMP-R31: count equals the entries the blocks hold (issue #57)
+        let entries = entries_of(300);
+        let blocks = blocks_of(&entries, 256);
+        for count in ["299", "301", "0", "256", "512"] {
+            assert_eq!(
+                invalid(&blocks_file("256", count, &blocks)).reason,
+                Invalid::Count,
+                "count {count}"
+            );
+        }
+        assert_eq!(
+            invalid(&blocks_file("256", "1", &[])).reason,
+            Invalid::Count
+        );
+        assert_eq!(
+            invalid(&blocks_file("256", "0", &blocks_of(&entries_of(1), 256))).reason,
+            Invalid::Count
+        );
+    }
+
+    #[test]
+    fn a_block_but_the_last_that_isnt_full_is_invalid() {
+        // CMP-R31: every block but the last holds exactly blockSize lines (issue #57)
+        let entries = entries_of(10);
+        let mut blocks = blocks_of(&entries, 4); // 4, 4, 2
+        blocks.swap(1, 2); // 4, 2, 4
+        assert_eq!(
+            invalid(&blocks_file("4", "10", &blocks)).reason,
+            Invalid::Block(2)
+        );
+        // a short first block, with the count that matches
+        let short = vec![entries[..3].join("\n"), entries[3..7].join("\n")];
+        assert_eq!(
+            invalid(&blocks_file("4", "7", &short)).reason,
+            Invalid::Block(1)
+        );
+    }
+
+    #[test]
+    fn a_last_block_over_block_size_is_invalid() {
+        // CMP-R31: the last block holds 1 … blockSize lines (issue #57)
+        let entries = entries_of(5);
+        let blocks = vec![entries[..4].join("\n"), entries[4..].join("\n")];
+        assert_eq!(
+            invalid(&blocks_file("3", "5", &blocks)).reason,
+            Invalid::Block(1)
+        );
+        assert_eq!(
+            invalid(&blocks_file("4", "5", &[entries.join("\n")])).reason,
+            Invalid::Block(1)
+        );
+    }
+
+    #[test]
+    fn an_empty_block_is_invalid_wherever_it_stands() {
+        // CMP-R31: a block is never an empty string (issue #57)
+        let entries = entries_of(8);
+        let mut blocks = blocks_of(&entries, 4);
+        blocks.push(String::new());
+        assert_eq!(
+            invalid(&blocks_file("4", "8", &blocks)).reason,
+            Invalid::Block(3)
+        );
+        let mut blocks = blocks_of(&entries, 4);
+        blocks.insert(1, String::new());
+        assert_eq!(
+            invalid(&blocks_file("4", "8", &blocks)).reason,
+            Invalid::Block(2)
+        );
+        assert_eq!(
+            invalid(&blocks_file("4", "0", &[String::new()])).reason,
+            Invalid::Block(1)
+        );
+    }
+
+    #[test]
+    fn a_block_starting_below_0x20_is_an_unreadable_log() {
+        // CMP-R31: a block whose first byte is below 0x20 is reserved, so the log
+        // is unreadable (issue #57)
+        let entries = entries_of(6);
+        for first in ['\u{1}', '\u{8}', '\u{1f}', '\n', '\r', '\t', '\0'] {
+            let mut blocks = blocks_of(&entries, 3);
+            blocks[1] = format!("{first}{}", blocks[1]);
+            assert_eq!(
+                invalid(&blocks_file("3", "6", &blocks)).reason,
+                Invalid::ReservedBlock(2),
+                "first byte {:#x}",
+                first as u32
+            );
+            // reserved wins over a count that doesn't match
+            assert_eq!(
+                invalid(&blocks_file("3", "99", &blocks)).reason,
+                Invalid::ReservedBlock(2)
+            );
+        }
+        // 0x20 and above is not reserved: the entry header decides
+        let mut blocks = blocks_of(&entries, 3);
+        blocks[0] = format!(" {}", blocks[0]);
+        assert_eq!(
+            invalid(&blocks_file("3", "6", &blocks)).reason,
+            Invalid::EntryHeader(1)
+        );
+    }
+
+    #[test]
+    fn a_crlf_keeps_its_carriage_return_and_an_empty_line_is_a_bad_entry() {
+        // CMP-R31: blocks split on LF alone, so a CR stays in its entry (LOG-R101)
+        let blocks = vec!["C1|1|1791735050|0|a\r\nC1|1|1791735051|0|b".to_owned()];
+        let log = valid(&blocks_file("256", "2", &blocks));
+        assert_eq!(log.entry(1), Some(&b"C1|1|1791735050|0|a\r"[..]));
+        assert_eq!(log.entry(2), Some(&b"C1|1|1791735051|0|b"[..]));
+        // an empty line inside a block is an entry with no header
+        let blocks = vec!["C1|1|1791735050|0\n\nC1|1|1791735051|0".to_owned()];
+        assert_eq!(
+            invalid(&blocks_file("256", "3", &blocks)).reason,
+            Invalid::EntryHeader(2)
+        );
+        // a trailing LF is an empty last line, which `count` or the header refuses
+        let blocks = vec!["C1|1|1791735050|0\nC1|1|1791735051|0\n".to_owned()];
+        assert_eq!(
+            invalid(&blocks_file("256", "2", &blocks)).reason,
+            Invalid::Count
+        );
+        assert_eq!(
+            invalid(&blocks_file("256", "3", &blocks)).reason,
+            Invalid::EntryHeader(3)
+        );
+    }
+
+    #[test]
+    fn entry_checks_number_their_seq_across_blocks() {
+        // CMP-R31: header and character checks run on the expanded entries (issue #57)
+        let mut entries = entries_of(6);
+        entries[4] = "C1|9|1791735060|0".to_owned();
+        assert_eq!(invalid(&format4(&entries, 3)).reason, Invalid::EntryChar(5));
+        entries[4] = "?".to_owned();
+        assert_eq!(
+            invalid(&format4(&entries, 3)).reason,
+            Invalid::EntryHeader(5)
+        );
+    }
+
+    #[test]
+    fn recovery_reads_format_4_entries_without_header_checks() {
+        // Recovery reads malformed entries as data (parse_recovery), blocks included
+        let blocks = vec!["junk\nC1|1|1791735051|0".to_owned()];
+        let Found::Valid(log) =
+            parse_recovery(blocks_file("256", "2", &blocks).as_bytes()).expect("parses")
+        else {
+            panic!("not valid");
+        };
+        assert_eq!(log.entry(1), Some(&b"junk"[..]));
+        // the reserved byte and the counts still apply
+        let reserved = vec!["\u{1}x".to_owned()];
+        assert!(matches!(
+            parse_recovery(blocks_file("256", "1", &reserved).as_bytes()).expect("parses"),
+            Found::Invalid(InvalidLog {
+                reason: Invalid::ReservedBlock(1),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_missing_or_malformed_block_size_count_or_blocks_is_invalid() {
+        // CMP-R31: blockSize, count and blocks read as integer literals and a list of strings
+        let blocks = blocks_of(&entries_of(2), 256);
+        for size in [
+            "0",
+            "-1",
+            "1.5",
+            "\"256\"",
+            "nil",
+            "true",
+            "9007199254740992",
+        ] {
+            assert_eq!(
+                invalid(&blocks_file(size, "2", &blocks)).reason,
+                Invalid::BlockSize,
+                "blockSize {size}"
+            );
+        }
+        for count in ["-1", "1.5", "\"2\"", "nil", "0x2", "02"] {
+            assert_eq!(
+                invalid(&blocks_file("256", count, &blocks)).reason,
+                Invalid::Count,
+                "count {count}"
+            );
+        }
+        let source = blocks_file("256", "2", &blocks);
+        let no_blocks = source.replace("[\"blocks\"]", "[\"blocks2\"]");
+        assert_eq!(invalid(&no_blocks).reason, Invalid::Blocks);
+        for blocks in [
+            "\"abc\"",
+            "{ 5 }",
+            "{ [1] = \"C1|1|1|0\", [3] = \"C1|1|2|0\" }",
+            "{ \"C1|1|1|0\", x = \"y\" }",
+        ] {
+            let source = format!(
+                "PagleLog = {{ format = 4, logId = \"3f9a2c1e7b0d4a65\", characters = {{ {} }},\n \
+                 blockSize = 256, count = 1, blocks = {blocks} }}",
+                ada()
+            );
+            assert_eq!(invalid(&source).reason, Invalid::Blocks, "{blocks}");
+        }
+    }
+
+    #[test]
+    fn a_log_keeps_to_its_formats_storage() {
+        // CMP-R31: format 4 reads blocks and formats 1 to 3 read entries (issue #57)
+        let four = format4(&entries_of(2), 256);
+        let with_entries_only = four
+            .replace("[\"blocks\"]", "[\"entries\"]")
+            .replace("[\"blockSize\"] = 256,", "")
+            .replace("[\"count\"] = 2,", "");
+        assert_eq!(invalid(&with_entries_only).reason, Invalid::Blocks);
+        let three_with_blocks = format!(
+            "PagleLog = {{ format = 3, logId = \"3f9a2c1e7b0d4a65\", characters = {{ {} }},\n \
+             blockSize = 256, count = 1, blocks = {{ \"C1|1|1791735050|0\" }} }}",
+            ada()
+        );
+        assert_eq!(invalid(&three_with_blocks).reason, Invalid::Entries);
+        for format in ["1", "2", "3"] {
+            valid(&file(
+                format,
+                "\"3f9a2c1e7b0d4a65\"",
+                &format!("{{ {} }}", ada()),
+                &format!("{{ {ENTRY_1} }}"),
+            ));
+        }
+    }
+
+    #[test]
+    fn a_format_above_4_reads_as_blocks_and_one_stored_as_entries_is_invalid_blocks() {
+        // CMP-R31: format is any integer literal of at least 1, so the backend answers
+        // `unsupported_format` for one it can't read; the block layout is frozen (LOG-R17)
+        let entries = entries_of(300);
+        for format in ["5", "12", "9007199254740991"] {
+            let source = format4(&entries, 256)
+                .replace("[\"format\"] = 4,", &format!("[\"format\"] = {format},"));
+            let log = valid(&source);
+            assert_eq!(log.format, format.parse::<u64>().unwrap());
+            assert_eq!(log.len(), 300);
+        }
+        // entries alone, as formats 1 to 3 store them, is not readable at 12
+        let source = format!(
+            "PagleLog = {{ format = 12, logId = \"3f9a2c1e7b0d4a65\", characters = {{ {} }},\n \
+             entries = {{ {ENTRY_1} }} }}",
+            ada()
+        );
+        let log = invalid(&source);
+        assert_eq!(log.reason, Invalid::Blocks);
+        assert_eq!(log.log_id.as_deref(), Some("3f9a2c1e7b0d4a65"));
+    }
+
+    #[test]
+    fn format_4_reasons_never_name_entry_text() {
+        // CMP-R112: reasons name indexes and counts only
+        assert_eq!(
+            Invalid::Block(3).to_string(),
+            "block 3 doesn't hold a valid number of entries"
+        );
+        assert_eq!(
+            Invalid::ReservedBlock(2).to_string(),
+            "block 2 starts with a reserved byte"
         );
     }
 }
