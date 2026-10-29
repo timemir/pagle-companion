@@ -27,7 +27,11 @@ async fn recovery_harness() -> Harness {
     let flavor = h.folder.ancestors().nth(3).unwrap();
     let addon = flavor.join("Interface/AddOns/Pagle");
     std::fs::create_dir_all(&addon).unwrap();
-    std::fs::write(addon.join("Pagle.toc"), b"## Interface: 16001\n").unwrap();
+    std::fs::write(
+        addon.join("Pagle.toc"),
+        b"## Interface: 16002\n## AllowLoadGameType: camelot\n",
+    )
+    .unwrap();
     let replacement = crate::recovery::snapshot::decode(
         &STANDARD
             .decode(f["replacementSnapshot"].as_str().unwrap())
@@ -80,6 +84,7 @@ async fn signed_recovery_stages_only_the_selected_install_without_changing_saved
     let lua = std::fs::read_to_string(folder.join("Recovery.lua")).unwrap();
     assert!(lua.contains(f["signed"]["payload"].as_str().unwrap()));
     let toc = std::fs::read_to_string(folder.join("Pagle_Recovery.toc")).unwrap();
+    assert!(toc.starts_with("## Interface: 16002\n## AllowLoadGameType: camelot\n"));
     assert!(toc.contains("## LoadOnDemand: 1"));
     assert!(!toc.contains("Dependencies:"));
     assert_eq!(

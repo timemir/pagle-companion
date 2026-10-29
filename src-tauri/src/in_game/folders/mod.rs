@@ -157,6 +157,25 @@ pub fn copied_lines(pagle_toc: &[u8]) -> CopiedLines {
 /// A folder's TOC (IGV Contracts, The TOCs; CMP-R83): its template with the
 /// copied lines, a line `Pagle.toc` lacks left out. LF line ends, no BOM.
 pub fn toc(file: DataFile, lines: &CopiedLines) -> Vec<u8> {
+    with_copied_lines(lines, file.toc_rest())
+}
+
+/// The private Recovery package's TOC lines after the two copied ones.
+const RECOVERY_TOC_REST: &str = concat!(
+    "## Title: Pagle Recovery\n",
+    "## LoadOnDemand: 1\n",
+    "## Version: 1\n",
+    "\n",
+    "Recovery.lua\n",
+);
+
+/// `Pagle_Recovery.toc` (CMP-R83, RCV-R2): the copied lines, so a staged
+/// package loads on the client Pagle targets, then its own template.
+pub fn recovery_toc(lines: &CopiedLines) -> Vec<u8> {
+    with_copied_lines(lines, RECOVERY_TOC_REST)
+}
+
+fn with_copied_lines(lines: &CopiedLines, rest: &str) -> Vec<u8> {
     let mut toc = Vec::new();
     for line in [&lines.interface, &lines.allow_load_game_type]
         .into_iter()
@@ -165,7 +184,7 @@ pub fn toc(file: DataFile, lines: &CopiedLines) -> Vec<u8> {
         toc.extend_from_slice(line);
         toc.push(b'\n');
     }
-    toc.extend_from_slice(file.toc_rest().as_bytes());
+    toc.extend_from_slice(rest.as_bytes());
     toc
 }
 
@@ -418,10 +437,19 @@ impl Addon {
     }
 
     fn toc(&self, file: DataFile) -> io::Result<Vec<u8>> {
-        Ok(toc(
-            file,
-            &copied_lines(&paths::read_file(&self.pagle_toc, TOC_CAP)?),
-        ))
+        Ok(toc(file, &self.copied_lines()?))
+    }
+
+    fn copied_lines(&self) -> io::Result<CopiedLines> {
+        Ok(copied_lines(&paths::read_file(&self.pagle_toc, TOC_CAP)?))
+    }
+
+    /// `Pagle_Recovery/` when it is a folder of its own holding a staged
+    /// `Recovery.lua`, neither of them a link.
+    fn recovery_with_data(&self) -> Option<PathBuf> {
+        let folder = paths::lookup(&self.addons, "Pagle_Recovery")?;
+        let data = fs::symlink_metadata(folder.join("Recovery.lua"));
+        (is_folder_of_its_own(&folder) && data.is_ok_and(|meta| meta.is_file())).then_some(folder)
     }
 }
 
@@ -536,13 +564,14 @@ fn stage_recovery_with_fs(fs: &dyn Fs, account: &str, lua: &[u8]) -> io::Result<
     let target = addons.target(name);
     let new = !fs::symlink_metadata(target.at.join("Pagle_Recovery.toc"))
         .is_ok_and(|meta| meta.is_file());
+    let toc = recovery_toc(&addon.copied_lines()?);
     let folder = Pinned::open_or_create(fs, &target.at)?;
     flavor_pin.check()?;
     interface_pin.check()?;
     addons.check()?;
     write_atomic(fs, &folder, "Recovery.lua", lua)?;
     write_atomic(fs, &folder, "README.txt", b"Pagle Recovery restores Accepted history and preserves your original local branch. Return to character selection for a new folder; otherwise /reload. Then Upload again to check consistency.\n")?;
-    write_atomic(fs, &folder, "Pagle_Recovery.toc", b"## Interface: 16001\n## Title: Pagle Recovery\n## LoadOnDemand: 1\n## Version: 1\n\nRecovery.lua\n")?;
+    write_atomic(fs, &folder, "Pagle_Recovery.toc", &toc)?;
     Ok(new)
 }
 
@@ -939,6 +968,28 @@ impl Writer {
                         );
                         self.fail(flavor, file, &folder, Cause::TocRefresh);
                     }
+                }
+            }
+            // A staged Recovery follows Pagle.toc too, so a client patch
+            // between staging and login doesn't leave it out of date.
+            if let Some(folder) = addon.recovery_with_data() {
+                let refreshed = addon.copied_lines().and_then(|lines| {
+                    let want = recovery_toc(&lines);
+                    let pinned = Pinned::open(&folder)?
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+                    let have =
+                        paths::read_file(&pinned.target("Pagle_Recovery.toc").at, TOC_CAP).ok();
+                    if have.as_deref() == Some(want.as_slice()) {
+                        return Ok(());
+                    }
+                    log::info!("rewriting {}", folder.join("Pagle_Recovery.toc").display());
+                    write_atomic(self.fs.as_ref(), &pinned, "Pagle_Recovery.toc", &want)
+                });
+                if let Err(e) = refreshed {
+                    log::warn!(
+                        "couldn't write Pagle_Recovery.toc to {}: {e}",
+                        folder.display()
+                    );
                 }
             }
         }
