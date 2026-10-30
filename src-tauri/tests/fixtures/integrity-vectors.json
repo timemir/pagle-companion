@@ -784,6 +784,14 @@
       "entry": "C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x2,0x1",
       "digest": "a3a2262fc38821cd648601482fd957f58d877aab982734fa7ed7124d116c5a4b",
       "frame": "PGL-ENTRY|1|b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c|1|20|Player-4618-0A1B2C3D|71|C1|1|1791731747|0|c|494|1439|1|148|453|86|-5|263|12,301|8087|6358x2,0x1\n"
+    },
+    {
+      "previous": "b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c",
+      "sequence": 1,
+      "guid": "Player-4618-0A1B2C3D",
+      "entry": "",
+      "digest": "28a3fd8ad07ac361ab58e600824fab0b6cd13e9394ccb6eb0018d050a97de70e",
+      "frame": "PGL-ENTRY|1|b448ee07289b1c47e28f8add3113e3990a833adf5a0e7df1585b8a789e75204c|1|20|Player-4618-0A1B2C3D|0|\n"
     }
   ]
 }
