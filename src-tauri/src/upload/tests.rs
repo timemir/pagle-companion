@@ -1474,7 +1474,7 @@ mod recovery_journeys;
 async fn every_uploaded_document_matches_the_independent_version_2_vector() {
     let vectors: serde_json::Value =
         serde_json::from_str(include_str!("../../fixtures/document-v2.json")).unwrap();
-    for format in [1, 2, 3] {
+    for format in [1, 2, 3, 4] {
         let pages = vectors[format!("format{format}")].as_array().unwrap();
         let first = pages[0]["document"]
             .as_str()
@@ -1486,17 +1486,31 @@ async fn every_uploaded_document_matches_the_independent_version_2_vector() {
             let hardcore=match f[7] {"0"=>"false","1"=>"true",_=>"nil"};
             format!("{{guid={:?},name={:?},surname={:?},classID={},raceID={},faction={:?},realmID={},hardcore={hardcore},firstSeen={},lastSeen={}}}",f[0],f[1],f[2],f[3],f[4],f[5],f[6],f[8],f[9])
         }).collect::<Vec<_>>().join(",");
-        let entries = pages
+        let lines = pages
             .iter()
             .flat_map(|page| page["document"].as_str().unwrap().lines().skip(3))
-            .map(|entry| format!("{entry:?}"))
-            .collect::<Vec<_>>()
-            .join(",");
+            .collect::<Vec<_>>();
+        // Format 4 stores the same entries LF-joined in blocks (CMP-R31).
+        let storage = if format >= 4 {
+            let blocks = lines
+                .chunks(256)
+                .map(|block| format!("{:?}", block.join("\n")))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("blockSize=256,count={},blocks={{{blocks}}}", lines.len())
+        } else {
+            let entries = lines
+                .iter()
+                .map(|entry| format!("{entry:?}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("entries={{{entries}}}")
+        };
         let h = Harness::new(9).await;
         save(
             &h.folder,
             &format!(
-                "PagleLog={{format={format},logId={LOG_A:?},characters={{{characters}}},entries={{{entries}}}}}"
+                "PagleLog={{format={format},logId={LOG_A:?},characters={{{characters}}},{storage}}}"
             ),
         );
         assert_eq!(
