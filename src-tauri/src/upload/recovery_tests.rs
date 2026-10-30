@@ -12,6 +12,17 @@ use wiremock::{Mock, Request};
 fn fixture() -> serde_json::Value {
     serde_json::from_str(include_str!("../../fixtures/recovery/staged-v1.json")).unwrap()
 }
+/// The fixture's local log as the addon leaves it once it has applied the package: the
+/// accepted record alone, without the staged original one (the log is stored in blocks
+/// from format 4, entries before, so this leaves the fixture's own layout alone).
+fn applied_source() -> String {
+    fixture()["sourceLua"]
+        .as_str()
+        .unwrap()
+        .replace("\\nopaque broken source record", "")
+        .replace(", \"opaque broken source record\"", "")
+        .replace("count = 2", "count = 1")
+}
 async fn recovery_harness() -> Harness {
     let mut h = Harness::new(1).await;
     h.uploads = Arc::new(Uploads::with_recovery_test_key());
@@ -220,13 +231,7 @@ async fn completion_waits_for_a_real_full_upload_and_retries_after_a_refused_con
     );
     // The addon wrote its guarded replacement. The complete original remains
     // owned by the addon; Companion reads only this newly saved normal log.
-    save(
-        &h.folder,
-        &fixture()["sourceLua"]
-            .as_str()
-            .unwrap()
-            .replace(", \"opaque broken source record\"", ""),
-    );
+    save(&h.folder, &applied_source());
     Mock::given(method("POST"))
         .and(path(&confirm))
         .respond_with(
@@ -359,13 +364,10 @@ async fn semantic_snapshot_preserves_nil_false_unicode_and_full_metadata_on_the_
         serde_json::from_str(include_str!("../../fixtures/recovery/snapshot-v1.json")).unwrap();
     for vector in vectors["vectors"].as_array().unwrap() {
         let h = recovery_harness().await;
-        let mut source = fixture()["sourceLua"]
-            .as_str()
-            .unwrap()
-            .replace(", \"opaque broken source record\"", "");
+        let mut source = applied_source();
         match vector["name"].as_str().unwrap() {
             "nil-selfFound" => source = source.replace("selfFound=false", "selfFound=nil"),
-            "false-test" => source = source.replace("format = 3,", "format = 3, test = false,"),
+            "false-test" => source = source.replace("PagleLog = { ", "PagleLog = { test = false, "),
             "unicode" => source = source.replace("name=\"Ada\"", "name=\"Bé\""),
             "base" => {}
             other => panic!("unhandled independent snapshot vector {other}"),
@@ -532,13 +534,7 @@ async fn every_recovery_endpoint_obeys_required_stops() {
             let target = if endpoint == "confirm" {
                 serve(&h, fixture()["signed"].clone()).await;
                 recover(&h).await.unwrap();
-                save(
-                    &h.folder,
-                    &fixture()["sourceLua"]
-                        .as_str()
-                        .unwrap()
-                        .replace(", \"opaque broken source record\"", ""),
-                );
+                save(&h.folder, &applied_source());
                 format!(
                     "/api/v1/catch-logs/{LOG_B}/recovery/{}/confirm",
                     fixture()["signed"]["applicationId"].as_str().unwrap()
@@ -620,13 +616,7 @@ async fn linking_another_player_discards_the_previous_players_recovery() {
     assert_eq!(after.answer, before.answer);
     assert_eq!(after.folder, before.folder);
     assert_eq!(after.last_folder, before.last_folder);
-    save(
-        &h.folder,
-        &fixture()["sourceLua"]
-            .as_str()
-            .unwrap()
-            .replace(", \"opaque broken source record\"", ""),
-    );
+    save(&h.folder, &applied_source());
     h.uploads.trigger(LOG_B, Trigger::PostLink);
     assert_eq!(
         h.uploads.run_queued(&h.ctx()).await,
@@ -684,13 +674,7 @@ async fn a_failed_retirement_keeps_pending_recovery_until_upload_retries_cleanup
     ));
     std::fs::create_dir(&obstacle).unwrap();
     std::fs::write(obstacle.join("keep"), b"occupied").unwrap();
-    save(
-        &h.folder,
-        &fixture()["sourceLua"]
-            .as_str()
-            .unwrap()
-            .replace(", \"opaque broken source record\"", ""),
-    );
+    save(&h.folder, &applied_source());
     Mock::given(path(format!(
         "/api/v1/catch-logs/{LOG_B}/recovery/{}/confirm",
         pending.application_id
@@ -733,13 +717,7 @@ async fn recovery_retirement_cannot_follow_a_folder_link_outside_the_install() {
 /// The addon applied the package: the restored log, without the staged
 /// original record.
 fn save_applied(h: &Harness) {
-    save(
-        &h.folder,
-        &fixture()["sourceLua"]
-            .as_str()
-            .unwrap()
-            .replace(", \"opaque broken source record\"", ""),
-    );
+    save(&h.folder, &applied_source());
 }
 fn confirm_path() -> String {
     format!(
