@@ -26,9 +26,9 @@ use serde::Serialize;
 pub use scanner::{Inputs, Scanner, Snapshot};
 
 /// The Forever product uid built into the release (CMP Tunables), used until
-/// a config read has ever succeeded (CMP-R12). A dev build may name the live
-/// product's code here.
-pub const BUILT_IN_FOREVER_PRODUCT_UID: &str = "wow_classic_beta";
+/// a config read has ever succeeded (CMP-R12): live Forever's product code,
+/// as a live install's `.flavor.info` names it under `Product Flavor`.
+pub const BUILT_IN_FOREVER_PRODUCT_UID: &str = "wowf";
 
 /// Rescan interval (CMP Tunables, CMP-R14).
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -364,9 +364,9 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_uid_is_the_beta() {
-        // CMP Tunables: built-in Forever product uid, wow_classic_beta
-        assert_eq!(BUILT_IN_FOREVER_PRODUCT_UID, "wow_classic_beta");
+    fn the_built_in_uid_is_live_forever() {
+        // CMP Tunables: built-in Forever product uid, wowf
+        assert_eq!(BUILT_IN_FOREVER_PRODUCT_UID, "wowf");
         assert_eq!(RESCAN_INTERVAL, Duration::from_secs(3600));
         assert_eq!(DEBOUNCE, Duration::from_secs(1));
         assert_eq!(POLL_INTERVAL, Duration::from_secs(30));
@@ -375,14 +375,14 @@ mod tests {
     #[test]
     fn only_the_candidate_naming_the_forever_uid_is_an_install() {
         // CMP-R11, CMP-R12: of two products, the candidate whose .flavor.info
-        // reads wow_classic_beta under Product Flavor is an install, the
-        // other is dropped; a BOM and CR are ignored
+        // reads wowf under Product Flavor is an install, the other is
+        // dropped; a BOM and CR are ignored
         let tmp = tempfile::tempdir().unwrap();
         let root = mkdirs(tmp.path(), "World of Warcraft");
-        let beta = mkdirs(&root, "_classic_beta_");
+        let forever = mkdirs(&root, "_forever_");
         fs::write(
-            beta.join(".flavor.info"),
-            b"\xEF\xBB\xBFProduct Flavor!STRING:0\r\nwow_classic_beta\r\n",
+            forever.join(".flavor.info"),
+            b"\xEF\xBB\xBFProduct Flavor!STRING:0\r\nwowf\r\n",
         )
         .unwrap();
         flavor(&root, "_retail_", "wow");
@@ -391,14 +391,14 @@ mod tests {
             &agent,
             &[
                 (&location(&root), "_retail_"),
-                (&location(&root), "_classic_beta_"),
+                (&location(&root), "_forever_"),
             ],
         );
 
         let scan = scan(&[windows_source(&agent)], &[], UID);
         assert_eq!(scan.installs.len(), 1);
         let install = &scan.installs[0];
-        assert_eq!(install.flavor, canon(&beta));
+        assert_eq!(install.flavor, canon(&forever));
         assert_eq!(install.root, canon(&root));
         assert_eq!(install.source, Source::BattleNet);
         assert!(scan.skipped.is_empty());
@@ -431,29 +431,30 @@ mod tests {
     fn the_uid_is_compared_byte_for_byte() {
         // CMP-R12: compared byte for byte
         let tmp = tempfile::tempdir().unwrap();
-        let beta = flavor(tmp.path(), "WoW/_classic_beta_", "WOW_CLASSIC_BETA");
-        assert_eq!(qualifying(&beta, UID), None);
-        assert_eq!(qualifying(&beta, "WOW_CLASSIC_BETA"), Some(canon(&beta)));
+        let forever = flavor(tmp.path(), "WoW/_forever_", "WOWF");
+        assert_eq!(qualifying(&forever, UID), None);
+        assert_eq!(qualifying(&forever, "WOWF"), Some(canon(&forever)));
     }
 
     #[test]
     fn a_changed_uid_finds_another_install() {
         // CMP-R12: the uid of the last config read replaces the built-in
-        // one, so from the switch on, beta installs are no longer found
+        // one, so from the switch on, installs naming only the built-in uid
+        // are no longer found
         let tmp = tempfile::tempdir().unwrap();
         let root = mkdirs(tmp.path(), "WoW");
-        flavor(&root, "_classic_beta_", UID);
-        let live = flavor(&root, "_classic_forever_", "wow_classic_forever");
+        flavor(&root, "_forever_", UID);
+        let live = flavor(&root, "_forever_next_", "wowf_next");
         let agent = tmp.path().join("Agent");
         product_db(
             &agent,
             &[
-                (&location(&root), "_classic_beta_"),
-                (&location(&root), "_classic_forever_"),
+                (&location(&root), "_forever_"),
+                (&location(&root), "_forever_next_"),
             ],
         );
 
-        let scan = scan(&[windows_source(&agent)], &[], "wow_classic_forever");
+        let scan = scan(&[windows_source(&agent)], &[], "wowf_next");
         assert_eq!(scan.installs.len(), 1);
         assert_eq!(scan.installs[0].flavor, canon(&live));
     }
