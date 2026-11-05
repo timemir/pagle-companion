@@ -12,10 +12,12 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tokio::sync::watch;
 
+use crate::catch_logs;
 use crate::companion::Companion;
 use crate::device_flow::{self, End, Failure};
 use crate::host::Host;
 use crate::link::{KEYRING_RETRY, LinkStatus, Stop};
+use crate::readings::Readings;
 
 /// The Linking part (CMP UI, Linking).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -253,6 +255,17 @@ pub fn begin_link(app: &AppHandle) {
     tauri::async_runtime::spawn(run_link(app.clone(), attempt, ended));
 }
 
+/// The token poll's Catch log counts (CMP-R60): none until this process's
+/// first scan's reads have ended.
+fn catch_log_counts(app: &AppHandle) -> Option<device_flow::Counts> {
+    let snapshot = app.try_state::<Readings>()?.snapshot()?;
+    let (found, to_upload) = app
+        .state::<Companion>()
+        .state
+        .read(|state| catch_logs::poll_counts(state, &snapshot));
+    Some(device_flow::Counts { found, to_upload })
+}
+
 async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
     let companion = app.state::<Companion>();
     let linking = app.state::<Linking>();
@@ -284,9 +297,12 @@ async fn run_link(app: AppHandle, attempt: u64, ended: watch::Receiver<u64>) {
     emit_linking(&app);
     open_in_browser(&code.verification_uri_complete);
 
-    let end = device_flow::poll(&companion.api, &code, |pause| {
-        wait_or_cancel(pause, ended.clone())
-    })
+    let end = device_flow::poll(
+        &companion.api,
+        &code,
+        |pause| wait_or_cancel(pause, ended.clone()),
+        || catch_log_counts(&app),
+    )
     .await;
     let view = match end {
         End::Cancelled => return,
