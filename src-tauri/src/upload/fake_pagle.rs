@@ -52,9 +52,9 @@ struct Held {
 }
 
 /// The `catchLog` a success carries unless a test sets another: Pending
-/// `forever-api`, the v1 state for everyone (ACC-R21).
-fn forever_api() -> serde_json::Value {
-    json!({ "verification": "pending", "pendingReason": "forever-api",
+/// `sign-in-needed`, a Catch log not yet verified (ACC-R21).
+fn sign_in_needed() -> serde_json::Value {
+    json!({ "verification": "pending", "pendingReason": "sign-in-needed",
             "heldCharacters": 0, "leftOff": null })
 }
 
@@ -92,7 +92,7 @@ struct Inner {
     logs: HashMap<String, Held>,
     /// `logId`s deleted on the website (UPL-R64).
     tombstones: HashSet<String>,
-    /// What successes carry as `catchLog`; `None` for [`forever_api`].
+    /// What successes carry as `catchLog`; `None` for [`sign_in_needed`].
     catch_log: Option<serde_json::Value>,
     /// What the next requests to each endpoint get instead; `None` lets one
     /// through to the stub's own answer.
@@ -280,7 +280,7 @@ fn apply(inner: &mut Inner, document: &[u8]) -> (u16, serde_json::Value) {
                     "newestAsOf": null, "catchLog": null }),
         );
     }
-    let catch_log = inner.catch_log.clone().unwrap_or_else(forever_api);
+    let catch_log = inner.catch_log.clone().unwrap_or_else(sign_in_needed);
     let held = inner.logs.entry(seen.log_id.clone()).or_default();
     let e = held.entries.len() as u64;
     let refuse = |status: u16, code: &str, held: &Held| {

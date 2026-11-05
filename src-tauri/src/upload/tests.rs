@@ -49,8 +49,7 @@ const UPDATE_REQUIRED: &str =
     "This version of Pagle Companion is too old. Update it to keep uploading.";
 const LOG_CAP: &str = "You already have 20 Catch logs on Pagle. Delete one to add another.";
 const DIFFERS: &str = "This Catch log differs from the copy on Pagle.";
-const FOREVER_API: &str = "Battle.net doesn't list WoW Forever characters yet. Your Catch log \
-                           is safe here and will be verified once it does.";
+const SIGN_IN_NEEDED: &str = "Sign in again so Pagle can verify this Catch log.";
 const HELD: &str = "A new character needs verifying. Sign in again to verify it.";
 const LEFT_OFF: &str =
     "This Angler is left off Leaderboards and First reported. Your Angler page says why.";
@@ -398,7 +397,7 @@ async fn a_finished_run_records_last_run_and_last_uploaded() {
     assert_eq!((run.code, run.message), (None, None));
     let catch_log = run.catch_log.unwrap();
     assert_eq!(catch_log.verification, "pending");
-    assert_eq!(catch_log.pending_reason.as_deref(), Some("forever-api"));
+    assert_eq!(catch_log.pending_reason.as_deref(), Some("sign-in-needed"));
     assert_eq!(log.last_uploaded_at, Some(NOW));
 
     assert!(h.env.changed.load(Ordering::SeqCst) > 0);
@@ -721,7 +720,9 @@ async fn the_row_says_uploaded_or_up_to_date() {
         catch_logs::run_line(&h.log(), NOW + 5 * 60),
         Some(Line::Uploaded {
             text: "Uploaded 5 minutes ago".into(),
-            notes: vec![Note::Pending { text: FOREVER_API }],
+            notes: vec![Note::Pending {
+                text: SIGN_IN_NEEDED
+            }],
         })
     );
     h.run(Trigger::UploadNow).await;
@@ -729,14 +730,16 @@ async fn the_row_says_uploaded_or_up_to_date() {
         h.line(),
         Some(Line::UpToDate {
             text: "Up to date",
-            notes: vec![Note::Pending { text: FOREVER_API }],
+            notes: vec![Note::Pending {
+                text: SIGN_IN_NEEDED
+            }],
         })
     );
     let json = serde_json::to_value(h.line()).unwrap();
     assert_eq!(
         json,
         json!({ "kind": "up-to-date", "text": "Up to date",
-                "notes": [{ "kind": "pending", "text": FOREVER_API }] })
+                "notes": [{ "kind": "pending", "text": SIGN_IN_NEEDED }] })
     );
 }
 
@@ -1148,17 +1151,46 @@ async fn update_required_stops_runs_with_its_message() {
 }
 
 #[tokio::test]
-async fn an_applied_reply_pending_forever_api_shows_its_sentence_and_no_notification() {
+async fn an_applied_reply_pending_shows_its_sentence_and_no_notification() {
     // CMP-R53: pending with a pendingReason shows the text for that reason
-    // (accounts.md UI, Pending reasons), with no notification; CMP-R125:
-    // with no Forever namespace every Catch log is Pending forever-api
+    // (accounts.md UI, Pending reasons), with no notification
     let h = Harness::new(15).await;
     h.run(Trigger::Start).await;
     assert_eq!(
         h.line(),
         Some(Line::Uploaded {
             text: "Uploaded just now".into(),
-            notes: vec![Note::Pending { text: FOREVER_API }],
+            notes: vec![Note::Pending {
+                text: SIGN_IN_NEEDED
+            }],
+        })
+    );
+    assert!(h.shown().is_empty());
+}
+
+#[tokio::test]
+async fn pending_forever_api_shows_no_line() {
+    // CMP-R53: forever-api no longer holds now that Pagle verifies Forever
+    // characters, so a reply or a kept catchLog with it shows nothing more
+    let h = Harness::new(15).await;
+    h.pagle.set_catch_log(
+        json!({ "verification": "pending", "pendingReason": "forever-api",
+                                  "heldCharacters": 0, "leftOff": null }),
+    );
+    h.run(Trigger::Start).await;
+    assert_eq!(
+        h.line(),
+        Some(Line::Uploaded {
+            text: "Uploaded just now".into(),
+            notes: vec![],
+        })
+    );
+    h.run(Trigger::UploadNow).await;
+    assert_eq!(
+        h.line(),
+        Some(Line::UpToDate {
+            text: "Up to date",
+            notes: vec![],
         })
     );
     assert!(h.shown().is_empty());
