@@ -263,10 +263,13 @@ pub async fn start(api: &Api, device_name: &str) -> Result<DeviceCode, Failure> 
     Err(error.update_required().unwrap_or(Failure::Failed))
 }
 
-/// What a token poll tells the backend about this machine's Catch logs
-/// (CMP-R60), so the receiving page can tell "linked, but no Catch log"
-/// apart: the `logId`s a valid local log with entries holds (CMP-R32), and
-/// those confirmed to upload (CMP-R40, CMP-R42).
+/// The two counts each token poll carries once the first scan has ended
+/// (CMP-R60): `catch_logs_found`, the valid local Catch logs with at least
+/// one entry, and `catch_logs_to_upload`, of those the ones answered
+/// **Upload** (CMP-R40). Only the poll that collects the credential has them
+/// stored (ACC-R44 step 8), so the receiving page can tell "no Catch log" from
+/// "none set to Upload" (ACC-R49). Counts only, with no `logId`, name or path
+/// (CMP-R6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     pub found: usize,

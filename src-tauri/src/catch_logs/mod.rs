@@ -268,9 +268,9 @@ pub fn confirmed(state: &State, snapshot: &Snapshot) -> Confirmed {
         .collect()
 }
 
-/// What the token poll tells the backend (CMP-R60): the `logId`s a valid
-/// local log with entries holds, each counted once however many account
-/// folders hold it (CMP-R32), and the confirmed ones (CMP-R40, CMP-R42).
+/// The token poll's counts (CMP-R60): the valid local Catch logs with at least
+/// one entry, each `logId` counted once however many account folders hold it
+/// (CMP-R32), and of those the ones answered **Upload** (CMP-R40, CMP-R42).
 pub fn poll_counts(state: &State, snapshot: &Snapshot) -> (usize, usize) {
     (
         snapshot.catch_logs().len(),
