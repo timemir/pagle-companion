@@ -268,6 +268,16 @@ pub fn confirmed(state: &State, snapshot: &Snapshot) -> Confirmed {
         .collect()
 }
 
+/// The token poll's counts (CMP-R60): the valid local Catch logs with at least
+/// one entry, each `logId` counted once however many account folders hold it
+/// (CMP-R32), and of those the ones answered **Upload** (CMP-R40, CMP-R42).
+pub fn poll_counts(state: &State, snapshot: &Snapshot) -> (usize, usize) {
+    (
+        snapshot.catch_logs().len(),
+        confirmed(state, snapshot).len(),
+    )
+}
+
 /// Whether a log awaits an answer it can be asked now: unanswered, with its
 /// folder settled (CMP-R40).
 fn awaiting(log: &LogState, decision: &Decision) -> bool {
@@ -1054,6 +1064,30 @@ mod tests {
             .into_iter()
             .find(|r| r.log_id == log_id)
             .expect("no row")
+    }
+
+    #[test]
+    fn cmp_r60_the_poll_counts_distinct_logs_and_the_confirmed_ones() {
+        // CMP-R60: a logId held in two account folders counts once, an empty
+        // log not at all (CMP-R32); only logs answered Upload with a settled
+        // folder are set to upload (CMP-R40, CMP-R42)
+        let snapshot = snapshot(vec![
+            holding(ONE, LOG_A, 1),
+            holding(TWO, LOG_A, 1),
+            holding(THREE, LOG_B, 1),
+            holding(
+                "G:/WoW/_classic_beta_/WTF/Account/ADA#4",
+                "00000000000000ff",
+                0,
+            ),
+        ]);
+        let mut state = state_with(&[
+            (LOG_A, kept(None, None, ONE)),
+            (LOG_B, kept(Some(Answer::Upload), None, THREE)),
+        ]);
+        remember(&mut state, &snapshot);
+        assert_eq!(poll_counts(&state, &snapshot), (2, 1));
+        assert_eq!(poll_counts(&State::default(), &Snapshot::default()), (0, 0));
     }
 
     fn present(state: &State, snapshot: &Snapshot) -> Vec<Cause> {

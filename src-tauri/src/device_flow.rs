@@ -263,10 +263,28 @@ pub async fn start(api: &Api, device_name: &str) -> Result<DeviceCode, Failure> 
     Err(error.update_required().unwrap_or(Failure::Failed))
 }
 
-async fn poll_once(api: &Api, device_code: &str) -> Poll {
+/// The two counts each token poll carries once the first scan has ended
+/// (CMP-R60): `catch_logs_found`, the valid local Catch logs with at least
+/// one entry, and `catch_logs_to_upload`, of those the ones answered
+/// **Upload** (CMP-R40). Only the poll that collects the credential has them
+/// stored (ACC-R44 step 8), so the receiving page can tell "no Catch log" from
+/// "none set to Upload" (ACC-R49). Counts only, with no `logId`, name or path
+/// (CMP-R6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
+    pub found: usize,
+    pub to_upload: usize,
+}
+
+async fn poll_once(api: &Api, device_code: &str, counts: Option<Counts>) -> Poll {
+    let mut body = serde_json::json!({ "grant_type": DEVICE_GRANT, "device_code": device_code });
+    if let Some(counts) = counts {
+        body["catch_logs_found"] = counts.found.into();
+        body["catch_logs_to_upload"] = counts.to_upload.into();
+    }
     let sent = api
         .request(Method::POST, "companion/token")
-        .json(&serde_json::json!({ "grant_type": DEVICE_GRANT, "device_code": device_code }))
+        .json(&body)
         .send()
         .await;
     let reply = match sent {
@@ -315,10 +333,13 @@ async fn poll_once(api: &Api, device_code: &str) -> Poll {
 /// Polls the token endpoint until the link is decided (CMP-R60). Each poll
 /// comes one wait after the last, the first one wait after the code arrived;
 /// `wait` sleeps that long and answers `false` once the Player cancels.
-pub async fn poll<W, F>(api: &Api, code: &DeviceCode, mut wait: W) -> End
+/// `counts` is asked before every poll; while it answers `None` (before this
+/// process's first scan has ended), the poll carries no counts.
+pub async fn poll<W, F, C>(api: &Api, code: &DeviceCode, mut wait: W, mut counts: C) -> End
 where
     W: FnMut(Duration) -> F,
     F: Future<Output = bool>,
+    C: FnMut() -> Option<Counts>,
 {
     let mut interval = Duration::from_secs(code.interval);
     let lifetime = Duration::from_secs(code.expires_in);
@@ -332,7 +353,7 @@ where
             return End::Cancelled;
         }
         waited = waited.saturating_add(pause);
-        match poll_once(api, &code.device_code).await {
+        match poll_once(api, &code.device_code, counts()).await {
             Poll::Pending => {}
             Poll::SlowDown => interval = interval.saturating_add(SLOW_DOWN_STEP),
             Poll::Approved(approval) => return End::Approved(approval),
@@ -564,7 +585,7 @@ mod tests {
         .await;
         let (_, wait) = recorder();
         assert_eq!(
-            poll(&stub_server::api(&server), &code(900, 5), wait).await,
+            poll(&stub_server::api(&server), &code(900, 5), wait, || None).await,
             End::Failed(Failure::Failed)
         );
     }
@@ -585,7 +606,13 @@ mod tests {
         )
         .await;
         let (waits, wait) = recorder();
-        let end = poll(&stub_server::api(&server), &code(u64::MAX, u64::MAX), wait).await;
+        let end = poll(
+            &stub_server::api(&server),
+            &code(u64::MAX, u64::MAX),
+            wait,
+            || None,
+        )
+        .await;
         assert!(matches!(end, End::Approved(_)), "{end:?}");
         assert!(waits.lock().unwrap().iter().all(|d| *d == Duration::MAX));
     }
@@ -675,7 +702,7 @@ mod tests {
         .await;
         let (waits, wait) = recorder();
 
-        let end = poll(&stub_server::api(&server), &code(900, 5), wait).await;
+        let end = poll(&stub_server::api(&server), &code(900, 5), wait, || None).await;
         assert_eq!(
             end,
             End::Approved(Approval {
@@ -713,17 +740,96 @@ mod tests {
         .await;
         let (waits, wait) = recorder();
 
-        poll(&stub_server::api(&server), &code(900, 5), wait).await;
+        poll(&stub_server::api(&server), &code(900, 5), wait, || None).await;
         assert_eq!(secs(&waits), [6, 11, 11, 16]);
         assert_eq!(SLOW_DOWN_STEP, Duration::from_secs(5));
         assert_eq!(POLL_MARGIN, Duration::from_secs(1));
+    }
+
+    async fn token_bodies(server: &wiremock::MockServer) -> Vec<serde_json::Value> {
+        stub_server::requests(server, "companion/token")
+            .await
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn cmp_r60_the_poll_carries_both_counts() {
+        // CMP-R60: once this process's first scan has ended, every poll
+        // carries the Catch logs found and those set to upload, read anew
+        let server = stub_server::start().await;
+        stub_server::script(
+            &server,
+            "POST",
+            "companion/token",
+            vec![
+                device_error(400, "authorization_pending"),
+                approved("pgc_ok", "Ada#1234"),
+            ],
+        )
+        .await;
+        let (_, wait) = recorder();
+        let mut asked = 0;
+        let counts = || {
+            asked += 1;
+            Some(Counts {
+                found: 2,
+                to_upload: asked - 1,
+            })
+        };
+        let end = poll(&stub_server::api(&server), &code(900, 5), wait, counts).await;
+        assert!(matches!(end, End::Approved(_)), "{end:?}");
+        let bodies = token_bodies(&server).await;
+        assert_eq!(bodies.len(), 2);
+        for (i, body) in bodies.iter().enumerate() {
+            assert_eq!(body["grant_type"], DEVICE_GRANT);
+            assert_eq!(body["device_code"], "dc_secret");
+            assert_eq!(body["catch_logs_found"], 2);
+            assert_eq!(body["catch_logs_to_upload"], i);
+        }
+    }
+
+    #[tokio::test]
+    async fn cmp_r60_omits_the_counts_before_the_first_scan() {
+        // CMP-R60: before this process's first scan has ended, a poll
+        // carries neither count; once it has, the next poll carries both
+        let server = stub_server::start().await;
+        stub_server::script(
+            &server,
+            "POST",
+            "companion/token",
+            vec![
+                device_error(400, "authorization_pending"),
+                approved("pgc_ok", "Ada#1234"),
+            ],
+        )
+        .await;
+        let (_, wait) = recorder();
+        let mut scanned = false;
+        let counts = || {
+            let now = scanned.then_some(Counts {
+                found: 1,
+                to_upload: 1,
+            });
+            scanned = true;
+            now
+        };
+        poll(&stub_server::api(&server), &code(900, 5), wait, counts).await;
+        let bodies = token_bodies(&server).await;
+        assert_eq!(bodies.len(), 2);
+        let first = bodies[0].as_object().unwrap();
+        assert!(!first.contains_key("catch_logs_found"), "{first:?}");
+        assert!(!first.contains_key("catch_logs_to_upload"), "{first:?}");
+        assert_eq!(bodies[1]["catch_logs_found"], 1);
+        assert_eq!(bodies[1]["catch_logs_to_upload"], 1);
     }
 
     async fn poll_until(reply: ResponseTemplate) -> End {
         let server = stub_server::start().await;
         stub_server::script(&server, "POST", "companion/token", vec![reply]).await;
         let (_, wait) = recorder();
-        poll(&stub_server::api(&server), &code(900, 5), wait).await
+        poll(&stub_server::api(&server), &code(900, 5), wait, || None).await
     }
 
     #[tokio::test]
@@ -787,7 +893,7 @@ mod tests {
         .await;
         let (waits, wait) = recorder();
 
-        let end = poll(&stub_server::api(&server), &code(20, 4), wait).await;
+        let end = poll(&stub_server::api(&server), &code(20, 4), wait, || None).await;
         assert_eq!(end, End::Failed(Failure::Unreachable));
         // Four polls, 5 s apart: the fourth comes after 20 s, as the code
         // expires.
@@ -795,7 +901,7 @@ mod tests {
 
         let api = Api::new("1.0.0", stub_server::unreachable_base()).unwrap();
         let (waits, wait) = recorder();
-        let end = poll(&api, &code(12, 5), wait).await;
+        let end = poll(&api, &code(12, 5), wait, || None).await;
         assert_eq!(end, End::Failed(Failure::Unreachable));
         assert_eq!(secs(&waits), [6, 6]);
     }
@@ -812,10 +918,15 @@ mod tests {
         )
         .await;
         let mut waits = 0;
-        let end = poll(&stub_server::api(&server), &code(900, 5), |_| {
-            waits += 1;
-            std::future::ready(waits < 2)
-        })
+        let end = poll(
+            &stub_server::api(&server),
+            &code(900, 5),
+            |_| {
+                waits += 1;
+                std::future::ready(waits < 2)
+            },
+            || None,
+        )
         .await;
         assert_eq!(end, End::Cancelled);
         assert_eq!(
