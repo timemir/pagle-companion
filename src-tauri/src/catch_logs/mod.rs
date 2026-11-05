@@ -462,13 +462,11 @@ pub const LEFT_OFF: &str =
     "This Angler is left off Leaderboards and First reported. Your Angler page says why.";
 
 /// The text of a Pending reason (accounts.md UI, Pending reasons); `None`
-/// for one this Companion doesn't know.
+/// for one this Companion doesn't know, and for `forever-api`, whose line no
+/// longer holds now that Pagle verifies Forever characters (CMP-R53): a
+/// `catchLog` kept from before shows nothing until the next reply.
 pub fn pending_reason_text(reason: &str) -> Option<&'static str> {
     Some(match reason {
-        "forever-api" => {
-            "Battle.net doesn't list WoW Forever characters yet. Your Catch log is safe here and \
-             will be verified once it does."
-        }
         "sign-in-needed" => "Sign in again so Pagle can verify this Catch log.",
         "no-wow-profile" => {
             "Pagle couldn't see your WoW characters. Sign in again, leave 'World of Warcraft \
@@ -1675,11 +1673,6 @@ mod tests {
         // reason (accounts.md UI, Pending reasons)
         let cases = [
             (
-                "forever-api",
-                "Battle.net doesn't list WoW Forever characters yet. Your Catch log is safe \
-                 here and will be verified once it does.",
-            ),
-            (
                 "sign-in-needed",
                 "Sign in again so Pagle can verify this Catch log.",
             ),
@@ -1708,6 +1701,8 @@ mod tests {
         }
         // A reason this Companion doesn't know shows nothing.
         assert!(catch_log_notes(&catch_log("pending", Some("new-reason"), 0, false)).is_empty());
+        // Nor does forever-api, which no longer holds (CMP-R53).
+        assert!(catch_log_notes(&catch_log("pending", Some("forever-api"), 0, false)).is_empty());
     }
 
     #[test]
