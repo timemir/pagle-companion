@@ -16,6 +16,13 @@
 //! prove, such as `Pagle_Following`'s order by name and `publicId`, aren't
 //! checked (CMP-R82).
 //!
+//! A `Pagle_Following` body may hold the news block or not (CMP-R82,
+//! IGV-R65): a body without it is checked exactly as before the block
+//! existed. The block is checked against its grammar, the news cap and each
+//! line's `angler` at most `count`; its `kind` only as a lowercase word and
+//! its order not at all, so a later kind or order needs no Companion release
+//! (IGV-R64).
+//!
 //! The check is one pass over the body with no I/O. Besides the body it
 //! holds only the previous title of a block, so a full 16 MiB `Pagle_Anglers`
 //! body costs about its own size in memory.
@@ -34,6 +41,10 @@ use base64::engine::general_purpose::STANDARD;
 /// The followed cap (CMP Tunables, IGV-R41): at most this many Anglers in
 /// `Pagle_Following`.
 pub const FOLLOWED_CAP: usize = 200;
+
+/// The news cap (CMP Tunables, IGV-R41, IGV-R64): at most this many news
+/// lines in `Pagle_Following`'s news block.
+pub const NEWS_CAP: usize = 100;
 
 /// The Anglers cap (CMP Tunables, IGV-R41): at most this many bytes of
 /// `Pagle_Anglers`.
@@ -67,6 +78,16 @@ const KEY_WIDTH: usize = 19;
 /// Characters of a key's search key: its realm and UID (IGV Contracts).
 const SEARCH_KEY_WIDTH: usize = 13;
 
+/// Characters of a news line's `id` (IGV Tunables, news id width; IGV-R63).
+const NEWS_ID_WIDTH: usize = 16;
+
+/// The longest news line `kind` (IGV Contracts, `Pagle_Following`).
+const KIND_LEN: usize = 16;
+
+/// Characters of a news line's non-empty `region` (IGV Contracts,
+/// `Pagle_Following`).
+const REGION_WIDTH: usize = 2;
+
 /// One of the three data files (IGV-R40, HEV-R50).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataFile {
@@ -96,6 +117,16 @@ pub enum Reason {
     AnglersCap,
     /// `Pagle_Following` holds more angler lines than the followed cap.
     FollowedCap,
+    /// `Pagle_Following`'s news block holds more lines than the news cap.
+    NewsCap,
+    /// A news line's `angler` is above the file's `count`.
+    NewsAngler,
+    /// A news line's `id` isn't 16 lower-case hex digits.
+    BadNewsId,
+    /// A news line's `kind` isn't 1 to 16 lower-case letters.
+    BadKind,
+    /// A news line's `region` isn't empty or 2 lower-case letters.
+    BadRegion,
     /// The grammar's literal text (a header, footer, field name or
     /// separator) isn't here; the text it wanted is given.
     ExpectedText(&'static str),
@@ -162,7 +193,12 @@ impl Reason {
     /// The rule the body broke, for the log line.
     pub fn rule(&self) -> &'static str {
         match self {
-            Reason::AnglersCap | Reason::FollowedCap => "IGV-R41, CMP-R82",
+            Reason::AnglersCap | Reason::FollowedCap | Reason::NewsCap | Reason::NewsAngler => {
+                "IGV-R41, CMP-R82"
+            }
+            Reason::BadNewsId | Reason::BadKind | Reason::BadRegion => {
+                "IGV Contracts, Pagle_Following"
+            }
             Reason::ExpectedText(_) | Reason::Expected(_) | Reason::TrailingBytes => {
                 "IGV Contracts"
             }
@@ -200,6 +236,23 @@ impl fmt::Display for Reason {
             }
             Reason::FollowedCap => {
                 write!(f, "more than the followed cap of {FOLLOWED_CAP} Anglers")
+            }
+            Reason::NewsCap => write!(f, "more than the news cap of {NEWS_CAP} news lines"),
+            Reason::NewsAngler => write!(f, "a news line's angler is above count"),
+            Reason::BadNewsId => {
+                write!(
+                    f,
+                    "a news id isn't {NEWS_ID_WIDTH} lower-case hexadecimal digits"
+                )
+            }
+            Reason::BadKind => {
+                write!(f, "a news kind isn't 1 to {KIND_LEN} lower-case letters")
+            }
+            Reason::BadRegion => {
+                write!(
+                    f,
+                    "a news region isn't empty or {REGION_WIDTH} lower-case letters"
+                )
             }
             Reason::ExpectedText(text) => write!(f, "expected the text `{text}`"),
             Reason::Expected(what) => write!(f, "expected {what}"),
@@ -304,7 +357,8 @@ pub fn check(file: DataFile, body: &[u8]) -> Result<(), Rejection> {
 }
 
 /// Checks a decoded `Pagle_Following` body against the `following-file`
-/// grammar, its count and the followed cap (CMP-R82, IGV-R41).
+/// grammar, its count and the followed cap, and its news block if it has one
+/// against the news cap and `count` (CMP-R82, IGV-R41, IGV-R65).
 pub fn check_following(body: &[u8]) -> Result<(), Rejection> {
     following(&mut Cursor::new(body)).map_err(|fail| fail.rejection(DataFile::Following, body))
 }
@@ -380,6 +434,12 @@ fn following(c: &mut Cursor) -> Step {
         lines += 1;
     }
     c.line("},")?;
+    // From pagle-2026j the news block may follow, or not (IGV-R65). Only its
+    // whole opening text starts it, so a body without the block fails, if
+    // it fails, exactly where and why it did before the block existed.
+    if c.rest().starts_with(b"news = {") {
+        news_block(c, count)?;
+    }
     c.line("ok = true,")?;
     c.line("}")?;
     c.end()?;
@@ -387,6 +447,75 @@ fn following(c: &mut Cursor) -> Step {
         return reject_at(count_at, Reason::CountMismatch);
     }
     Ok(())
+}
+
+/// `news-block` (IGV Contracts, `Pagle_Following`): at most the news cap of
+/// lines (IGV-R41, IGV-R64), in an order that isn't checked.
+fn news_block(c: &mut Cursor, count: u64) -> Step {
+    c.line("news = {")?;
+    let mut lines: usize = 0;
+    while c.peek() == Some(b'{') {
+        if lines == NEWS_CAP {
+            return c.fail(Reason::NewsCap);
+        }
+        news_line(c, count)?;
+        lines += 1;
+    }
+    c.line("},")
+}
+
+/// `news-line` (IGV Contracts, `Pagle_Following`), its `angler` at most the
+/// file's `count` (IGV-R41, CMP-R82).
+fn news_line(c: &mut Cursor, count: u64) -> Step {
+    c.text("{ id = ")?;
+    let (at, id) = c.packed(is_hex_lower, Reason::BadNewsId)?;
+    if id.len() != NEWS_ID_WIDTH {
+        return reject_at(at + id.len().min(NEWS_ID_WIDTH), Reason::BadNewsId);
+    }
+    // Only a lower-case word, never one of a list (CMP-R82): a later kind
+    // needs no Companion release, and the addon skips one it doesn't know.
+    c.text(", kind = ")?;
+    let (at, kind) = c.packed(is_lower, Reason::BadKind)?;
+    if kind.is_empty() || kind.len() > KIND_LEN {
+        return reject_at(at + kind.len().min(KIND_LEN), Reason::BadKind);
+    }
+    c.text(", time = ")?;
+    c.nat()?;
+    c.text(", angler = ")?;
+    let angler_at = c.pos;
+    if c.nat()? > count {
+        return reject_at(angler_at, Reason::NewsAngler);
+    }
+    c.text(", name = ")?;
+    c.lua_string()?;
+    c.text(", region = ")?;
+    let (at, region) = c.packed(is_lower, Reason::BadRegion)?;
+    if !(region.is_empty() || region.len() == REGION_WIDTH) {
+        return reject_at(at + region.len().min(REGION_WIDTH), Reason::BadRegion);
+    }
+    c.text(", item = ")?;
+    c.nat()?;
+    c.text(", rank = ")?;
+    c.nat()?;
+    c.text(", key = ")?;
+    c.lua_string()?;
+    c.text(", text = ")?;
+    c.lua_string()?;
+    c.text(", zone = ")?;
+    c.nat()?;
+    c.text(", length = ")?;
+    c.nat()?;
+    c.line(" },")
+}
+
+/// `HEXLOW` (IGV Contracts, `Pagle_Following`).
+fn is_hex_lower(b: u8) -> bool {
+    matches!(b, b'0'..=b'9' | b'a'..=b'f')
+}
+
+/// `LOWER` (IGV Contracts, `Pagle_Following`).
+fn is_lower(b: u8) -> bool {
+    b.is_ascii_lowercase()
 }
 
 /// `angler-line` (IGV Contracts, `Pagle_Following`).
@@ -883,6 +1012,9 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod content_tests;
+
+#[cfg(test)]
+mod news_tests;
 
 #[cfg(test)]
 mod tests {

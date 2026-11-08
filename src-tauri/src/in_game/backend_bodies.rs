@@ -6,6 +6,8 @@
 //! - `FollowingFileTest`: the Contracts example, a file with no Anglers, a
 //!   card with no title, Lua escapes and no GUIDs, and a lifetime count past
 //!   2³¹.
+//! - IGV Contracts' news-aware example of `Pagle_Following` (IGV-R65), until
+//!   pagle-backend#470's tests give the news block's bodies.
 //! - `AnglersFileTest`: the Contracts example, two untrimmed blocks, and the
 //!   trimmed files of IGV-R33, down to blocks that trimming emptied
 //!   (`cardCount = 0`, which the backend keeps by design).
@@ -78,6 +80,31 @@ pub const FOLLOWING: [&str; 4] = [
     FOLLOWING_TWO,
     FOLLOWING_ESCAPES,
 ];
+
+/// IGV Contracts' example of the same file for a news-aware Companion
+/// (IGV-R65), byte for byte: three news lines, a followed `monster` and
+/// `hunt` and a `region` headline of an Angler not followed. Not yet from
+/// the backend's tests: pagle-backend#470 builds the news block, and its
+/// `FollowingFileTest` bodies belong here once it has them.
+pub const FOLLOWING_NEWS_EXAMPLE: &str = "PagleFollowingData = {\n\
+v = 1,\n\
+generatedAt = 1791735100,\n\
+count = 1,\n\
+anglers = {\n\
+{ name = \"Ada Brook\", more = 1, hardcore = false, title = \"Warden of Feralas Waters\", level = 23, \
+prestige = 1, ledger = 37, legends = 3, legendsTotal = 12, waters = 4, catches = 5120, asOf = 20261012, \
+guids = { \"Player-4618-0A1B2C3D\", \"Player-4618-0A1B2C3E\" } },\n\
+},\n\
+news = {\n\
+{ id = \"3f9a0c1d2e4b5a69\", kind = \"monster\", time = 1791733000, angler = 1, name = \"Ada Brook\", \
+region = \"\", item = 6291, rank = 0, key = \"\", text = \"\", zone = 0, length = 544 },\n\
+{ id = \"a01b2c3d4e5f6071\", kind = \"hunt\", time = 1791702000, angler = 1, name = \"Ada Brook\", \
+region = \"\", item = 0, rank = 0, key = \"night_run\", text = \"The Night Run\", zone = 0, length = 0 },\n\
+{ id = \"77c0e1f2a3b4c5d6\", kind = \"region\", time = 1791690000, angler = 0, name = \"Grimtusk\", \
+region = \"eu\", item = 6358, rank = 0, key = \"\", text = \"\", zone = 0, length = 0 },\n\
+},\n\
+ok = true,\n\
+}\n";
 
 /// `AnglersFileTest.EXAMPLE_FILE`: IGV Contracts' example, byte for byte.
 pub const ANGLERS_EXAMPLE: &str = "PagleAnglersData = {\n\
