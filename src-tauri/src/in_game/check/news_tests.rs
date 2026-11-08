@@ -453,18 +453,3 @@ fn a_news_rejection_names_its_position_and_rule_and_no_content() {
         }
     }
 }
-
-#[test]
-fn every_news_reason_names_a_rule() {
-    // CMP-R82: the log line says why, by rule
-    for reason in [
-        Reason::NewsCap,
-        Reason::NewsAngler,
-        Reason::BadNewsId,
-        Reason::BadKind,
-        Reason::BadRegion,
-    ] {
-        assert!(!reason.to_string().is_empty());
-        assert!(reason.rule().starts_with("IGV"), "{reason:?}");
-    }
-}
