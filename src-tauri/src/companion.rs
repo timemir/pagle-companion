@@ -181,7 +181,7 @@ pub fn manage<H: Host>(
             Box::new(move |checked| {
                 host.show_waiting_update();
                 update_required::window::after_check(&host, checked);
-                update_policy::window::checked(&host);
+                update_policy::window::checked(&host, checked);
             })
         },
         // DST-R56: the required-state config reads, by the update tick; then

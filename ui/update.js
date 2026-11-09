@@ -1,7 +1,6 @@
 // The window's update line in Status (DST-R78): while an update is waiting,
-// "An important update is ready." in the act tone below the recommended
-// version, else "An update is ready." in the info tone, each with Restart to
-// update, which does what the tray item does (DST-R54). Nothing while no
+// "An important update is ready." in the act tone, with Restart to update,
+// which does what the tray item does (DST-R54). Nothing while no
 // update waits, and nothing while update required: the stop message speaks
 // then (DST-R59).
 (() => {

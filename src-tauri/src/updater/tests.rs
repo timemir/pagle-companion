@@ -270,21 +270,48 @@ fn a_start_checks_once_and_sends_nothing_about_the_machine() {
 }
 
 #[test]
-fn the_next_check_is_six_hours_later_and_a_failed_one_waits_for_it() {
-    // DST-R51: then whenever the update interval has passed, tested every
-    // tick; a failed check (here no latest.json) is retried at the next
-    // interval, not at the next tick
+fn a_failed_check_is_tried_again_soon_and_a_completed_one_six_hours_later() {
+    // DST-R51: a failed check (here no latest.json) is tried again after the
+    // failed-check retry, 15 minutes give or take a fifth, then 30; only a
+    // check that completes waits the update interval
     let world = World::new();
     let updater = world.updater("1.0.0");
 
     assert_eq!(updater.tick(t0()), Some(Checked::Failed));
-    assert_eq!(updater.tick(t0() + MINUTE), None);
-    assert_eq!(updater.tick(t0() + 6 * HOUR - MINUTE), None);
-    assert_eq!(world.checks(), 1);
+    assert_eq!(updater.tick(t0() + 11 * MINUTE), None);
+    let second = t0() + 19 * MINUTE;
+    assert_eq!(updater.tick(second), Some(Checked::Failed));
+    assert_eq!(updater.tick(second + 23 * MINUTE), None);
+    assert_eq!(world.checks(), 2);
 
     world.publish("1.0.0");
-    assert_eq!(updater.tick(t0() + 6 * HOUR), Some(Checked::UpToDate));
-    assert_eq!(world.checks(), 2);
+    let third = second + 37 * MINUTE;
+    assert_eq!(updater.tick(third), Some(Checked::UpToDate));
+    assert_eq!(updater.tick(third + 6 * HOUR - MINUTE), None);
+    assert_eq!(updater.tick(third + 6 * HOUR), Some(Checked::UpToDate));
+    assert_eq!(world.checks(), 4);
+}
+
+#[test]
+fn a_download_that_doesnt_complete_is_tried_again_soon() {
+    // DST-R51: a download that doesn't complete fails the check, so it too
+    // is tried again after the failed-check retry
+    let world = World::new();
+    world.publish("1.2.0");
+    world
+        .files
+        .0
+        .lock()
+        .unwrap()
+        .retain(|path, _| path == "/latest.json");
+    let updater = world.updater("1.0.0");
+
+    assert_eq!(updater.tick(t0()), Some(Checked::NotDownloaded));
+    world.publish("1.2.0");
+    assert_eq!(
+        updater.tick(t0() + 19 * MINUTE),
+        Some(Checked::Waiting(v("1.2.0")))
+    );
 }
 
 #[test]
@@ -737,6 +764,21 @@ fn check_soon_checks_at_the_next_tick() {
     updater.check_soon();
     assert_eq!(updater.tick(t0() + MINUTE), Some(Checked::UpToDate));
     assert_eq!(world.checks(), 2);
+}
+
+#[test]
+fn a_check_soon_starts_the_update_interval_again() {
+    // DST-R51, DST-R102: a check the Player asks for counts as the last
+    // check, so the next scheduled one is six hours after it
+    let world = World::new();
+    world.publish("1.0.0");
+    let updater = world.updater("1.0.0");
+    updater.tick(t0());
+    updater.check_soon();
+    let asked = t0() + 2 * HOUR;
+    assert_eq!(updater.tick(asked), Some(Checked::UpToDate));
+    assert_eq!(updater.tick(t0() + 6 * HOUR), None);
+    assert_eq!(updater.tick(asked + 6 * HOUR), Some(Checked::UpToDate));
 }
 
 /// Records what would have started, and starts nothing.

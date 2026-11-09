@@ -800,6 +800,9 @@ body.first-run-link #linking-heading { position: absolute; width: 1px; height: 1
 .settings-list > .switch:not(:last-child) { border-bottom: 1px solid var(--pc-rule); }
 #game-mode-setting .muted { padding: 0 14px 8px; margin-top: -6px; }
 #game-mode-setting .muted button.link { font-size: var(--pc-fs-sm); }
+/* Check for updates (DST-R102): the last row, its line below the button. */
+.settings-list > .update-check { padding: 10px 14px; }
+.update-check > p.muted { margin-top: 6px; font-size: var(--pc-fs-sm); }
 
 /* ---------- Footer ---------- */
 footer {
