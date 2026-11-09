@@ -140,9 +140,9 @@ pub fn restart_to_update(app: AppHandle) {
     crate::tray::restart_to_update(&app);
 }
 
-/// **Check for updates** (DST-R102): an update check at the next update
-/// tick, the same check as the scheduled one, which starts the update
-/// interval again. Returns the button's view as it now is; the error is the
+/// **Check for updates** (DST-R102): an update check at once (it wakes the
+/// updater's thread; after a check already running), the same check as the
+/// scheduled one, which starts the update interval again. Returns the button's view as it now is; the error is the
 /// text to show.
 #[tauri::command]
 pub fn check_for_updates(app: AppHandle) -> Result<CheckView, String> {
