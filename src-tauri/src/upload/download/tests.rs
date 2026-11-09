@@ -21,7 +21,7 @@ use crate::credential_store::testing::MemoryStore;
 use crate::credential_store::{CredentialStore as _, Keychain};
 use crate::device_flow::Approval;
 use crate::in_game::backend_bodies::{
-    self, ANGLERS_EXAMPLE, FOLLOWING_EXAMPLE, FOLLOWING_NONE, anglers_file,
+    self, ANGLERS_EXAMPLE, FOLLOWING_EXAMPLE, FOLLOWING_NEWS_EXAMPLE, FOLLOWING_NONE, anglers_file,
 };
 use crate::in_game::content_vector::{self, content_file};
 use crate::in_game::folders::fixture::{FaultyFs, Op, install};
@@ -735,6 +735,32 @@ async fn every_body_the_backend_writes_is_downloaded_and_written() {
             body.as_bytes()
         );
     }
+}
+
+#[tokio::test]
+async fn a_following_body_with_the_news_block_is_written_byte_for_byte() {
+    // CMP-R82, CMP-R83, IGV-R65: a news-aware Companion takes the file with
+    // or without the news block; the download and the writing are as before
+    let h = Harness::new().await;
+    h.check().await;
+    for body in [
+        FOLLOWING_NEWS_EXAMPLE,
+        FOLLOWING_EXAMPLE,
+        FOLLOWING_NEWS_EXAMPLE,
+    ] {
+        h.in_game.set_body(DataFile::Following, body);
+        h.advance(FOLLOWING_INTERVAL);
+        let ended = h.check().await;
+        assert!(
+            ended.contains(&RunEnd::Download(DownloadEnd::Written(1))),
+            "{ended:?}"
+        );
+        assert_eq!(
+            h.data_file(&h.flavors[0], DataFile::Following).unwrap(),
+            body.as_bytes()
+        );
+    }
+    assert_eq!(h.in_game_state().following_at, Some(h.now()));
 }
 
 #[tokio::test]
