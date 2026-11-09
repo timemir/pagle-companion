@@ -1,5 +1,5 @@
 //! The updater (DST-R50 to DST-R55): it checks `latest.json` at start and
-//! every update interval ([`schedule`]), downloads a higher version
+//! every update interval, sooner after a failed check ([`schedule`]), downloads a higher version
 //! ([`release`]) in the background at once, verifies it against the embedded
 //! public key, and keeps it **waiting** ([`keep`]). It counts failed
 //! verifications in `updater.json` ([`record`]). It installs the waiting
@@ -59,7 +59,7 @@ use schedule::{Schedule, UPDATE_TICK};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Checked {
     /// `latest.json` couldn't be fetched or read: offline, GitHub down, a
-    /// bad document. Tried again at the next interval (DST-R51).
+    /// bad document. Tried again after the failed-check retry (DST-R51).
     Failed,
     /// No version above the running one (DST-R52).
     UpToDate,
@@ -70,8 +70,8 @@ pub enum Checked {
     /// failed-verification count's `in_a_row` time for this version; fetched
     /// again at the next check (DST-R53, DST-R57).
     NotVerified { in_a_row: u32 },
-    /// The download didn't complete or couldn't be kept; fetched again at
-    /// the next check.
+    /// The download didn't complete or couldn't be kept; fetched again
+    /// after the failed-check retry (DST-R51).
     NotDownloaded,
     /// Linux without `APPIMAGE` or a writable AppImage folder: a higher
     /// version exists, and is never downloaded (DST-R54).
@@ -357,6 +357,13 @@ impl Updater {
         let due = self.schedule_slot().take_due(now);
         let checked = due.then(|| tauri::async_runtime::block_on(self.check()));
         if let Some(checked) = &checked {
+            // DST-R51: a check that failed is tried again sooner.
+            let mut schedule = self.schedule_slot();
+            match checked {
+                Checked::Failed | Checked::NotDownloaded => schedule.failed(schedule::jitter()),
+                _ => schedule.completed(),
+            }
+            drop(schedule);
             (self.hooks.after_check)(checked);
         }
         (self.hooks.ticked)(now);

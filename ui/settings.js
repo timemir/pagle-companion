@@ -3,8 +3,8 @@
 // and says when it couldn't change the entry. "Install updates
 // automatically" (DST-R77), on by default. On SteamOS as an AppImage,
 // "Keep uploading in Game Mode (experimental)" (CMP-R90), off by default,
-// with the Steam Deck report link (DST-R71). Quit, and on Linux Remove Pagle
-// Companion (CMP-R71).
+// with the Steam Deck report link (DST-R71). Check for updates (DST-R102)
+// last. Quit, and on Linux Remove Pagle Companion (CMP-R71).
 (() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
@@ -118,6 +118,41 @@
     renderGameMode();
   });
 
+  // Check for updates (DST-R102): an update check at once; a newer version
+  // downloads, verifies and installs as Restart to update does. The
+  // Companion sends the line beside it ("update-check") and whether a check
+  // or an install is under way, which disables the button.
+  const check = document.getElementById("check-for-updates");
+  const checkLine = document.getElementById("update-check-line");
+  let checkBusy = false;
+
+  function renderCheck() {
+    check.disabled = readOnly || checkBusy;
+  }
+
+  function showCheck(view) {
+    checkBusy = view.busy;
+    checkLine.hidden = !view.text;
+    checkLine.textContent = view.text || "";
+    checkLine.className = view.problem ? "read-problem" : "muted";
+    renderCheck();
+  }
+
+  check.addEventListener("click", () => {
+    checkBusy = true;
+    error.hidden = true;
+    renderCheck();
+    // The line comes with the event; only a refusal comes back here.
+    invoke("check_for_updates").catch((message) => {
+      checkBusy = false;
+      error.textContent = String(message);
+      error.hidden = false;
+      renderCheck();
+    });
+  });
+  invoke("update_check_view").then(showCheck);
+  listen("update-check", (event) => showCheck(event.payload));
+
   // On Linux, Remove Pagle Companion behind its question (CMP-R71). Remove
   // runs removal and the process exits; Cancel changes nothing.
   const remove = document.getElementById("remove");
@@ -162,6 +197,7 @@
     render();
     renderAutoUpdate();
     renderGameMode();
+    renderCheck();
   });
   listen("status", (event) => {
     readOnly = event.payload.readOnly;
@@ -169,5 +205,6 @@
     render();
     renderAutoUpdate();
     renderGameMode();
+    renderCheck();
   });
 })();

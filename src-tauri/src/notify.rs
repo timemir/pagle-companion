@@ -33,8 +33,7 @@ pub enum Cause {
     /// shows at most once per process run, however often the state is left
     /// and entered (DST-R57, DST-R96).
     UpdateRequired { text: String },
-    /// The running version is below `recommendedCompanionVersion` and an
-    /// update is waiting: the nudge (DST-R78). Never cleared, so it
+    /// An update is waiting: the nudge (DST-R59, DST-R78). Never cleared, so it
     /// shows at most once per process run.
     UpdateRecommended,
 }

@@ -134,7 +134,7 @@ pub fn start(state_dir: StateDir, version: &str) -> Result<Start, Box<dyn Error>
     // AppImage, already in place (DST-R54).
     let updated = endings.clone();
     let installing = parts.clone();
-    parts.state::<Policy>().install_with(move || {
+    parts.state::<Policy>().install_with(move |_| {
         let Some(waiting) = installing.state::<Updater>().waiting() else {
             return Installed::NothingWaiting;
         };

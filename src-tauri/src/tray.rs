@@ -30,7 +30,7 @@ use crate::local_log::Logger;
 use crate::os_notify::OsNotifier;
 use crate::state::State;
 use crate::state_dir::{self, StateDir};
-use crate::update_policy::{self, Policy};
+use crate::update_policy::{self, Install, Policy};
 use crate::updater::install::{CommandLine, Launch, Launcher, SystemLauncher, Ui};
 use crate::updater::{Installed, Updater};
 use crate::upload::{self, queue::Trigger};
@@ -146,6 +146,8 @@ pub fn run(mode: Mode) {
             update_policy::window::restart_to_update,
             update_policy::window::install_updates_automatically,
             update_policy::window::set_install_updates_automatically,
+            update_policy::window::check_for_updates,
+            update_policy::window::update_check_view,
         ])
         .setup(move |app| {
             setup(app.handle(), autostart)?;
@@ -251,10 +253,14 @@ fn start(
         state,
         Box::new(OsNotifier::new(app.clone())),
     )?;
-    // DST-R76, DST-R56: the installs the Player didn't choose run quietly.
+    // DST-R76, DST-R56: the installs the Player didn't choose run quietly;
+    // the one Check for updates found runs passive (DST-R102).
     app.state::<Policy>().install_with({
         let app = app.clone();
-        move || install_quietly(&app)
+        move |why| match why {
+            Install::Chosen => install_chosen(&app),
+            Install::Forced | Install::Idle => install_quietly(&app),
+        }
     });
     // CMP-R100: before anything is watched, so nothing notifies while the
     // first-run window is open.
@@ -534,6 +540,19 @@ fn install_quietly(app: &AppHandle) -> Installed {
     let installed = app
         .state::<Updater>()
         .install(&TrayLauncher(app.clone()), Ui::Quiet, &args);
+    exit_if_started(app, &installed);
+    show_waiting_update(app);
+    installed
+}
+
+/// The install **Check for updates** found (DST-R102): passive with this
+/// process's arguments unchanged, as **Restart to update** (DST-R54,
+/// DST-R13), then exit. Called on the updater's thread.
+fn install_chosen(app: &AppHandle) -> Installed {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let installed = app
+        .state::<Updater>()
+        .install(&TrayLauncher(app.clone()), Ui::Passive, &args);
     exit_if_started(app, &installed);
     show_waiting_update(app);
     installed

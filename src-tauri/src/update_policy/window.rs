@@ -1,28 +1,31 @@
 //! The update policy in tray and headless mode alike: the updater's hooks
 //! into [`Policy`], what its decisions act on in this process, and the
-//! window's commands: the nudge's view, its **Restart to update** and the
-//! "Install updates automatically" switch (`ui/update.js`,
-//! `ui/settings.js`). Like the updater, the hooks run only in the process
+//! window's commands: the nudge's view, its **Restart to update**, the
+//! "Install updates automatically" switch and **Check for updates**
+//! (`ui/update.js`, `ui/settings.js`). Like the updater, the hooks run only in the process
 //! that holds the watcher lock (CMP-R2).
 
 use semver::Version;
 use tauri::AppHandle;
 
-use super::{Busy, Env, Install, Nudge, Policy, UpdateView};
+use super::{Busy, CheckLine, CheckView, Env, Install, Nudge, Policy, UpdateView};
 use crate::companion::Companion;
 use crate::host::Host;
 use crate::linking::Linking;
 use crate::notify::Cause;
-use crate::updater::{Installed, Updater};
+use crate::updater::{Checked, Installed, Updater};
 use crate::upload::Uploads;
 
 /// The window's event for a changed [`UpdateView`].
 pub const EVENT: &str = "update";
 
+/// The window's event for a changed [`CheckView`] (DST-R102).
+pub const CHECK_EVENT: &str = "update-check";
+
 /// The updater's hook after every check (DST-R51).
-pub fn checked<H: Host>(host: &H) {
+pub fn checked<H: Host>(host: &H, checked: &Checked) {
     if let Some(policy) = host.try_state::<Policy>() {
-        policy.checked();
+        policy.checked(&AppEnv(host), checked);
     }
 }
 
@@ -101,12 +104,10 @@ impl<H: Host> Env for AppEnv<'_, H> {
         }
     }
 
-    fn install(&self) -> Installed {
+    fn install(&self, why: Install) -> Installed {
         self.0
             .try_state::<Policy>()
-            .map_or(Installed::NothingWaiting, |policy| {
-                policy.install(Install::Idle)
-            })
+            .map_or(Installed::NothingWaiting, |policy| policy.install(why))
     }
 
     fn show(&self, nudge: Nudge) {
@@ -119,6 +120,10 @@ impl<H: Host> Env for AppEnv<'_, H> {
         self.companion()
             .notifications
             .raise(&Cause::UpdateRecommended);
+    }
+
+    fn show_check(&self, line: &CheckLine) {
+        self.0.emit(CHECK_EVENT, CheckView::from(line));
     }
 }
 
@@ -133,6 +138,34 @@ pub fn update_view(policy: tauri::State<'_, Policy>) -> UpdateView {
 #[tauri::command]
 pub fn restart_to_update(app: AppHandle) {
     crate::tray::restart_to_update(&app);
+}
+
+/// **Check for updates** (DST-R102): an update check at the next update
+/// tick, the same check as the scheduled one, which starts the update
+/// interval again. Returns the button's view as it now is; the error is the
+/// text to show.
+#[tauri::command]
+pub fn check_for_updates(app: AppHandle) -> Result<CheckView, String> {
+    if !app.state::<Companion>().is_watcher() {
+        // CMP-R2: the window of a process without the lock is read-only, and
+        // only the process with the lock checks for updates.
+        return Err("Another Pagle Companion is running for this user.".into());
+    }
+    let (Some(policy), Some(updater)) = (app.try_state::<Policy>(), app.try_state::<Updater>())
+    else {
+        return Err(super::CHECK_FAILED_TEXT.into());
+    };
+    if policy.ask_check(&AppEnv(&app)) {
+        log::info!("the Player asked for an update check");
+        updater.check_soon();
+    }
+    Ok(CheckView::from(&policy.check_line()))
+}
+
+/// The line beside **Check for updates**, as last shown.
+#[tauri::command]
+pub fn update_check_view(policy: tauri::State<'_, Policy>) -> CheckView {
+    CheckView::from(&policy.check_line())
 }
 
 /// The "Install updates automatically" switch: `settings
@@ -201,5 +234,27 @@ mod tests {
         assert!(script.contains(&format!("\"{EVENT}\"")));
         let settings = include_str!("../../../ui/settings.js");
         assert!(settings.contains("\"set_install_updates_automatically\""));
+    }
+
+    #[test]
+    fn check_for_updates_is_the_last_thing_in_settings() {
+        // DST-R102: a button at the bottom of Settings, after the switches
+        // and before Quit, with its line beside it; settings.js calls its
+        // commands and hears its event
+        let page = include_str!("../../../ui/index.html");
+        let game_mode = page.find("id=\"game-mode-setting\"").unwrap();
+        let button = page
+            .find(&format!(">{}</button>", super::super::CHECK_BUTTON))
+            .unwrap();
+        let line = page.find("id=\"update-check-line\"").unwrap();
+        let error = page.find("id=\"settings-error\"").unwrap();
+        let quit = page.find("id=\"quit\"").unwrap();
+        assert!(game_mode < button && button < line && line < error && error < quit);
+        assert!(page.contains("id=\"check-for-updates\""));
+
+        let settings = include_str!("../../../ui/settings.js");
+        assert!(settings.contains("\"check_for_updates\""));
+        assert!(settings.contains("\"update_check_view\""));
+        assert!(settings.contains(&format!("\"{CHECK_EVENT}\"")));
     }
 }
