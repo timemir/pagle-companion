@@ -741,6 +741,126 @@
       "name": "raw-invalid-utf8-hunt-def",
       "bytesHex": "41317c317c313739323432323030307c307c48756e74737c6465667c705f746573747c312f317ceda080fe",
       "valid": true
+    },
+    {
+      "name": "party-catch",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0||||6358x1",
+      "valid": true
+    },
+    {
+      "name": "party-catch-empty-optionals",
+      "entry": "G1|2|1791731749|3|1791731748|7||148|0||||||6358x1",
+      "valid": true
+    },
+    {
+      "name": "party-catch-every-field",
+      "entry": "G1|1|1791731749|0|1791731748|0|1439|148|453|86|-25|263|5,9|11,40,41|6358x1,0x1,6358x2",
+      "valid": true
+    },
+    {
+      "name": "party-catch-zero-times",
+      "entry": "G1|1|1791731749|0|0|0|0|1|0|0|0|0|||0x1,1x1",
+      "valid": true
+    },
+    {
+      "name": "party-catch-zone-0",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|0|453|120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-empty-zone",
+      "entry": "G1|1|1791731749|0|1791731748|0|494||453|120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-no-items",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0||||",
+      "valid": false
+    },
+    {
+      "name": "party-catch-only-item-0",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0||||0x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-only-items-0",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0||||0x1,0x2",
+      "valid": false
+    },
+    {
+      "name": "party-catch-outcome-map-instance",
+      "entry": "G1|1|1791731749|0|1791731748|0|c|494|1439|1|148|453|120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-guid",
+      "entry": "G1|1|1791731749|0|Player-4618-0B000000|1791731748|0|494|148|453|120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-14-fields",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0|||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-16-fields",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0|||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-time-leading-zero",
+      "entry": "G1|1|1791731749|0|01791731748|0|494|148|453|120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-negative-tie",
+      "entry": "G1|1|1791731749|0|1791731748|-1|494|148|453|120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-minute-1440",
+      "entry": "G1|1|1791731749|0|1791731748|0|1440|148|453|120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-negative-rank",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|-120|0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-modifier-negative-zero",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|-0||||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-negative-lure",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0|-263|||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-unordered-events",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0||9,5||6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-duplicate-auras",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0|||40,40|6358x1",
+      "valid": false
+    },
+    {
+      "name": "party-catch-quantity-0",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0||||6358x0",
+      "valid": false
+    },
+    {
+      "name": "party-catch-bare-item",
+      "entry": "G1|1|1791731749|0|1791731748|0|494|148|453|120|0||||6358",
+      "valid": false
+    },
+    {
+      "name": "party-catch-char-0",
+      "entry": "G1|0|1791731749|0|1791731748|0|494|148|453|120|0||||6358x1",
+      "valid": false
     }
   ],
   "initialVariants": [

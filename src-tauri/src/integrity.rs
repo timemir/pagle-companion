@@ -61,6 +61,12 @@ fn items(text: &[u8]) -> bool {
         })
 }
 
+/// Whether `text`, a valid items field, names an item other than item 0.
+fn known_item(text: &[u8]) -> bool {
+    text.split(|b| *b == b',')
+        .any(|item| item.split(|b| *b == b'x').next() != Some(b"0"))
+}
+
 fn entry_id(text: &[u8]) -> bool {
     let f = text.split(|b| *b == b'-').collect::<Vec<_>>();
     f.len() == 5
@@ -215,6 +221,26 @@ pub fn validate_record(entry: &[u8]) -> Result<(), String> {
                 && ids(f[14])
                 && items(f[15])
                 && (f[4] != b"g" || f[15].is_empty())
+        }
+        // A Party Catch (LOG-R115, from pagle-2026j): the groupmate's Cast's
+        // time and tie, then its C1 fields from minute to items in their
+        // grammar, with a zone that isn't 0 and an item that isn't item 0;
+        // no GUID.
+        b"G1" if f.len() == 15 => {
+            number(f[4], 0, false).is_some()
+                && number(f[5], 0, false).is_some()
+                && optional(f[6], false)
+                && (f[6].is_empty() || number(f[6], 0, false).is_some_and(|v| v < 1440))
+                && number(f[7], 1, false).is_some()
+                && number(f[8], 0, false).is_some()
+                && optional(f[9], false)
+                && optional(f[10], true)
+                && optional(f[11], false)
+                && ids(f[12])
+                && ids(f[13])
+                && !f[14].is_empty()
+                && items(f[14])
+                && known_item(f[14])
         }
         b"S1" if f.len() == 7 => {
             number(f[4], 0, false).is_some()
