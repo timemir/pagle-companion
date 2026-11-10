@@ -159,6 +159,12 @@ malformed = prefix + net(2) + net(entry) + net("malformed replacement")
 changes["noncanonical-replacement"] = {8: sha(malformed), 9: malformed}
 bad_boolean = replacement.replace(b"1:f,", b"1:0,", 1)
 changes["noncanonical-boolean"] = {8: sha(bad_boolean), 9: bad_boolean}
+# A Party Catch (LOG-R115, from pagle-2026j) appended after the accepted entry: a valid one is a canonical
+# replacement entry, the same with zone 0 is not. Both are the add-on's own integrity vectors.
+party_catch = prefix + net(2) + net(entry) + net("G1|1|1791731749|0|1791731748|0|494|148|453|120|0||||6358x1")
+changes["party-catch-replacement"] = {8: sha(party_catch), 9: party_catch}
+zone_0 = prefix + net(2) + net(entry) + net("G1|1|1791731749|0|1791731748|0|494|0|453|120|0||||6358x1")
+changes["noncanonical-party-catch"] = {8: sha(zone_0), 9: zone_0}
 for name, replacements in changes.items():
     changed = fields.copy()
     for index, value in replacements.items():

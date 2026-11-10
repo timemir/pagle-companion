@@ -390,13 +390,40 @@ async fn authenticated_data_still_must_match_its_domain_target_snapshot_checkpoi
         let h = recovery_harness().await;
         serve(&h, signed.clone()).await;
         let result = recover(&h).await;
-        if name == "capacity-limit" {
+        if name == "capacity-limit" || name == "party-catch-replacement" {
             assert!(result.is_ok(), "{name}: {result:?}");
         } else {
             assert!(result.is_err(), "accepted invalid signed data: {name}");
             assert!(!staged_folder(&h).exists(), "{name}");
         }
     }
+}
+
+#[tokio::test]
+async fn a_replacement_with_a_party_catch_stages_and_one_with_zone_0_doesnt() {
+    // LOG-R115 (pagle-2026j): a G1 Party Catch is a canonical replacement
+    // entry, so a 1.6 Catch log that holds one can be recovered; the same G1
+    // with zone 0 is noncanonical and the package is refused
+    let variants: serde_json::Value =
+        serde_json::from_str(include_str!("../../fixtures/recovery/adversarial-v1.json")).unwrap();
+
+    let h = recovery_harness().await;
+    serve(&h, variants["party-catch-replacement"].clone()).await;
+    let result = recover(&h).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(staged_folder(&h).exists());
+
+    let h = recovery_harness().await;
+    serve(&h, variants["noncanonical-party-catch"].clone()).await;
+    let result = recover(&h).await;
+    assert!(
+        result
+            .as_ref()
+            .unwrap_err()
+            .contains("noncanonical replacement entry"),
+        "{result:?}"
+    );
+    assert!(!staged_folder(&h).exists());
 }
 
 #[tokio::test]
