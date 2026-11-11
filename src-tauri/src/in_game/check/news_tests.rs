@@ -5,7 +5,9 @@
 //! hold it to the grammar exactly as before the block existed.
 
 use super::*;
-use crate::in_game::backend_bodies::{FOLLOWING, FOLLOWING_EXAMPLE, FOLLOWING_NEWS_EXAMPLE};
+use crate::in_game::backend_bodies::{
+    FOLLOWING, FOLLOWING_EXAMPLE, FOLLOWING_NEWS, FOLLOWING_NEWS_ESCAPES, FOLLOWING_NEWS_EXAMPLE,
+};
 
 /// The example's one angler line, LF included.
 const ADA: &str = "{ name = \"Ada Brook\", more = 1, hardcore = false, title = \"Warden of Feralas Waters\", level = 23, prestige = 1, ledger = 37, legends = 3, legendsTotal = 12, waters = 4, catches = 5120, asOf = 20261012, guids = { \"Player-4618-0A1B2C3D\", \"Player-4618-0A1B2C3E\" } },\n";
@@ -71,6 +73,22 @@ fn the_news_aware_example_passes() {
         with_news(1, ADA, &[MONSTER, HUNT, REGION].concat()),
         FOLLOWING_NEWS_EXAMPLE
     );
+}
+
+#[test]
+fn every_news_aware_body_the_backend_writes_passes() {
+    // CMP-R82, IGV-R65: the backend's own news-aware bodies
+    // (`FollowingFileTest`): the example, an empty block, and names, keys and
+    // texts through the Lua string writer
+    for body in FOLLOWING_NEWS {
+        passes(body);
+        assert_eq!(check(DataFile::Following, body.as_bytes()), Ok(()));
+    }
+    // The escaped line is the backend test's, from `name` on.
+    assert!(FOLLOWING_NEWS_ESCAPES.contains(
+        "name = \"Æ\\\"g\\\\ir\\010\", region = \"\", item = 0, rank = 0, key = \"k\\\"ey\", \
+         text = \"T\\127xt\", zone = 0, length = 0 },\n"
+    ));
 }
 
 #[test]
