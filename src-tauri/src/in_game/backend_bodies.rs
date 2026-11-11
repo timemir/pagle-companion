@@ -5,9 +5,9 @@
 //!
 //! - `FollowingFileTest`: the Contracts example, a file with no Anglers, a
 //!   card with no title, Lua escapes and no GUIDs, and a lifetime count past
-//!   2³¹.
-//! - IGV Contracts' news-aware example of `Pagle_Following` (IGV-R65), until
-//!   pagle-backend#470's tests give the news block's bodies.
+//!   2³¹; and for a news-aware Companion (IGV-R65), the news-aware example,
+//!   a file with an empty news block, and a news line through the Lua string
+//!   writer.
 //! - `AnglersFileTest`: the Contracts example, two untrimmed blocks, and the
 //!   trimmed files of IGV-R33, down to blocks that trimming emptied
 //!   (`cardCount = 0`, which the backend keeps by design).
@@ -81,11 +81,10 @@ pub const FOLLOWING: [&str; 4] = [
     FOLLOWING_ESCAPES,
 ];
 
-/// IGV Contracts' example of the same file for a news-aware Companion
-/// (IGV-R65), byte for byte: three news lines, a followed `monster` and
-/// `hunt` and a `region` headline of an Angler not followed. Not yet from
-/// the backend's tests: pagle-backend#470 builds the news block, and its
-/// `FollowingFileTest` bodies belong here once it has them.
+/// `FollowingFileTest.NEWS_EXAMPLE`: IGV Contracts' example of the same file
+/// for a news-aware Companion (IGV-R65), byte for byte: three news lines, a
+/// followed `monster` and `hunt` and a `region` headline of an Angler not
+/// followed.
 pub const FOLLOWING_NEWS_EXAMPLE: &str = "PagleFollowingData = {\n\
 v = 1,\n\
 generatedAt = 1791735100,\n\
@@ -105,6 +104,43 @@ region = \"eu\", item = 6358, rank = 0, key = \"\", text = \"\", zone = 0, lengt
 },\n\
 ok = true,\n\
 }\n";
+
+/// `FollowingFileTest`: a news-aware file with no Anglers and no news, the
+/// news line and its closing line with nothing between (IGV-R65).
+pub const FOLLOWING_NEWS_EMPTY: &str = "PagleFollowingData = {\n\
+v = 1,\n\
+generatedAt = 1791735100,\n\
+count = 0,\n\
+anglers = {\n\
+},\n\
+news = {\n\
+},\n\
+ok = true,\n\
+}\n";
+
+/// `FollowingFileTest`: a `hunt` line whose name, key and text go through
+/// the Lua string writer (`\"`, `\\`, `\010`, `\127`, UTF-8), in a file of
+/// `FollowingFile.write(1, [], [line])`. The test asserts the line from
+/// `name` on; its start is the same writer's (`FollowingFile.write`).
+pub const FOLLOWING_NEWS_ESCAPES: &str = "PagleFollowingData = {\n\
+v = 1,\n\
+generatedAt = 1,\n\
+count = 0,\n\
+anglers = {\n\
+},\n\
+news = {\n\
+{ id = \"0123456789abcdef\", kind = \"hunt\", time = 1, angler = 0, name = \"Æ\\\"g\\\\ir\\010\", \
+region = \"\", item = 0, rank = 0, key = \"k\\\"ey\", text = \"T\\127xt\", zone = 0, length = 0 },\n\
+},\n\
+ok = true,\n\
+}\n";
+
+/// Every news-aware `Pagle_Following` body above.
+pub const FOLLOWING_NEWS: [&str; 3] = [
+    FOLLOWING_NEWS_EXAMPLE,
+    FOLLOWING_NEWS_EMPTY,
+    FOLLOWING_NEWS_ESCAPES,
+];
 
 /// `AnglersFileTest.EXAMPLE_FILE`: IGV Contracts' example, byte for byte.
 pub const ANGLERS_EXAMPLE: &str = "PagleAnglersData = {\n\
